@@ -1,7 +1,7 @@
+import { Server } from "@modelcontextprotocol/server";
+
 // Autotask Tool Handler
 // Handles MCP tool calls for Autotask operations (search, create, update)
-
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { AutotaskService } from '../services/autotask.service.js';
 import { AutotaskRateLimitError } from '../services/autotask-http.js';
 import { PicklistCache, PicklistValue } from '../services/picklist.cache.js';
@@ -61,7 +61,9 @@ export interface McpTool {
   name: string;
   description: string;
   inputSchema: {
-    type: string;
+    // Literal 'object' (not string): the v2 SDK's tools/list result type
+    // requires the JSON Schema type discriminant as a literal.
+    type: 'object';
     properties: Record<string, any>;
     required?: string[];
   };
@@ -78,7 +80,7 @@ export interface McpTool {
 
 export interface McpToolResult {
   content: Array<{
-    type: string;
+    type: 'text';
     text: string;
   }>;
   isError?: boolean;

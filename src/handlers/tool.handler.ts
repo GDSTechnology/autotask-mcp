@@ -1521,6 +1521,16 @@ export class AutotaskToolHandler {
         } as any);
         return { result: r, message: `Found ${r.length} time entries` };
       }],
+      ['autotask_get_time_entry', async (a) => {
+        const r = await s.getTimeEntry(a.id);
+        if (!r) return { result: null, message: `No time entry found with ID ${a.id}` };
+        return { result: r, message: 'Time entry retrieved successfully' };
+      }],
+      ['autotask_update_time_entry', async (a) => {
+        const { id, ...updates } = a;
+        await s.updateTimeEntry(id, updates);
+        return { result: id, message: `Successfully updated time entry ${id}` };
+      }],
 
       // Meta-tools for progressive discovery
       ['autotask_list_categories', async () => {

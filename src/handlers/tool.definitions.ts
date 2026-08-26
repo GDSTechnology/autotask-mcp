@@ -997,9 +997,50 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         internalNotes: {
           type: 'string',
           description: 'Internal notes for the time entry'
+        },
+        billingCodeID: {
+          type: 'number',
+          description: 'Work type / billing code ID. Note: billable status also depends on contract config, so a work type alone does not guarantee the entry is billable.'
+        },
+        showOnInvoice: {
+          type: 'boolean',
+          description: 'Whether the entry appears on the customer invoice.'
         }
       },
       required: ['dateWorked', 'hoursWorked', 'summaryNotes']
+    }
+  },
+  {
+    name: 'autotask_get_time_entry',
+    description:
+      'READ-ONLY. Get a time entry by ID. The record distinguishes actual worked ' +
+      'time (hoursWorked) from Autotask billing-rounded time (hoursToBill).',
+    annotations: { title: 'Get time entry', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'Time entry ID' } },
+      required: ['id']
+    }
+  },
+  {
+    name: 'autotask_update_time_entry',
+    description:
+      'Update a time entry (collection PATCH). Only provided fields change. ' +
+      'hoursWorked accepts fractional hours (e.g. 0.1 = six minutes).',
+    annotations: { title: 'Update time entry', readOnlyHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Time entry ID to update' },
+        hoursWorked: { type: 'number', description: 'Actual hours worked (fractional allowed)' },
+        startDateTime: { type: 'string', description: 'Start date/time (ISO)' },
+        endDateTime: { type: 'string', description: 'End date/time (ISO)' },
+        summaryNotes: { type: 'string', description: 'Summary notes' },
+        internalNotes: { type: 'string', description: 'Internal notes' },
+        billingCodeID: { type: 'number', description: 'Work type / billing code ID' },
+        showOnInvoice: { type: 'boolean', description: 'Whether the entry appears on the customer invoice' }
+      },
+      required: ['id']
     }
   },
 
@@ -3376,7 +3417,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_search_time_entries', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

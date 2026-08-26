@@ -806,6 +806,34 @@ export class AutotaskService {
   }
 
   /**
+   * Get a single time entry (§4.8). The returned record distinguishes actual
+   * worked time (`hoursWorked`) from Autotask's billing-rounded time
+   * (`hoursToBill`), so callers can read both after a create.
+   */
+  async getTimeEntry(id: number): Promise<AutotaskTimeEntry | null> {
+    const http = await this.ensureClient();
+    try {
+      return await http.get<AutotaskTimeEntry>('TimeEntries', id);
+    } catch (error) {
+      this.logger.error(`Failed to get time entry ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /** Update a time entry (§4.8) via the collection PATCH convention. */
+  async updateTimeEntry(id: number, updates: Partial<AutotaskTimeEntry>): Promise<void> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Updating time entry ${id}:`, updates);
+      await http.update('TimeEntries', id, updates as Record<string, any>);
+      this.logger.info(`Time entry ${id} updated`);
+    } catch (error) {
+      this.logger.error(`Failed to update time entry ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Resolve a resource by full/partial name via POST /Resources/query.
    * Returns the first match, or null.
    */

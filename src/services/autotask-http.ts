@@ -7,6 +7,7 @@
 // Zero new runtime deps — Node 18+ built-in `fetch` only.
 
 import { resolveAutotaskApiUrl, invalidateZoneUrlCache } from '../utils/config';
+import { mapWithConcurrency } from '../utils/concurrency';
 import { Logger } from '../utils/logger';
 
 export interface QueryFilter {
@@ -20,6 +21,30 @@ export interface QueryOptions {
   maxRecords?: number;
   includeFields?: string[];
   page?: number;
+}
+
+export interface QueryByIdsOptions extends QueryOptions {
+  /**
+   * IDs per `in` chunk. Autotask tolerates large `in` lists but the proven
+   * n8n batch size is 200 (brief §7.19); keep it configurable. Clamped >= 1.
+   */
+  chunkSize?: number;
+  /**
+   * Chunks queried concurrently. Bounded so a wide ID set stays under
+   * Autotask's per-integration thread threshold (see mapWithConcurrency).
+   */
+  concurrency?: number;
+}
+
+export interface BatchedQueryResult<T> {
+  /** Deduplicated rows across all chunks (by `id` when the record carries one). */
+  items: T[];
+  /**
+   * Chunks whose query rejected, with the IDs that were in them. Surfaced
+   * rather than silently dropped (brief §7.19) so callers can decide whether a
+   * partial result is acceptable or the whole operation should fail.
+   */
+  failedChunks: Array<{ ids: Array<number | string>; error: string }>;
 }
 
 interface PageDetails {
@@ -392,6 +417,82 @@ export class AutotaskHttpClient {
     }
 
     return items.slice(0, totalCap);
+  }
+
+  /**
+   * Query an entity for records whose `field` is one of `ids`, batching the IDs
+   * into `in`-filter chunks (brief §7.19). Autotask's own hourly workflow chunks
+   * ID lists into groups of 200 before querying (e.g. ServiceCallTickets by
+   * serviceCallID, Tickets by id); this centralizes that so callers pass the
+   * whole list and get merged results back.
+   *
+   * - IDs are deduplicated and deterministically sorted, so the chunk set — and
+   *   thus the requests issued — are stable across calls.
+   * - Chunks run with bounded concurrency to stay under Autotask's thread limit.
+   * - Each chunk paginates fully (via query()); the per-chunk cap defaults high
+   *   so a foreign-key `in` (one parent → many rows) isn't truncated at 500.
+   * - Results are deduplicated by `id`.
+   * - A failed chunk does NOT abort the batch: its IDs and error are returned in
+   *   `failedChunks` so the caller decides whether the partial result is usable.
+   */
+  async queryByIds<T>(
+    entity: string,
+    field: string,
+    ids: ReadonlyArray<number | string>,
+    opts: QueryByIdsOptions = {}
+  ): Promise<BatchedQueryResult<T>> {
+    const unique = Array.from(new Set(ids));
+    unique.sort((a, b) =>
+      typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b))
+    );
+
+    if (unique.length === 0) {
+      return { items: [], failedChunks: [] };
+    }
+
+    const chunkSize = Math.max(1, Math.floor(opts.chunkSize ?? 200));
+    const concurrency = Math.max(1, Math.floor(opts.concurrency ?? 4));
+
+    const chunks: Array<Array<number | string>> = [];
+    for (let i = 0; i < unique.length; i += chunkSize) {
+      chunks.push(unique.slice(i, i + chunkSize));
+    }
+
+    // Per-chunk total cap defaults high so an `in` over a foreign key
+    // paginates through ALL matches rather than stopping at query()'s 500 default.
+    const perChunkOpts: QueryOptions = { maxRecords: opts.maxRecords ?? 100_000 };
+    if (opts.includeFields && opts.includeFields.length > 0) {
+      perChunkOpts.includeFields = opts.includeFields;
+    }
+
+    const settled = await mapWithConcurrency(chunks, concurrency, (chunk) =>
+      this.query<T>(entity, [{ op: 'in', field, value: chunk }], perChunkOpts)
+    );
+
+    const items: T[] = [];
+    const failedChunks: Array<{ ids: Array<number | string>; error: string }> = [];
+    const seen = new Set<unknown>();
+
+    settled.forEach((res, idx) => {
+      if (res.status === 'fulfilled') {
+        for (const row of res.value) {
+          const rowId = (row as { id?: unknown })?.id;
+          if (rowId !== undefined) {
+            if (seen.has(rowId)) continue;
+            seen.add(rowId);
+          }
+          items.push(row);
+        }
+      } else {
+        const reason = res.reason;
+        failedChunks.push({
+          ids: chunks[idx],
+          error: reason instanceof Error ? reason.message : String(reason),
+        });
+      }
+    });
+
+    return { items, failedChunks };
   }
 
   /**

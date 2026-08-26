@@ -1,0 +1,71 @@
+name: CI
+
+# Clean, self-contained CI for the GDS fork — no wyre-technology reusable
+# workflows, no registry token. autotask-node resolves from the public
+# github:GDSTechnology/autotask-node fork, so `npm ci` needs no auth.
+#
+# Runs on PRs and pushes to main. (Replaces the inherited test.yml, which used a
+# private @wyre-technology .npmrc token, and mcp-assert.yml, which called an
+# inaccessible wyre-technology/.github reusable workflow and always start-failed.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20.x', '22.x']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      # No token: the SDK is the public github: fork. `npm ci` runs its prepare
+      # (build) so autotask-node's type declarations exist for the test compile.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Lint destructive-tool warnings
+        run: node scripts/lint-destructive-warnings.mjs src
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  docker:
+    name: Docker build (token-free)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Build production image
+        run: |
+          docker build \
+            --build-arg VERSION=ci-${{ github.sha }} \
+            --build-arg COMMIT_SHA=${{ github.sha }} \
+            -t autotask-mcp:ci .

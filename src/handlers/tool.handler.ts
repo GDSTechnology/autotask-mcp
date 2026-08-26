@@ -427,6 +427,37 @@ export class AutotaskToolHandler {
     const hours = hoursMatch ? parseFloat(hoursMatch[1]) : undefined;
 
     // Decision tree based on keyword matching
+
+    // Company To-Do (CRM calendar follow-up) — check BEFORE time tracking so a
+    // "sales follow-up To-Do" is not misrouted to a time entry (§4.10). A
+    // To-Do is distinct from an appointment, service call, checklist item,
+    // project task, and time entry.
+    if (/\b(?:to-?dos?|follow[-\s]?ups?)\b/.test(intent)) {
+      const ticketIdMatch = intent.match(/ticket\s*#?\s*(\d+)/i);
+      if (/\b(?:create|add|new|schedule|set|make|put)\b/.test(intent)) {
+        const params: Record<string, any> = {};
+        if (ticketIdMatch) params.ticketID = parseInt(ticketIdMatch[1]);
+        if (quotedStrings[0]) params.activityDescription = quotedStrings[0];
+        if (/\bsales\b/.test(intent)) params.actionTypeName = 'Sales';
+        else if (/\bmeeting\b/.test(intent)) params.actionTypeName = 'Meeting';
+        else if (/\b(?:phone|call)\b/.test(intent)) params.actionTypeName = 'Phone Call';
+        return {
+          suggestedTool: 'autotask_create_company_todo',
+          suggestedParams: params,
+          description: 'Create a Company To-Do (CRM calendar follow-up)',
+          requiredParams: ['companyID', 'assignedToResourceID', 'startDateTime', 'endDateTime'],
+        };
+      }
+      const params: Record<string, any> = {};
+      if (ticketIdMatch) params.ticketID = parseInt(ticketIdMatch[1]);
+      return {
+        suggestedTool: 'autotask_search_company_todos',
+        suggestedParams: params,
+        description: 'Search Company To-Dos (CRM calendar follow-ups)',
+        requiredParams: [],
+      };
+    }
+
     // Time tracking (check BEFORE tickets — "log hours on ticket" should route here, not to tickets)
     if (/\b(?:hours?|hrs?)\b/.test(intent) && /\b(?:log|enter|add|record|track|create)\b/.test(intent)) {
       const params: Record<string, any> = {};
@@ -977,6 +1008,34 @@ export class AutotaskToolHandler {
       ['autotask_delete_service_call_ticket_resource', async (a) => {
         await s.deleteServiceCallTicketResource(a.serviceCallTicketResourceId);
         return { result: a.serviceCallTicketResourceId, message: `Successfully removed resource from service call ticket` };
+      }],
+
+      // Company To-Dos (CRM calendar follow-ups)
+      ['autotask_get_company_todo', async (a) => {
+        const r = await s.getCompanyToDo(a.id);
+        if (!r) return { result: null, message: `No Company To-Do found with ID ${a.id}` };
+        return { result: r, message: 'Company To-Do retrieved successfully' };
+      }],
+      ['autotask_search_company_todos', async (a) => {
+        const r = await s.searchCompanyToDos(a);
+        return { result: r, message: `Found ${r.length} Company To-Do(s)` };
+      }],
+      ['autotask_create_company_todo', async (a) => {
+        const id = await s.createCompanyToDo(a);
+        return { result: id, message: `Successfully created Company To-Do with ID: ${id}` };
+      }],
+      ['autotask_update_company_todo', async (a) => {
+        const { id, companyID, ...updates } = a;
+        await s.updateCompanyToDo(id, updates, companyID);
+        return { result: id, message: `Successfully updated Company To-Do ${id}` };
+      }],
+      ['autotask_complete_company_todo', async (a) => {
+        const completedDate = await s.completeCompanyToDo(a.id, a.companyID);
+        return { result: { id: a.id, completedDate }, message: `Company To-Do ${a.id} marked complete (completedDate ${completedDate})` };
+      }],
+      ['autotask_delete_company_todo', async (a) => {
+        await s.deleteCompanyToDo(a.id, a.companyID);
+        return { result: a.id, message: `Successfully deleted Company To-Do ${a.id}` };
       }],
 
 

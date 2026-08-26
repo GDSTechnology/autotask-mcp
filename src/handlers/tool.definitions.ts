@@ -1834,6 +1834,32 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['title', 'companyId', 'ownerResourceId', 'status', 'stage', 'projectedCloseDate', 'startDate']
     }
   },
+  {
+    name: 'autotask_update_opportunity',
+    description:
+      'Update a sales opportunity. Uses the Autotask collection PATCH convention ' +
+      '(the item route does not work in the GDS zone). To close an opportunity, ' +
+      'set status (e.g. 2=Lost, 3=Closed) — confirm with the user first for an ' +
+      'ambiguous request, then read it back with autotask_get_opportunity.',
+    annotations: { title: 'Update opportunity', readOnlyHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        opportunityId: { type: 'number', description: 'Opportunity ID to update' },
+        title: { type: 'string', description: 'Opportunity name/title' },
+        status: { type: 'number', description: 'Status: 0=Not Ready To Buy, 1=Active, 2=Lost, 3=Closed, 4=Implemented' },
+        stage: { type: 'number', description: 'Stage picklist value ID' },
+        projectedCloseDate: { type: 'string', description: 'Projected close date (YYYY-MM-DD)' },
+        startDate: { type: 'string', description: 'Start date (YYYY-MM-DD)' },
+        amount: { type: 'number', description: 'Revenue amount' },
+        cost: { type: 'number', description: 'Cost amount' },
+        probability: { type: 'number', description: 'Win probability percentage (0-100)' },
+        contactId: { type: 'number', description: 'Contact ID' },
+        description: { type: 'string', description: 'Opportunity description' }
+      },
+      required: ['opportunityId']
+    }
+  },
 
   // Product tools
   {
@@ -3339,7 +3365,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

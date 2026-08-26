@@ -1363,6 +1363,15 @@ export class AutotaskToolHandler {
         const id = await s.createOpportunity({ title: a.title, companyID: a.companyId, ownerResourceID: a.ownerResourceId, status: a.status, stage: a.stage, projectedCloseDate: a.projectedCloseDate, startDate: a.startDate, probability: a.probability ?? 50, amount: a.amount ?? 0, cost: a.cost ?? 0, useQuoteTotals: a.useQuoteTotals ?? true, totalAmountMonths: a.totalAmountMonths, contactID: a.contactId, description: a.description, opportunityCategoryID: a.opportunityCategoryID });
         return { result: id, message: `Successfully created opportunity with ID: ${id}` };
       }],
+      ['autotask_update_opportunity', async (a) => {
+        const updates: Record<string, any> = {};
+        for (const f of ['title', 'status', 'stage', 'projectedCloseDate', 'startDate', 'amount', 'cost', 'probability', 'description'] as const) {
+          if (a[f] !== undefined) updates[f] = a[f];
+        }
+        if (a.contactId !== undefined) updates.contactID = a.contactId;
+        await s.updateOpportunity(a.opportunityId, updates);
+        return { result: a.opportunityId, message: `Successfully updated opportunity ${a.opportunityId}` };
+      }],
 
       // Products
       ['autotask_get_product', async (a) => {

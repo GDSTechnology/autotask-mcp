@@ -15,6 +15,8 @@ import {
 } from '../utils/reference.resolver';
 import { checkProtectedCompanyMutation, isUnsafeCompanyName } from '../utils/company-guard';
 import { resolveActionType } from '../utils/company-todo';
+import { buildContactSearchFilter, normalizeContactNote } from '../utils/contact';
+import { resolveCompanyOwnerResourceID } from '../utils/company-owner';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -245,9 +247,12 @@ export class AutotaskService {
     if (!nameCheck.safe) {
       throw new Error(`Refusing to create company: ${nameCheck.reason}. Route to manual review.`);
     }
+    // Owner is required by Autotask (§6.1) — resolve it explicitly (supplied
+    // value or AUTOTASK_DEFAULT_OWNER_RESOURCE_ID), never silently omit or pick.
+    const ownerResourceID = resolveCompanyOwnerResourceID(company);
     try {
       this.logger.debug('Creating company:', company);
-      const id = await http.create('Companies', company);
+      const id = await http.create('Companies', { ...company, ownerResourceID });
       this.logger.info(`Company created with ID: ${id}`);
       return id;
     } catch (error) {
@@ -297,14 +302,9 @@ export class AutotaskService {
 
       const filters: QueryFilter[] = [];
       if (options.searchTerm) {
-        filters.push({
-          op: 'or',
-          items: [
-            { op: 'contains', field: 'firstName', value: options.searchTerm },
-            { op: 'contains', field: 'lastName', value: options.searchTerm },
-            { op: 'contains', field: 'emailAddress', value: options.searchTerm }
-          ]
-        });
+        // Combined first/last + exact-email search (§6.3) — a full name like
+        // "Joan Eberly" now resolves instead of being applied whole to each field.
+        filters.push(buildContactSearchFilter(options.searchTerm));
       }
       if (options.companyID !== undefined) {
         filters.push({ op: 'eq', field: 'companyID', value: options.companyID });
@@ -342,9 +342,15 @@ export class AutotaskService {
         'Companies/{companyID}/Contacts child route).'
       );
     }
+    // Enforce the 50-char contact note limit (§6.2); `truncateNote` is an
+    // MCP-only opt-in, not an Autotask field, so strip it from the payload.
+    const { truncateNote, ...rest } = contact as Record<string, any>;
+    const note = normalizeContactNote(rest.note, { truncate: truncateNote === true });
+    const payload: Record<string, any> = { ...rest };
+    if (note !== undefined) payload.note = note; else delete payload.note;
     try {
-      this.logger.debug('Creating contact:', contact);
-      const id = await http.childCreate('Companies', companyID, 'Contacts', contact);
+      this.logger.debug('Creating contact:', payload);
+      const id = await http.childCreate('Companies', companyID, 'Contacts', payload);
       this.logger.info(`Contact created with ID: ${id}`);
       return id;
     } catch (error) {
@@ -355,6 +361,15 @@ export class AutotaskService {
 
   async updateContact(id: number, updates: Partial<AutotaskContact>): Promise<void> {
     const http = await this.ensureClient();
+    // Enforce the 50-char contact note limit (§6.2). `truncateNote` is MCP-only.
+    const upd = updates as Record<string, any>;
+    if (upd.truncateNote !== undefined) {
+      const truncate = upd.truncateNote === true;
+      delete upd.truncateNote;
+      if (upd.note !== undefined) upd.note = normalizeContactNote(upd.note, { truncate });
+    } else if (upd.note !== undefined) {
+      upd.note = normalizeContactNote(upd.note);
+    }
     try {
       this.logger.debug(`Updating contact ${id}:`, updates);
       try {
@@ -2044,6 +2059,25 @@ export class AutotaskService {
       return id;
     } catch (error) {
       this.logger.error('Failed to create opportunity:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an opportunity (brief §4.7). Uses the HTTP client's collection PATCH
+   * convention (PATCH /Opportunities with id in the body) — the item route
+   * /Opportunities/{id} did not work in the GDS zone. http.update() already
+   * PATCHes the collection, so this simply routes through it and preserves any
+   * status/closed-date fields the caller supplies.
+   */
+  async updateOpportunity(id: number, updates: Record<string, any>): Promise<void> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Updating opportunity ${id}:`, updates);
+      await http.update('Opportunities', id, updates);
+      this.logger.info(`Opportunity ${id} updated`);
+    } catch (error) {
+      this.logger.error(`Failed to update opportunity ${id}:`, error);
       throw error;
     }
   }

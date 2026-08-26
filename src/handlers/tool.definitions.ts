@@ -642,6 +642,18 @@ export const TOOL_DEFINITIONS: McpTool[] = [
             },
             required: ['name', 'value']
           }
+        },
+        dueDateTime: {
+          type: 'string',
+          description: 'Ticket due date/time (ISO 8601). Setting it on create avoids a second update that retriggers workflow rules.'
+        },
+        companyLocationID: {
+          type: 'number',
+          description: 'Company location ID. Must belong to companyID. Use autotask_move_ticket_to_company when changing companies so the location stays compatible.'
+        },
+        configurationItemID: {
+          type: 'number',
+          description: 'Associated configuration item (asset) ID. Must belong to the same company.'
         }
       },
       required: ['companyID', 'title', 'description']
@@ -696,9 +708,38 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         subIssueType: {
           type: 'number',
           description: 'Sub issue type ID (picklist). Must be valid for the selected issueType. Use autotask_get_field_info (entityType "Tickets", fieldName "subIssueType") to discover valid values.'
+        },
+        companyLocationID: {
+          type: 'number',
+          description: 'Company location ID. Must belong to the ticket\'s company. To change companies, use autotask_move_ticket_to_company instead so the location stays compatible.'
+        },
+        configurationItemID: {
+          type: 'number',
+          description: 'Associated configuration item (asset) ID. Must belong to the ticket\'s company.'
         }
       },
       required: ['ticketId']
+    }
+  },
+  {
+    name: 'autotask_move_ticket_to_company',
+    description:
+      'Safely move a ticket to another company. Resolves the target company\'s ' +
+      'primary location and sets companyID + companyLocationID together (changing ' +
+      'companyID alone leaves an incompatible location). Refuses to move a ticket ' +
+      'linked to a configuration item unless force is set (that can break the ' +
+      'RMM-to-Autotask device link), and clears the contact unless a target ' +
+      'contact is supplied. Reads back to verify. Confirm with the user first.',
+    annotations: { title: 'Move ticket to another company', readOnlyHint: false, idempotentHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketId: { type: 'number', description: 'The ticket to move' },
+        companyID: { type: 'number', description: 'Target company ID' },
+        contactID: { type: 'number', description: 'Optional target-company contact; the contact is cleared if omitted' },
+        force: { type: 'boolean', description: 'Override the configuration-item safety block (not recommended)' }
+      },
+      required: ['ticketId', 'companyID']
     }
   },
 
@@ -3327,7 +3368,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

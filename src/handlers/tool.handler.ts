@@ -50,7 +50,12 @@ const TICKET_WRITABLE_FIELDS = [
   'projectID',
   'ticketAdditionalContacts',
   'resolution',
-  'userDefinedFields'
+  'userDefinedFields',
+  // §4.5: complete a ticket in one create call (a 2nd update retriggers
+  // "Created, Edited" workflow rules). companyLocationID pairs with companyID.
+  'dueDateTime',
+  'companyLocationID',
+  'configurationItemID'
 ] as const;
 
 function buildTicketPayload(args: Record<string, any>): Record<string, any> {
@@ -910,6 +915,10 @@ export class AutotaskToolHandler {
         const payload = buildTicketPayload(rest);
         await s.updateTicket(ticketId, payload);
         return { result: ticketId, message: `Successfully updated ticket ${ticketId}` };
+      }],
+      ['autotask_move_ticket_to_company', async (a) => {
+        const r = await s.moveTicketToCompany(a.ticketId, a.companyID, { contactID: a.contactID, force: a.force });
+        return { result: r, message: (r.message as string) ?? `Ticket ${a.ticketId} move result: ${r.status}` };
       }],
       // Ticket Charges
       ['autotask_get_ticket_charge', async (a) => {

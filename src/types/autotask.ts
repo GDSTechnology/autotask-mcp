@@ -458,6 +458,15 @@ export interface AutotaskServiceCallTicketResource {
   [key: string]: any;
 }
 
+export interface AutotaskCompanyLocation {
+  id?: number;
+  companyID?: number;
+  name?: string;
+  isPrimary?: boolean;
+  isActive?: boolean;
+  [key: string]: any;
+}
+
 // CompanyToDos — Autotask calendar/CRM follow-ups. Distinct from ticket
 // checklist items, project tasks, time entries, appointments, and service
 // calls. No `isComplete` field: `completedDate == null` means open.

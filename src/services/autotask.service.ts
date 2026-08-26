@@ -307,9 +307,21 @@ export class AutotaskService {
 
   async createContact(contact: Partial<AutotaskContact>): Promise<number> {
     const http = await this.ensureClient();
+    // Contacts are a child of Companies. The GDS zone rejects root
+    // POST /Contacts (issue #133 / brief §4.2) — creation must go through the
+    // company child route POST /Companies/{companyID}/Contacts. companyID is
+    // therefore mandatory; fail fast with an actionable error rather than
+    // letting Autotask return an opaque 404/400.
+    const companyID = (contact as Record<string, any>).companyID;
+    if (companyID === undefined || companyID === null) {
+      throw new Error(
+        'Cannot create contact: companyID is required (contacts are created via the ' +
+        'Companies/{companyID}/Contacts child route).'
+      );
+    }
     try {
       this.logger.debug('Creating contact:', contact);
-      const id = await http.create('Contacts', contact);
+      const id = await http.childCreate('Companies', companyID, 'Contacts', contact);
       this.logger.info(`Contact created with ID: ${id}`);
       return id;
     } catch (error) {
@@ -2436,9 +2448,19 @@ export class AutotaskService {
 
   async createServiceCallTicket(data: Partial<AutotaskServiceCallTicket>): Promise<number> {
     const http = await this.ensureClient();
+    // Root POST /ServiceCallTickets does not exist (brief §4.3). The link must
+    // be created under the parent service call:
+    // POST /ServiceCalls/{serviceCallID}/Tickets.
+    const serviceCallID = (data as Record<string, any>).serviceCallID;
+    if (serviceCallID === undefined || serviceCallID === null) {
+      throw new Error(
+        'Cannot link ticket to service call: serviceCallID is required (created via the ' +
+        'ServiceCalls/{serviceCallID}/Tickets child route).'
+      );
+    }
     try {
       this.logger.debug('Creating service call ticket:', data);
-      const id = await http.create('ServiceCallTickets', data);
+      const id = await http.childCreate('ServiceCalls', serviceCallID, 'Tickets', data);
       this.logger.info(`Service call ticket created with ID: ${id}`);
       return id;
     } catch (error) {
@@ -2488,9 +2510,19 @@ export class AutotaskService {
 
   async createServiceCallTicketResource(data: Partial<AutotaskServiceCallTicketResource>): Promise<number> {
     const http = await this.ensureClient();
+    // Root POST /ServiceCallTicketResources does not exist (brief §4.3). The
+    // resource assignment must be created under the parent service-call ticket:
+    // POST /ServiceCallTickets/{serviceCallTicketID}/Resources.
+    const serviceCallTicketID = (data as Record<string, any>).serviceCallTicketID;
+    if (serviceCallTicketID === undefined || serviceCallTicketID === null) {
+      throw new Error(
+        'Cannot assign resource to service call ticket: serviceCallTicketID is required ' +
+        '(created via the ServiceCallTickets/{serviceCallTicketID}/Resources child route).'
+      );
+    }
     try {
       this.logger.debug('Creating service call ticket resource:', data);
-      const id = await http.create('ServiceCallTicketResources', data);
+      const id = await http.childCreate('ServiceCallTickets', serviceCallTicketID, 'Resources', data);
       this.logger.info(`Service call ticket resource created with ID: ${id}`);
       return id;
     } catch (error) {

@@ -31,6 +31,11 @@ const TICKET_WRITABLE_FIELDS = [
   'status',
   'priority',
   'assignedResourceID',
+  // Autotask requires the primary resource and its role together — omitting
+  // assignedResourceRoleID from this allowlist silently dropped the role from
+  // the typed payload, so assignment updates failed while a raw PATCH carrying
+  // both fields succeeded (brief §4.4).
+  'assignedResourceRoleID',
   'contactID',
   'queueID',
   'ticketCategory',

@@ -9,6 +9,7 @@ import { Logger } from '../utils/logger.js';
 import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '../utils/response.formatter.js';
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
+import { normalizeCreateToolResult } from '../utils/create-result.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
 
@@ -1537,14 +1538,19 @@ export class AutotaskToolHandler {
       const handler = this.getDispatchTable().get(name);
       if (!handler) throw new Error(`Unknown tool: ${name}`);
 
-      const { result, message } = await handler(args);
+      const { result: rawResult, message } = await handler(args);
 
       // Check for empty/not-found results and return explicit error to prevent hallucination
-      const notFoundMsg = this.buildNotFoundMessage(name, args, result);
+      const notFoundMsg = this.buildNotFoundMessage(name, args, rawResult);
       if (notFoundMsg) {
         this.logger.debug(`Not-found result for ${name}: ${notFoundMsg}`);
         return errorToolResult({ error: notFoundMsg, tool: name });
       }
+
+      // Normalize create-tool ids into the { id, entityType, parentType?,
+      // parentId? } contract (§5/§7.1) — one shape for every create, so callers
+      // never special-case itemId vs item. Non-create results pass through.
+      const result = normalizeCreateToolResult(name, args, rawResult);
 
       // Format and enhance response
       let responseText: string;

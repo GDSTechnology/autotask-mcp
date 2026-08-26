@@ -72,6 +72,7 @@ export const CREATE_TOOL_META: Record<string, CreateToolMeta> = {
   autotask_create_quote: { entityType: 'Quotes' },
   autotask_create_opportunity: { entityType: 'Opportunities' },
   autotask_create_quote_item: { entityType: 'QuoteItems', parentType: 'Quotes', parentIdArgs: ['quoteId', 'quoteID'] },
+  autotask_create_company_todo: { entityType: 'CompanyToDos', parentType: 'Companies', parentIdArgs: ['companyID', 'companyId'] },
 };
 
 /**

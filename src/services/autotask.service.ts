@@ -9,6 +9,12 @@
 import { resolveAutotaskApiUrl } from '../utils/config';
 import { AutotaskHttpClient, QueryFilter } from './autotask-http';
 import {
+  classifyReferenceMatches,
+  ReferenceCandidate,
+  RecordReferenceResult,
+} from '../utils/reference.resolver';
+import { checkProtectedCompanyMutation, isUnsafeCompanyName } from '../utils/company-guard';
+import {
   AutotaskCompany,
   AutotaskContact,
   AutotaskTicket,
@@ -229,6 +235,14 @@ export class AutotaskService {
 
   async createCompany(company: Partial<AutotaskCompany>): Promise<number> {
     const http = await this.ensureClient();
+    // Hard gate (brief §7.31): refuse to create a company from a value that
+    // cannot plausibly be a company name (bare webmail provider, greeting, CTA
+    // text, sentence-like prose). Stops a bad parse from spawning junk
+    // companies regardless of caller; the richer classification stays in n8n.
+    const nameCheck = isUnsafeCompanyName((company as Record<string, unknown>).companyName);
+    if (!nameCheck.safe) {
+      throw new Error(`Refusing to create company: ${nameCheck.reason}. Route to manual review.`);
+    }
     try {
       this.logger.debug('Creating company:', company);
       const id = await http.create('Companies', company);
@@ -242,6 +256,13 @@ export class AutotaskService {
 
   async updateCompany(id: number, updates: Partial<AutotaskCompany>): Promise<void> {
     const http = await this.ensureClient();
+    // Hard gate (brief §7.31): never rename, reclassify, or deactivate a
+    // protected internal account (company 0 always, plus any configured in
+    // AUTOTASK_PROTECTED_COMPANY_IDS). Benign updates are still allowed.
+    const guard = checkProtectedCompanyMutation(id, updates as Record<string, unknown>);
+    if (guard.blocked) {
+      throw new Error(guard.reason);
+    }
     try {
       this.logger.debug(`Updating company ${id}:`, updates);
       await http.update('Companies', id, updates as Record<string, any>);
@@ -1282,6 +1303,58 @@ export class AutotaskService {
           : task.description)
       : '';
     return { ...task, description: optimizedDescription, userDefinedFields: [] };
+  }
+
+  /**
+   * Resolve a canonical `T…` display reference (e.g. "T20260825.0006") to a
+   * single Ticket or Task (brief §7.30). Both entity types share the same
+   * reference form, so we query BOTH by their exact display number and only
+   * report a match when exactly one record is found — the prefix is never used
+   * to guess the type. Read-only; ambiguity and misses are returned as
+   * structured results, not thrown.
+   */
+  async resolveRecordReference(reference: string): Promise<RecordReferenceResult> {
+    const ref = (reference ?? '').trim();
+    if (!ref) return { status: 'not-found', reference: ref };
+
+    const http = await this.ensureClient();
+    // Direct queries (no status filter) so completed tickets/tasks still
+    // resolve. Small cap: a display number should be unique per entity, and >1
+    // hit in either set is itself an ambiguity signal worth surfacing.
+    const [tickets, tasks] = await Promise.all([
+      http.query<AutotaskTicket>(
+        'Tickets',
+        [{ op: 'eq', field: 'ticketNumber', value: ref }],
+        { maxRecords: 5, includeFields: ['id', 'ticketNumber', 'title'] }
+      ),
+      http.query<AutotaskTask>(
+        'Tasks',
+        [{ op: 'eq', field: 'taskNumber', value: ref }],
+        { maxRecords: 5, includeFields: ['id', 'taskNumber', 'title'] }
+      ),
+    ]);
+
+    const candidates: ReferenceCandidate[] = [];
+    for (const t of tickets) {
+      if (t.id == null) continue;
+      candidates.push({
+        entityType: 'ticket',
+        id: t.id,
+        reference: typeof t.ticketNumber === 'string' ? t.ticketNumber : ref,
+        ...(t.title !== undefined ? { title: t.title } : {}),
+      });
+    }
+    for (const t of tasks) {
+      if (t.id == null) continue;
+      candidates.push({
+        entityType: 'task',
+        id: t.id,
+        reference: typeof t.taskNumber === 'string' ? t.taskNumber : ref,
+        ...(t.title !== undefined ? { title: t.title } : {}),
+      });
+    }
+
+    return classifyReferenceMatches(ref, candidates);
   }
 
   async createTask(task: Partial<AutotaskTask>): Promise<number> {

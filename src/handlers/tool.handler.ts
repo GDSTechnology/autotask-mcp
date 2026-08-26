@@ -909,6 +909,18 @@ export class AutotaskToolHandler {
         return { result: r, message: `Found ${r.length} ticket history entries for ticket ${a.ticketId}` };
       }],
 
+      // Canonical record-reference resolver (read-only, tickets + tasks)
+      ['autotask_resolve_record_reference', async (a) => {
+        const r = await s.resolveRecordReference(a.reference);
+        const message =
+          r.status === 'matched'
+            ? `Resolved ${r.reference} to ${r.entityType} ${r.id}${r.title ? ` — ${r.title}` : ''}`
+            : r.status === 'ambiguous'
+              ? `Reference ${r.reference} is ambiguous (${r.candidates?.length ?? 0} matches); no record selected`
+              : `No ticket or task found for reference ${r.reference}`;
+        return { result: r, message };
+      }],
+
       // Service Calls
       ['autotask_get_service_call', async (a) => {
         const r = await s.getServiceCall(a.serviceCallId);

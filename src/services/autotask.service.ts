@@ -44,6 +44,7 @@ import {
   AutotaskServiceEntity,
   AutotaskServiceBundle,
   AutotaskCompanyToDo,
+  AutotaskCompanyLocation,
   AutotaskBillingCode,
   AutotaskDepartment,
   AutotaskQueryOptionsExtended,
@@ -568,6 +569,88 @@ export class AutotaskService {
     }
   }
 
+  /** The active locations for a company; the primary is preferred by callers. */
+  async searchCompanyLocations(companyID: number): Promise<AutotaskCompanyLocation[]> {
+    const http = await this.ensureClient();
+    return http.query<AutotaskCompanyLocation>(
+      'CompanyLocations',
+      [
+        { op: 'eq', field: 'companyID', value: companyID },
+        { op: 'eq', field: 'isActive', value: true },
+      ],
+      { maxRecords: 200 }
+    );
+  }
+
+  /** Resolve a company's primary active location (falls back to the first active). */
+  async resolvePrimaryCompanyLocation(companyID: number): Promise<AutotaskCompanyLocation | null> {
+    const locations = await this.searchCompanyLocations(companyID);
+    if (locations.length === 0) return null;
+    return locations.find((l) => l.isPrimary === true) ?? locations[0];
+  }
+
+  /**
+   * Move a ticket to another company safely (brief §4.6). Changing companyID
+   * alone leaves an incompatible companyLocationID, so this resolves the target
+   * company's primary location and sets both together. It refuses to move a
+   * ticket linked to a configuration item (§7.12 — that can break the
+   * RMM-to-Autotask device relationship) unless force is set, and clears the
+   * contact unless a target contact is supplied. Reads back to verify.
+   */
+  async moveTicketToCompany(
+    ticketId: number,
+    targetCompanyID: number,
+    opts: { contactID?: number | undefined; force?: boolean | undefined } = {}
+  ): Promise<Record<string, unknown>> {
+    const ticket = await this.getTicket(ticketId, true);
+    if (!ticket) throw new Error(`Ticket ${ticketId} not found.`);
+
+    const currentCI = (ticket as Record<string, any>).configurationItemID;
+    if (currentCI != null && opts.force !== true) {
+      return {
+        status: 'blocked',
+        reason: 'configuration-item-linked',
+        ticketId,
+        configurationItemID: currentCI,
+        message:
+          `Ticket ${ticketId} is linked to configuration item ${currentCI}; moving companies ` +
+          `could break the RMM-to-Autotask device relationship. Not moved. Detach the CI first, ` +
+          `or pass force:true to override (not recommended).`,
+      };
+    }
+
+    const location = await this.resolvePrimaryCompanyLocation(targetCompanyID);
+    if (!location || location.id == null) {
+      throw new Error(
+        `Target company ${targetCompanyID} has no active location; cannot move ticket ${ticketId} ` +
+        `safely (companyLocationID would be incompatible).`
+      );
+    }
+
+    const updates: Record<string, any> = {
+      companyID: targetCompanyID,
+      companyLocationID: location.id,
+    };
+    // Clear the contact unless a target-company contact is supplied — a contact
+    // from the old company is invalid on the new one (§7.6).
+    updates.contactID = opts.contactID != null ? opts.contactID : null;
+
+    await this.updateTicket(ticketId, updates);
+
+    const after = (await this.getTicket(ticketId, true)) as Record<string, any> | null;
+    const verified =
+      after != null && after.companyID === targetCompanyID && after.companyLocationID === location.id;
+
+    return {
+      status: verified ? 'updated' : 'failed-verification',
+      ticketId,
+      companyID: after?.companyID,
+      companyLocationID: after?.companyLocationID,
+      contactID: after?.contactID,
+      verified,
+    };
+  }
+
   // =====================================================
   // Ticket Charges (child of Tickets for create/delete)
   // =====================================================
@@ -733,6 +816,34 @@ export class AutotaskService {
       return await http.query<AutotaskTimeEntry>('TimeEntries', filter, { maxRecords: pageSize });
     } catch (error) {
       this.logger.error('Failed to get time entries:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a single time entry (§4.8). The returned record distinguishes actual
+   * worked time (`hoursWorked`) from Autotask's billing-rounded time
+   * (`hoursToBill`), so callers can read both after a create.
+   */
+  async getTimeEntry(id: number): Promise<AutotaskTimeEntry | null> {
+    const http = await this.ensureClient();
+    try {
+      return await http.get<AutotaskTimeEntry>('TimeEntries', id);
+    } catch (error) {
+      this.logger.error(`Failed to get time entry ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /** Update a time entry (§4.8) via the collection PATCH convention. */
+  async updateTimeEntry(id: number, updates: Partial<AutotaskTimeEntry>): Promise<void> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Updating time entry ${id}:`, updates);
+      await http.update('TimeEntries', id, updates as Record<string, any>);
+      this.logger.info(`Time entry ${id} updated`);
+    } catch (error) {
+      this.logger.error(`Failed to update time entry ${id}:`, error);
       throw error;
     }
   }

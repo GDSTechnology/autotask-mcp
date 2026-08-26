@@ -17,18 +17,19 @@ If you run an MSP on Autotask and you're tired of the context-switching tax, thi
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@wyre-technology/autotask-mcp/badge" alt="Autotask MCP server" />
 </a>
 
-## One-Click Deployment
+## Deployment
 
-[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/wyre-technology/autotask-mcp/tree/main)
+GDS runs this as a docker-compose service on **MA-BOS-S-KVM1**, built locally from
+this repository. See **[DEPLOY.md](DEPLOY.md)** for the build → deploy → verify →
+rollback runbook, and `scripts/build-image.sh` for a traceable image build.
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/wyre-technology/autotask-mcp)
-
-> **Note — no GitHub Packages token required.** Unlike most WYRE MCP servers,
-> `autotask-mcp` does **not** depend on a private `@wyre-technology/*` package on
-> GitHub Packages. Its only WYRE dependency is the `autotask-node` SDK, declared
-> as a git dependency on the **public** `wyre-technology/autotask-node` repo, which
-> `npm install` resolves anonymously. The DigitalOcean one-click deploy therefore
-> works without any `NODE_AUTH_TOKEN`/`GITHUB_TOKEN` build variable.
+> **Note — no GitHub Packages token required.** `autotask-mcp` does **not** depend
+> on any private `@wyre-technology/*` package. Its only SDK dependency,
+> `autotask-node`, is a git dependency on the **public**
+> [`GDSTechnology/autotask-node`](https://github.com/GDSTechnology/autotask-node)
+> fork, which `npm ci` / `npm install` resolve anonymously — so image builds and the
+> deploy need no `NODE_AUTH_TOKEN` / `GITHUB_TOKEN`. (CI validates the token-free
+> Docker build on every change.)
 
 ## Quick Start
 

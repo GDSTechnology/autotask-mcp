@@ -14,6 +14,7 @@ import {
   RecordReferenceResult,
 } from '../utils/reference.resolver';
 import { checkProtectedCompanyMutation, isUnsafeCompanyName } from '../utils/company-guard';
+import { resolveActionType } from '../utils/company-todo';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -40,6 +41,7 @@ import {
   AutotaskProduct,
   AutotaskServiceEntity,
   AutotaskServiceBundle,
+  AutotaskCompanyToDo,
   AutotaskBillingCode,
   AutotaskDepartment,
   AutotaskQueryOptionsExtended,
@@ -2612,6 +2614,166 @@ export class AutotaskService {
       this.logger.info(`Service call ticket resource ${id} deleted`);
     } catch (error) {
       this.logger.error(`Failed to delete service call ticket resource ${id}:`, error);
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // Company To-Dos (CRM calendar follow-ups) — brief §4.1
+  // Writes go through the company child route; root CompanyToDos rejects
+  // create/update in the GDS zone. completedDate == null means open.
+  // =====================================================
+
+  /** Fetch the CompanyToDos.actionType picklist ([{value,label}]) from live metadata. */
+  private async getCompanyToDoActionTypes(): Promise<Array<{ value: string | number; label: string }>> {
+    const http = await this.ensureClient();
+    return http.picklistValues('CompanyToDos', 'actionType');
+  }
+
+  async getCompanyToDo(id: number): Promise<AutotaskCompanyToDo | null> {
+    const http = await this.ensureClient();
+    try {
+      return await http.get<AutotaskCompanyToDo>('CompanyToDos', id);
+    } catch (error) {
+      this.logger.error(`Failed to get Company To-Do ${id}:`, error);
+      throw error;
+    }
+  }
+
+  async searchCompanyToDos(
+    options: AutotaskQueryOptionsExtended & {
+      companyID?: number;
+      assignedToResourceID?: number;
+      ticketID?: number;
+      contactID?: number;
+      opportunityID?: number;
+      contractID?: number;
+      openOnly?: boolean;
+    } = {}
+  ): Promise<AutotaskCompanyToDo[]> {
+    const http = await this.ensureClient();
+    try {
+      const filters: QueryFilter[] = [];
+      pushEq(filters, 'companyID', options.companyID);
+      pushEq(filters, 'assignedToResourceID', options.assignedToResourceID);
+      pushEq(filters, 'ticketID', options.ticketID);
+      pushEq(filters, 'contactID', options.contactID);
+      pushEq(filters, 'opportunityID', options.opportunityID);
+      pushEq(filters, 'contractID', options.contractID);
+      // Open == not yet completed. Autotask has no isComplete field on this
+      // entity, so "open" is completedDate IS NULL.
+      if (options.openOnly === true) {
+        filters.push({ op: 'eq', field: 'completedDate', value: null });
+      }
+      const pageSize = Math.min(options.pageSize || 25, 200);
+      const items = await http.query<AutotaskCompanyToDo>(
+        'CompanyToDos',
+        filters.length > 0 ? filters : MATCH_ALL,
+        { maxRecords: pageSize }
+      );
+      this.logger.info(`Retrieved ${items.length} Company To-Dos`);
+      return items;
+    } catch (error) {
+      this.logger.error('Failed to search Company To-Dos:', error);
+      throw error;
+    }
+  }
+
+  async createCompanyToDo(
+    todo: Partial<AutotaskCompanyToDo> & { actionTypeName?: string }
+  ): Promise<number> {
+    const http = await this.ensureClient();
+    const companyID = todo.companyID;
+    if (companyID == null) throw new Error('companyID is required to create a Company To-Do.');
+    if (todo.assignedToResourceID == null) throw new Error('assignedToResourceID is required to create a Company To-Do.');
+    if (!todo.startDateTime || !todo.endDateTime) {
+      throw new Error('startDateTime and endDateTime are required to create a Company To-Do.');
+    }
+
+    // Resolve actionType: use a numeric actionType as-is, otherwise resolve the
+    // name (or the documented General default) from live picklist metadata.
+    let actionType = todo.actionType;
+    if (actionType == null || todo.actionTypeName) {
+      const picklist = await this.getCompanyToDoActionTypes();
+      actionType = resolveActionType(
+        { actionType: todo.actionType, actionTypeName: todo.actionTypeName },
+        picklist
+      );
+    }
+
+    const { actionTypeName: _drop, ...rest } = todo;
+    const payload = { ...rest, actionType };
+    try {
+      const id = await http.childCreate('Companies', companyID, 'ToDos', payload);
+      this.logger.info(`Company To-Do created with ID: ${id}`);
+      return id;
+    } catch (error) {
+      this.logger.error('Failed to create Company To-Do:', error);
+      throw error;
+    }
+  }
+
+  /** Resolve the parent companyID for a To-Do write, reading the record if needed. */
+  private async resolveTodoCompanyID(id: number, companyID?: number): Promise<number> {
+    if (companyID != null) return companyID;
+    const existing = await this.getCompanyToDo(id);
+    const cid = existing?.companyID;
+    if (cid == null) {
+      throw new Error(
+        `Company To-Do ${id}: unable to resolve parent companyID for the ` +
+        `Companies/{companyID}/ToDos child route (does the To-Do still exist?).`
+      );
+    }
+    return cid;
+  }
+
+  async updateCompanyToDo(
+    id: number,
+    updates: Partial<AutotaskCompanyToDo> & { actionTypeName?: string },
+    companyID?: number
+  ): Promise<void> {
+    const http = await this.ensureClient();
+    const cid = await this.resolveTodoCompanyID(id, companyID ?? updates.companyID);
+    const { actionTypeName, ...rest } = updates;
+    const body: Record<string, any> = { ...rest };
+    if (actionTypeName) {
+      const picklist = await this.getCompanyToDoActionTypes();
+      body.actionType = resolveActionType({ actionType: updates.actionType, actionTypeName }, picklist);
+    }
+    try {
+      await http.childUpdate('Companies', cid, 'ToDos', id, body);
+      this.logger.info(`Company To-Do ${id} updated`);
+    } catch (error) {
+      this.logger.error(`Failed to update Company To-Do ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /** Complete a To-Do by setting completedDate (there is no isComplete field). */
+  async completeCompanyToDo(id: number, companyID?: number): Promise<string> {
+    const http = await this.ensureClient();
+    const cid = await this.resolveTodoCompanyID(id, companyID);
+    const completedDate = new Date().toISOString();
+    try {
+      await http.childUpdate('Companies', cid, 'ToDos', id, { completedDate });
+      this.logger.info(`Company To-Do ${id} completed at ${completedDate}`);
+      return completedDate;
+    } catch (error) {
+      this.logger.error(`Failed to complete Company To-Do ${id}:`, error);
+      throw error;
+    }
+  }
+
+  async deleteCompanyToDo(id: number, companyID?: number): Promise<void> {
+    const http = await this.ensureClient();
+    const cid = await this.resolveTodoCompanyID(id, companyID);
+    try {
+      // NEEDS VERIFICATION: delete via the company child route for consistency
+      // with create/update (root CompanyToDos rejects writes in the GDS zone).
+      await http.childDelete('Companies', cid, 'ToDos', id);
+      this.logger.info(`Company To-Do ${id} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete Company To-Do ${id}:`, error);
       throw error;
     }
   }

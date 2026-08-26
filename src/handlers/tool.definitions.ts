@@ -3044,6 +3044,133 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
 
+  // Company To-Dos (CRM calendar follow-ups) — brief §4.1
+  {
+    name: 'autotask_get_company_todo',
+    description:
+      'READ-ONLY. Get a Company To-Do (CRM calendar follow-up) by ID. A Company ' +
+      'To-Do is NOT a ticket checklist item, project task, time entry, ' +
+      'appointment, or service call. `completedDate == null` means it is still open.',
+    annotations: { title: 'Get Company To-Do', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'The CompanyToDo ID' } },
+      required: ['id']
+    }
+  },
+  {
+    name: 'autotask_search_company_todos',
+    description:
+      'READ-ONLY. Search Company To-Dos (CRM calendar follow-ups). Set openOnly ' +
+      'to return only incomplete To-Dos (completedDate is null).',
+    annotations: { title: 'Search Company To-Dos', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Filter by company' },
+        assignedToResourceID: { type: 'number', description: 'Filter by assigned resource' },
+        ticketID: { type: 'number', description: 'Filter by associated ticket' },
+        contactID: { type: 'number', description: 'Filter by associated contact' },
+        opportunityID: { type: 'number', description: 'Filter by associated opportunity' },
+        contractID: { type: 'number', description: 'Filter by associated contract' },
+        openOnly: { type: 'boolean', description: 'When true, return only To-Dos with no completedDate (open)' },
+        pageSize: { type: 'number', description: 'Results per page (default 25, max 200)', minimum: 1, maximum: 200 }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_create_company_todo',
+    description:
+      'Create a Company To-Do (CRM calendar follow-up) via the company child ' +
+      'route. Provide exactly one of actionType (numeric) or actionTypeName ' +
+      '(e.g. "Sales", "Phone Call", "Meeting", resolved case-insensitively from ' +
+      'live metadata); if neither is given it defaults to General. All ' +
+      'associated contact/contract/opportunity/ticket records must belong to the ' +
+      'same company.',
+    annotations: { title: 'Create Company To-Do', readOnlyHint: false, idempotentHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Owning company (required)' },
+        assignedToResourceID: { type: 'number', description: 'Resource the To-Do is assigned to (required)' },
+        actionType: { type: 'number', description: 'Numeric action type ID. Provide this OR actionTypeName, not both.' },
+        actionTypeName: { type: 'string', description: 'Action type label resolved from metadata (e.g. "Sales"). Provide this OR actionType.' },
+        activityDescription: { type: 'string', description: 'Free-text description' },
+        startDateTime: { type: 'string', description: 'Start (ISO 8601, required)' },
+        endDateTime: { type: 'string', description: 'End (ISO 8601, required)' },
+        contactID: { type: 'number', description: 'Associated contact (same company)' },
+        contractID: { type: 'number', description: 'Associated contract (same company)' },
+        opportunityID: { type: 'number', description: 'Associated opportunity (same company)' },
+        ticketID: { type: 'number', description: 'Associated ticket (same company)' }
+      },
+      required: ['companyID', 'assignedToResourceID', 'startDateTime', 'endDateTime']
+    }
+  },
+  {
+    name: 'autotask_update_company_todo',
+    description:
+      'Update a Company To-Do via the company child route. companyID is resolved ' +
+      'from the record if not supplied. Use actionTypeName to change the action ' +
+      'type by label. To mark a To-Do complete, prefer autotask_complete_company_todo.',
+    annotations: { title: 'Update Company To-Do', readOnlyHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'The CompanyToDo ID (required)' },
+        companyID: { type: 'number', description: 'Owning company (optional; resolved from the record if omitted)' },
+        actionType: { type: 'number', description: 'Numeric action type ID' },
+        actionTypeName: { type: 'string', description: 'Action type label resolved from metadata' },
+        activityDescription: { type: 'string', description: 'Free-text description' },
+        startDateTime: { type: 'string', description: 'Start (ISO 8601)' },
+        endDateTime: { type: 'string', description: 'End (ISO 8601)' },
+        contactID: { type: 'number', description: 'Associated contact' },
+        contractID: { type: 'number', description: 'Associated contract' },
+        opportunityID: { type: 'number', description: 'Associated opportunity' },
+        ticketID: { type: 'number', description: 'Associated ticket' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'autotask_complete_company_todo',
+    description:
+      'Complete a Company To-Do by setting its completedDate to now (there is no ' +
+      'isComplete field). companyID is resolved from the record if not supplied. ' +
+      'After this, open-only searches exclude the To-Do.',
+    annotations: { title: 'Complete Company To-Do', readOnlyHint: false, idempotentHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'The CompanyToDo ID (required)' },
+        companyID: { type: 'number', description: 'Owning company (optional; resolved from the record if omitted)' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'autotask_delete_company_todo',
+    description:
+      '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently deletes a Company To-Do. This ' +
+      'cannot be undone. Confirm with the user before invoking. companyID is ' +
+      'resolved from the record if not supplied.',
+    annotations: {
+      title: 'Delete Company To-Do (irreversible)',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'The CompanyToDo ID to delete (required)' },
+        companyID: { type: 'number', description: 'Owning company (optional; resolved from the record if omitted)' }
+      },
+      required: ['id']
+    }
+  },
+
   // Contracts (write) and ContractServices CRUD
   {
     name: 'autotask_create_contract',
@@ -3233,5 +3360,9 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   service_calls: {
     description: 'Service call dispatching, ticket linking, and resource assignments',
     tools: ['autotask_search_service_calls', 'autotask_get_service_call', 'autotask_create_service_call', 'autotask_update_service_call', 'autotask_delete_service_call', 'autotask_search_service_call_tickets', 'autotask_create_service_call_ticket', 'autotask_delete_service_call_ticket', 'autotask_search_service_call_ticket_resources', 'autotask_create_service_call_ticket_resource', 'autotask_delete_service_call_ticket_resource']
+  },
+  company_todos: {
+    description: 'Company To-Dos — CRM calendar follow-ups (distinct from tasks, checklist items, time entries, appointments, and service calls)',
+    tools: ['autotask_get_company_todo', 'autotask_search_company_todos', 'autotask_create_company_todo', 'autotask_update_company_todo', 'autotask_complete_company_todo', 'autotask_delete_company_todo']
   }
 };

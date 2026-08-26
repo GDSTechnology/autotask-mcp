@@ -2498,6 +2498,35 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
 
+  {
+    name: 'autotask_resolve_record_reference',
+    description:
+      'READ-ONLY. Resolve a canonical Autotask display reference like ' +
+      '"T20260825.0006" to a single Ticket or Task. Tickets and project Tasks ' +
+      'share the same T… form, so this searches BOTH and never infers the type ' +
+      'from the prefix. Returns { status: "matched" | "ambiguous" | "not-found" }: ' +
+      'on "matched" it includes entityType ("ticket"|"task"), id, and title; on ' +
+      '"ambiguous" it lists every candidate and selects nothing. Use it before ' +
+      'building UI links or performing any write keyed off a T… reference.',
+    annotations: {
+      title: 'Resolve canonical record reference',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reference: {
+          type: 'string',
+          description: 'The canonical display reference to resolve, e.g. "T20260825.0006".',
+        },
+      },
+      required: ['reference'],
+    }
+  },
+
   // Billing Items tools (Approve and Post workflow)
   {
     name: 'autotask_search_billing_items',
@@ -3159,7 +3188,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info']
+    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_record_reference']
   },
   companies: {
     description: 'Search, create, and update companies',

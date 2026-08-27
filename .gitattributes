@@ -1,0 +1,4 @@
+# Shell scripts and SQL that run inside Linux containers must keep LF endings,
+# even when checked out on Windows, or the container shell mis-parses them.
+*.sh text eol=lf
+dev-postgres/init/* text eol=lf

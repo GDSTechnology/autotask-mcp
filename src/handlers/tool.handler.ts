@@ -13,6 +13,12 @@ import { normalizeCreateToolResult } from '../utils/create-result.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit } from '../utils/audit.js';
 import {
+  RiskLevel,
+  classifyRisk,
+  requiresExplicitConfirmation,
+  buildConfirmationRequired,
+} from '../utils/risk.js';
+import {
   CallerResolution,
   ResolvedResource,
   parseUserMap,
@@ -121,6 +127,11 @@ export class AutotaskToolHandler {
   // and an in-memory cache of resolutions so a caller is only prompted once.
   private userMap = parseUserMap(process.env.AUTOTASK_USER_MAP);
   private resourceCache = new Map<string, ResolvedResource>();
+  // Per-tool risk level (§4.3), derived once from the tool annotations + the
+  // financial/inventory registries. Drives the confirmation gate in callTool.
+  private toolRisk = new Map<string, RiskLevel>(
+    TOOL_DEFINITIONS.map((d) => [d.name, classifyRisk(d.name, d.annotations)])
+  );
 
   constructor(autotaskService: AutotaskService, logger: Logger, lazyLoading = false) {
     this.autotaskService = autotaskService;
@@ -1723,6 +1734,20 @@ export class AutotaskToolHandler {
       const handler = this.getDispatchTable().get(name);
       if (!handler) throw new Error(`Unknown tool: ${name}`);
 
+      // Risk-based confirmation gate (§4.3): destructive / financial / inventory
+      // mutations require an explicit confirm:true before running. Read-only and
+      // routine reversible updates pass through. `confirm` never reaches the tool.
+      const risk = this.toolRisk.get(name) ?? 'reversible-update';
+      if (requiresExplicitConfirmation(risk) && args.confirm !== true) {
+        const cr = buildConfirmationRequired(name, risk);
+        emitAudit(this.logger, ctx, { tool: name, outcome: 'confirmation-required', durationMs: Date.now() - startedAt });
+        return { content: [{ type: 'text', text: JSON.stringify({ message: cr.message, data: cr }) }] };
+      }
+      if ('confirm' in args) {
+        const { confirm: _confirm, ...rest } = args;
+        args = rest;
+      }
+
       // Proxy data input (§4.1): `currentUser: true` acts as the caller — resolve
       // them to an Autotask resource and write it into the tool's resource field,
       // or return the identity prompt when the caller can't be mapped.
@@ -1731,7 +1756,7 @@ export class AutotaskToolHandler {
         if (args.currentUser === true && args[actingField] == null) {
           const resolution = await this.resolveCaller(ctx);
           if (resolution.status !== 'resolved') {
-            emitAudit(this.logger, ctx, { tool: name, outcome: 'not-found', durationMs: Date.now() - startedAt });
+            emitAudit(this.logger, ctx, { tool: name, outcome: 'identification-required', durationMs: Date.now() - startedAt });
             return { content: [{ type: 'text', text: JSON.stringify({ message: resolution.message, data: resolution }) }] };
           }
           args = { ...args, [actingField]: resolution.resource.id };

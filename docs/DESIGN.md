@@ -61,11 +61,19 @@ roles: Staff, Dispatcher, Project Manager, Sales, Finance, Executive, Administra
 Design: a role registry keyed by resource (config first, PG identity later) + a
 per-tool risk map; deny before dispatch with a clear reason.
 
-### Risk & confirmation — **open (#13)**
-Per-tool risk level (read-only / reversible / external-comm / financial / inventory
-/ destructive). High-risk mutations require an explicit `confirm: true`; ambiguous
-reversible updates confirm too. Confirmation is enforced server-side, not left to
-the client. Extends the existing `destructiveHint`/`readOnlyHint` annotations.
+### Risk & confirmation — **implemented (#13)**
+`utils/risk.ts`. Per-tool risk level (read-only / reversible-update / external-comm
+/ financial / inventory-movement / destructive), derived once at startup from the
+tool annotations plus the `FINANCIAL_TOOLS` / `INVENTORY_MOVEMENT_TOOLS` /
+`EXTERNAL_COMM_TOOLS` registries: `readOnlyHint` → read-only, `destructiveHint` →
+destructive, financial/inventory registry membership next, else reversible-update.
+`callTool` gates before dispatch: destructive / financial / inventory mutations
+require an explicit `confirm: true`, else they return a structured
+`confirmation_required` response (audited as `confirmation-required`) instead of
+running. `confirm` is a control flag and is stripped before the tool sees it.
+External-comm (show recipients) and inventory (show source/dest/qty/serials) detail
+displays land with their feature phases; the reversible-update "confirm when
+ambiguous" softer path is deferred.
 
 ### Idempotency — **open (#14)**
 Key derived from source + user + conversation/message + tool + target + normalized

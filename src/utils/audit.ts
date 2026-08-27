@@ -7,7 +7,13 @@
 import { Logger } from './logger';
 import { CallerContext } from '../types/context';
 
-export type AuditOutcome = 'ok' | 'error' | 'not-found' | 'confirmation-required' | 'identification-required';
+export type AuditOutcome =
+  | 'ok'
+  | 'error'
+  | 'not-found'
+  | 'confirmation-required'
+  | 'identification-required'
+  | 'idempotent-replay';
 
 export interface AuditEntry {
   tool: string;

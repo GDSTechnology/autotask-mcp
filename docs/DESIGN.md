@@ -75,12 +75,18 @@ External-comm (show recipients) and inventory (show source/dest/qty/serials) det
 displays land with their feature phases; the reversible-update "confirm when
 ambiguous" softer path is deferred.
 
-### Idempotency — **open (#14)**
-Key derived from source + user + conversation/message + tool + target + normalized
-payload (or caller-supplied `idempotencyKey`). Store first-seen key → result;
-on repeat, return the prior result instead of re-mutating. In-memory store first;
-PG-backed (`jobs_*`) later. Required for tickets, notes, time entries, To-Dos,
-appointments, service calls, charges, contacts, inventory moves, projects, receiving.
+### Idempotency — **implemented (#14)**
+`utils/idempotency.ts`. `deriveIdempotencyKey` uses a caller-supplied
+`idempotencyKey` when present, else derives one from source + actor + conversation
++ tool + normalized payload (sorted-key hash) — and returns nothing when there's no
+conversation context, so a context-free CLI call is never deduped. `callTool`
+gates only mutating tools (`isMutatingTool` — read/`get_`/`search_`/`list_` and the
+meta tools are excluded regardless of annotation coverage): on a key hit it replays
+the stored result (audited `idempotent-replay`) instead of dispatching; on success
+it caches the result. Errors and not-found are never cached, so a genuine failure
+can still be retried. Bounded, TTL'd in-memory store (`InMemoryIdempotencyStore`,
+FIFO eviction); the PG-backed `jobs_*` store lands in Phase 2 behind
+`MCP_PG_JOBS_ENABLED`, reusing this interface.
 
 ### Canonical resolution — **open**
 One layer accepting ids / entity numbers (T…, P…, quote/PO) / names / emails /

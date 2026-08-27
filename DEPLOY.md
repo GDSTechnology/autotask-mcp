@@ -1,6 +1,6 @@
 # GDS Autotask MCP — Deploy & Rollback Runbook
 
-Production target: **MA-BOS-S-KVM1** (the existing GDS environment — do not
+Production target: **the production host** (the existing GDS environment — do not
 introduce a second VPS). This runbook covers building a traceable, pinned image
 and deploying it with a documented rollback. It follows the traceability rules in
 the implementation brief §7.34: the deployed version is proven from the running
@@ -20,7 +20,7 @@ fork, so the image builds with **no registry token**.
 
 ## 1. Prerequisites
 
-- Docker on the build host and on MA-BOS-S-KVM1.
+- Docker on the build host and on the production host.
 - Access to push/pull the image registry (default `ghcr.io/gdstechnology/autotask-mcp`;
   override with `IMAGE_NAME`). For an air-gapped path you can `docker save`/`load`
   instead of a registry — see step 4.
@@ -72,7 +72,7 @@ docker push ghcr.io/gdstechnology/autotask-mcp:<short-sha>
 # docker save ghcr.io/gdstechnology/autotask-mcp:2.19.0 | gzip > autotask-mcp-2.19.0.tar.gz
 ```
 
-## 4. Deploy on MA-BOS-S-KVM1
+## 4. Deploy on the production host
 
 **Back up the current deployment first** (so rollback is trivial):
 
@@ -141,7 +141,7 @@ backed up, rollback is a single `docker run` with no rebuild.
 
 - [ ] `main` green in CI (unit tests + Docker build).
 - [ ] Built from a clean checkout; recorded VERSION + COMMIT_SHA + digest.
-- [ ] Backed up current image + env on MA-BOS-S-KVM1.
+- [ ] Backed up current image + env on the production host.
 - [ ] Deployed pinned by digest.
 - [ ] `/health` reports the expected version.
 - [ ] `autotask_test_connection` succeeds through the ChatGPT connector.

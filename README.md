@@ -15,9 +15,9 @@ Originally derived from the upstream `WYRE-AI/autotask-mcp` (Apache-2.0).
 
 ## Deployment
 
-GDS runs this as a docker-compose service on **MA-BOS-S-KVM1**, built locally from
-this repository. See **[DEPLOY.md](DEPLOY.md)** for the build → deploy → verify →
-rollback runbook, and `scripts/build-image.sh` for a traceable image build.
+This server runs as a docker-compose service built locally from this repository.
+See **[DEPLOY.md](DEPLOY.md)** for the build → deploy → verify → rollback runbook,
+and `scripts/build-image.sh` for a traceable image build.
 
 > **Note — no GitHub Packages token required.** `autotask-mcp` does **not** depend
 > on any private GitHub Packages registry package. Its only SDK dependency,

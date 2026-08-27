@@ -12,7 +12,7 @@ Each entry lists the merge commit and the PR number. Brief section references
 
 ## 2.19.0-gds — 2026-08-26 — First GDS production release
 
-Cut over live on **MA-BOS-S-KVM1** (docker-compose, local build from this fork,
+Cut over live on **the production host** (docker-compose, local build from this fork,
 `/health` → `2.19.0-gds`), replacing the upstream `ghcr.io/wyre-technology/autotask-mcp`
 pinned image. All items below verified against the code with mocked-HTTP unit
 tests (316 passing at release).
@@ -79,7 +79,7 @@ tests (316 passing at release).
 - **#10 (`d088931`) — token-free Docker + release tooling (Phase 5).** Dockerfile
   drops the private-registry `.npmrc`/`GITHUB_TOKEN`; `scripts/build-image.sh`
   builds a traceable image (VERSION/COMMIT_SHA/BUILD_DATE → `/health`);
-  `DEPLOY.md` deploy + rollback runbook for MA-BOS-S-KVM1.
+  `DEPLOY.md` deploy + rollback runbook for the production host.
 
 ### Housekeeping
 - `fa5918f` — removed a stray `file:../autotask-node` link + lockfile churn that

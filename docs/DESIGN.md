@@ -1,0 +1,141 @@
+# GDS Autotask MCP — Design
+
+Architecture and design decisions for the Expansion & Deployment work. This is
+the companion to the spec (the *what*); this doc is the *how* and *why*. Tracked
+in the [Expansion epic](https://github.com/GDSTechnology/autotask-mcp/issues/12).
+
+## Principles
+
+1. **Autotask is authoritative.** Every operational mutation commits to Autotask.
+   PostgreSQL (when enabled) is a cache / correlation / history / work-buffer
+   layer, never an alternate master. Results state whether data came from live
+   Autotask or shadow, with freshness.
+2. **Typed tools are the interface.** `autotask_raw_request` is an
+   administrator-only escape hatch, audited, DELETE-disabled through Hermes.
+3. **Canonical names + system ids together.** Every returned relationship carries
+   both the Autotask id and a human-facing name/number.
+4. **Multi-user safety.** The Autotask API user is only the transport identity;
+   the requesting person travels with each call and drives permissions + proxy input.
+5. **PostgreSQL is optional.** Disabled by default; all direct-Autotask tools work
+   with `MCP_PG_ENABLED=false`.
+6. **Definition of Done** (§28): typed tool · canonical ids+names · live metadata ·
+   server-side permissions/confirmation · idempotent + audited · partial-failure
+   reporting · PG-off still works · tests.
+
+## Foundation (Phase 1) — shared-service layer
+
+The substrate every tool inherits. Built in `callTool` so it applies uniformly.
+
+### Caller context — **implemented**
+`types/context.ts`. `CallerContext { source (chatgpt|hermes-teams|telegram|unknown),
+requestingUserEmail, teamsObjectId, autotaskResourceId, conversationId,
+correlationId, idempotencyKey, intent, timestamp }`. Extracted from the MCP
+request `_meta` or a reserved `_context` argument (`_meta` wins); the reserved key
+is stripped before tool logic. Threaded into every dispatch handler.
+
+### Audit — **implemented (log-only)**
+`utils/audit.ts` emits one structured record per invocation (tool, outcome,
+duration, caller identity, correlation, idempotency, intent, result id). No
+secrets/bodies. Persisted to PG when `MCP_PG_AUDIT_ENABLED` (Phase 2); the log
+shape is the source of truth for that table.
+
+### Caller → resource resolution — **implemented**
+`utils/caller-resolution.ts` + `handler.resolveCaller`. Order: explicit
+id/email/name → static `AUTOTASK_USER_MAP` (non-email handles) → in-memory cache
+→ live email match against `Resources`. On no unambiguous match, returns a
+structured `user_identification_required` prompt (no-identity / not-found /
+ambiguous + candidates) so the client asks the human, whose answer is cached and
+reused. `autotask_whoami` resolves/establishes it. When PG identity is enabled,
+the mapping persists across restarts.
+
+### Proxy data input — **implemented (partial)**
+`ACTING_RESOURCE_TOOLS` maps a tool to its resource field; `currentUser: true`
+resolves the caller and writes their resource id into that field (or returns the
+identity prompt). Wired for time entries + To-Dos; ticket-assignment/owner tools
+follow once role/owner semantics are handled (#15).
+
+### Permissions & roles — **open (#15)**
+Effective permission = intersection of (a) the caller's mapped Autotask
+role/security context, (b) GDS/Hermes policy, (c) the tool's risk class. Functional
+roles: Staff, Dispatcher, Project Manager, Sales, Finance, Executive, Administrator.
+Design: a role registry keyed by resource (config first, PG identity later) + a
+per-tool risk map; deny before dispatch with a clear reason.
+
+### Risk & confirmation — **open (#13)**
+Per-tool risk level (read-only / reversible / external-comm / financial / inventory
+/ destructive). High-risk mutations require an explicit `confirm: true`; ambiguous
+reversible updates confirm too. Confirmation is enforced server-side, not left to
+the client. Extends the existing `destructiveHint`/`readOnlyHint` annotations.
+
+### Idempotency — **open (#14)**
+Key derived from source + user + conversation/message + tool + target + normalized
+payload (or caller-supplied `idempotencyKey`). Store first-seen key → result;
+on repeat, return the prior result instead of re-mutating. In-memory store first;
+PG-backed (`jobs_*`) later. Required for tickets, notes, time entries, To-Dos,
+appointments, service calls, charges, contacts, inventory moves, projects, receiving.
+
+### Canonical resolution — **open**
+One layer accepting ids / entity numbers (T…, P…, quote/PO) / names / emails /
+SKUs / serials / Autotask URLs → `{ id, canonicalName }`, ambiguity → short choice
+list. Extends the existing `resolveRecordReference` + resource/action-type resolvers.
+
+### Raw-request gatekeeping — **open**
+`autotask_raw_request`: administrator-only, DELETE disabled, absolute URLs and
+auth-header overrides rejected (host assertion already enforced), every call
+audited. An env switch disables mutating raw requests in production.
+
+## Optional PostgreSQL layer (Phase 2)
+
+Disabled by default. Feature flags gate each capability
+(`MCP_PG_SHADOW/JOBS/AUDIT/SNAPSHOTS/IDENTITY/PRICING/WEBHOOK_BUFFER_ENABLED`).
+
+- **Isolation:** dedicated DB `gds_autotask_mcp`, schema `autotask_mcp`, roles
+  `app` / `owner` / `migrator`. Never touch n8n / Hermes / control-plane DBs,
+  schemas, or roles. App role has no DDL; migrations use a separate login with an
+  advisory lock + checksum registry, fail-closed on mismatch.
+- **Degraded modes:** PG disabled → live Autotask only. Outage → safe live ops
+  continue, cached/job features degrade. Shadow stale → report age, query live.
+  Schema behind → disable newer-schema features. Interrupted job → resume from
+  last checkpoint. (Spec §24 matrix.)
+- **Shadow + snapshots:** current-state tables (id, canonical name/number, source
+  + sync timestamps, checksum, active) refreshed via staging → validate → atomic
+  publish (readers see prior-complete or new-complete, never partial). History via
+  6-hour/daily/monthly retention + checksums, not wasteful full duplication.
+- **Jobs:** draft → validated → awaiting_confirmation → queued → running →
+  partially_completed → completed / failed → resumable. Backs project builds,
+  category reclassification, pricing imports, relationship repair, approval queues.
+
+## Later phases (design notes)
+
+- **Phase 3 — inventory/catalog:** query live `entityInformation` first to choose
+  the InventoryItems vs InventoryProducts/StockedItems model. Transfers use
+  Autotask inventory transactions (never emulated balance edits). Consumption ties
+  to a charge + optional configuration item; low-confidence product matches never
+  auto-create customer charges.
+- **Phase 4 — project/sales:** project blueprint is JSON/YAML; build is checkpointed
+  and resumable (never duplicates on retry). Sales-cycle correlation uses native
+  fields where they exist, else a GDS UDF or the PG relationship registry, with the
+  link type labeled.
+- **Phase 5 — calendar/staff:** Appointments are first-class (never a future time
+  entry); accept local time + zone, return UTC + local. `my_day` unions tickets,
+  tasks, service calls, appointments, open To-Dos, and missing time entries.
+- **Phase 6 — contracts/reporting:** monthly allocations (a 12-month, 2-block/month
+  agreement is not one annual pool). Labor separated: actual / billable / covered /
+  block-hour / riser / non-contract / effective revenue / burden / remaining.
+- **Phase 7 — pricing/proactive:** ingest → normalize → match → validate → price
+  rules → exception review → approval → update → verify. Margin guards (below-cost,
+  below-min-margin, stale, discontinued). Webhooks optional/admin-managed with the
+  MCP API resource excluded to prevent feedback loops; polling where unsupported.
+
+## Cross-cutting
+
+- **Performance:** central request queue, per-user + global concurrency caps, retry
+  with backoff + jitter, circuit breaker, metadata/picklist cache, bounded fan-out,
+  stable pagination, correlation ids across ChatGPT/Hermes → MCP → PG → Autotask.
+- **Deployment:** live on MA-BOS-S-KVM1 (docker-compose). Automated release
+  (semantic-release → GHCR image). Pinned image / rollback per `DEPLOY.md`.
+- **Testing:** unit (resolution, ambiguity, permission intersection, risk,
+  idempotency, tz, inventory math, pricing, dependency ordering, sales-cycle) +
+  integration (PG on/off, isolation, migrations, atomic publish, job resume,
+  transfers, receiving, notification verification) + safety (raw gating, confirmation
+  gates, no-secrets-in-logs).

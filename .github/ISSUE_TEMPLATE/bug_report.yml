@@ -1,0 +1,30 @@
+name: Bug report
+description: Report incorrect behavior in the Autotask MCP
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: The incorrect behavior you observed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce / tool call
+      description: The tool name + arguments, or the request that triggered it.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `/health` version or image tag the server was running.
+  - type: textarea
+    id: context
+    attributes:
+      label: Logs / correlation id
+      description: Relevant audit/log lines. Redact secrets, credentials, and full customer data.

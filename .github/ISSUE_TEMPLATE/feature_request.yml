@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a new typed tool or workflow
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do, and for whom (ChatGPT / Hermes-Teams staff)?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed tool(s) / behavior
+      description: The typed tool(s), inputs (canonical identifiers accepted), and outputs (ids + human names).
+  - type: input
+    id: spec
+    attributes:
+      label: Spec reference
+      description: e.g. "Expansion Spec §5 Appointments" or "Brief §4.6".
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      description: Per Expansion Spec §4.3.
+      options:
+        - Read-only
+        - Reversible update
+        - External communication
+        - Financial
+        - Inventory movement
+        - Destructive

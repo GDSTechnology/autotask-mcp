@@ -2634,6 +2634,28 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['reference'],
     }
   },
+  {
+    name: 'autotask_whoami',
+    description:
+      'READ-ONLY. Resolve the calling user to their Autotask resource — used for ' +
+      'permissions and as the acting/proxy resource for data input (time entries, ' +
+      'To-Dos, assignments). Resolves from the caller context (ChatGPT / Hermes-Teams ' +
+      '/ Telegram email or mapped handle) or an explicit resourceId / resourceEmail / ' +
+      'resourceName. Returns { status: "resolved", resource } or { status: ' +
+      '"user_identification_required", reason, candidates?, message }. When ' +
+      'identification is required, ask the user who they are and call again with ' +
+      'resourceId / resourceEmail / resourceName.',
+    annotations: { title: 'Resolve calling user to Autotask resource', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceId: { type: 'number', description: 'Explicit Autotask resource ID to identify as' },
+        resourceEmail: { type: 'string', description: 'Resolve by resource email' },
+        resourceName: { type: 'string', description: 'Resolve by resource name' }
+      },
+      required: []
+    }
+  },
 
   // Billing Items tools (Approve and Post workflow)
   {
@@ -3423,7 +3445,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_record_reference']
+    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

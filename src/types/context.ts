@@ -9,7 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-export type CallerSource = 'chatgpt' | 'hermes-teams' | 'unknown';
+export type CallerSource = 'chatgpt' | 'hermes-teams' | 'telegram' | 'unknown';
 
 export interface CallerContext {
   source: CallerSource;
@@ -23,7 +23,7 @@ export interface CallerContext {
   timestamp: string;
 }
 
-const VALID_SOURCES: readonly CallerSource[] = ['chatgpt', 'hermes-teams'];
+const VALID_SOURCES: readonly CallerSource[] = ['chatgpt', 'hermes-teams', 'telegram'];
 
 /** Reserved argument key callers may use to pass context when `_meta` isn't available. */
 export const CALLER_CONTEXT_ARG = '_context';

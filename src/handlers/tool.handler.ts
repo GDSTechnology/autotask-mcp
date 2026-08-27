@@ -10,8 +10,17 @@ import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '.
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult } from '../utils/create-result.js';
-import { extractCallerContext, stripCallerContext } from '../types/context.js';
+import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit } from '../utils/audit.js';
+import {
+  CallerResolution,
+  ResolvedResource,
+  parseUserMap,
+  callerMapKeys,
+  resourceDisplayName,
+  classifyEmailMatch,
+  identificationRequired,
+} from '../utils/caller-resolution.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
 
@@ -107,6 +116,10 @@ export class AutotaskToolHandler {
   private mappingService: MappingService | null = null;
   private lazyLoading: boolean;
   private enhanceConcurrency: number;
+  // Caller→resource mapping (§4.1): a static override map for non-email identities
+  // and an in-memory cache of resolutions so a caller is only prompted once.
+  private userMap = parseUserMap(process.env.AUTOTASK_USER_MAP);
+  private resourceCache = new Map<string, ResolvedResource>();
 
   constructor(autotaskService: AutotaskService, logger: Logger, lazyLoading = false) {
     this.autotaskService = autotaskService;
@@ -846,9 +859,9 @@ export class AutotaskToolHandler {
   /**
    * Dispatch table: maps tool names to handler functions
    */
-  private getDispatchTable(): Map<string, (args: any) => Promise<{ result: any; message: string }>> {
+  private getDispatchTable(): Map<string, (args: any, ctx: CallerContext) => Promise<{ result: any; message: string }>> {
     const s = this.autotaskService;
-    type H = (args: any) => Promise<{ result: any; message: string }>;
+    type H = (args: any, ctx: CallerContext) => Promise<{ result: any; message: string }>;
     return new Map<string, H>([
       // Connection
       ['autotask_test_connection', async () => {
@@ -857,6 +870,20 @@ export class AutotaskToolHandler {
           throw new Error('Connection to Autotask API failed. Verify AUTOTASK_USERNAME, AUTOTASK_SECRET, and AUTOTASK_INTEGRATION_CODE are configured correctly and that the API user has at least read access to Companies.');
         }
         return { result: { success: true }, message: 'Successfully connected to Autotask API' };
+      }],
+
+      // Identity: resolve the caller to an Autotask resource (§4.1)
+      ['autotask_whoami', async (a, ctx) => {
+        const r = await this.resolveCaller(ctx, {
+          resourceId: a.resourceId,
+          resourceEmail: a.resourceEmail,
+          resourceName: a.resourceName,
+        });
+        const message =
+          r.status === 'resolved'
+            ? `You are ${r.resource.name} (Autotask resource ${r.resource.id}), resolved via ${r.via}.`
+            : r.message;
+        return { result: r, message };
       }],
 
       // Companies
@@ -1561,14 +1588,14 @@ export class AutotaskToolHandler {
         const tools = TOOL_DEFINITIONS.filter(t => category.tools.includes(t.name));
         return { result: tools, message: `Found ${tools.length} tools in "${a.category}" category` };
       }],
-      ['autotask_execute_tool', async (a) => {
+      ['autotask_execute_tool', async (a, ctx) => {
         const toolName = a.toolName;
         const toolArgs = a.arguments || {};
         const handler = this.getDispatchTable().get(toolName);
         if (!handler) throw new Error(`Unknown tool: ${toolName}`);
         // Prevent recursive meta-tool calls
         if (toolName === 'autotask_execute_tool') throw new Error('Cannot recursively execute autotask_execute_tool');
-        return handler(toolArgs);
+        return handler(toolArgs, ctx);
       }],
 
       // Intent-based router
@@ -1620,6 +1647,69 @@ export class AutotaskToolHandler {
   /**
    * Call a tool with the given arguments
    */
+  /**
+   * Resolve the caller to an Autotask resource for permissions + proxy data
+   * input (§4.1). Order: explicit id/email/name → static AUTOTASK_USER_MAP →
+   * in-memory cache → live email match. Caches any resolution under the caller's
+   * keys so they are prompted at most once. Returns a structured identification
+   * prompt when it can't resolve unambiguously.
+   */
+  async resolveCaller(
+    ctx: CallerContext,
+    explicit?: { resourceId?: number; resourceEmail?: string; resourceName?: string }
+  ): Promise<CallerResolution> {
+    const keys = callerMapKeys(ctx);
+    const cacheAll = (res: ResolvedResource): void => {
+      for (const k of keys) this.resourceCache.set(k, res);
+    };
+    const toCandidates = (
+      ms: Array<{ id: number; firstName?: string; lastName?: string; email?: string }>
+    ) => ms.map((m) => ({ id: m.id, name: resourceDisplayName(m), ...(m.email !== undefined ? { email: m.email } : {}) }));
+
+    // 1. Explicit resource id (trusted; establishes/updates the mapping).
+    if (explicit?.resourceId != null) {
+      const res: ResolvedResource = { id: explicit.resourceId, name: explicit.resourceName ?? `Resource ${explicit.resourceId}` };
+      cacheAll(res);
+      return { status: 'resolved', via: 'explicit-id', resource: res };
+    }
+    // 2. Explicit email.
+    if (explicit?.resourceEmail) {
+      const r = classifyEmailMatch(explicit.resourceEmail, toCandidates(await this.autotaskService.searchResourcesByEmail(explicit.resourceEmail)));
+      if (r.status === 'resolved') cacheAll(r.resource);
+      return r;
+    }
+    // 3. Explicit name.
+    if (explicit?.resourceName) {
+      const m = await this.autotaskService.resolveResourceByName(explicit.resourceName);
+      if (!m) return identificationRequired('not-found');
+      const res: ResolvedResource = { id: m.id, name: resourceDisplayName(m) };
+      cacheAll(res);
+      return { status: 'resolved', via: 'explicit-name', resource: res };
+    }
+    // 4. Static override map (Telegram handles / non-email identities).
+    for (const k of keys) {
+      const id = this.userMap.get(k);
+      if (id != null) {
+        const res: ResolvedResource = { id, name: `Resource ${id}` };
+        cacheAll(res);
+        return { status: 'resolved', via: 'static-map', resource: res };
+      }
+    }
+    // 5. In-memory cache (already resolved this session).
+    for (const k of keys) {
+      const cached = this.resourceCache.get(k);
+      if (cached) return { status: 'resolved', via: 'cache', resource: cached };
+    }
+    // 6. Live email match against Autotask Resources.
+    if (ctx.requestingUserEmail) {
+      const r = classifyEmailMatch(ctx.requestingUserEmail, toCandidates(await this.autotaskService.searchResourcesByEmail(ctx.requestingUserEmail)));
+      if (r.status === 'resolved') cacheAll(r.resource);
+      return r;
+    }
+    // 7. Nothing to go on.
+    return identificationRequired('no-identity');
+  }
+
   async callTool(name: string, args: Record<string, any>, meta?: Record<string, any>): Promise<McpToolResult> {
     // Caller context (who/where/correlation) for audit + future permissions
     // (§3.5/§23). Strip the reserved `_context` key so it never reaches tool logic.
@@ -1632,7 +1722,7 @@ export class AutotaskToolHandler {
       const handler = this.getDispatchTable().get(name);
       if (!handler) throw new Error(`Unknown tool: ${name}`);
 
-      const { result: rawResult, message } = await handler(args);
+      const { result: rawResult, message } = await handler(args, ctx);
 
       // Check for empty/not-found results and return explicit error to prevent hallucination
       const notFoundMsg = this.buildNotFoundMessage(name, args, rawResult);

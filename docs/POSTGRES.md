@@ -43,6 +43,27 @@ its own env): superuser `postgres` / `devsuperpass`, migrator
 `gds_autotask_mcp_migrator` / `devmigrate`, app `gds_autotask_mcp_app` / `devapp`.
 These are throwaway local values — **never** used in production.
 
+## Staged local database — no Docker required (Windows dev)
+
+When Docker isn't available, `dev-postgres/local-db.ps1` runs a **portable Postgres**
+staged under a gitignored runtime dir (`dev-postgres/.runtime/`), so the binaries
+download **once** and the cluster persists between sessions — spin up/down on demand
+without wasting cycles.
+
+```powershell
+./dev-postgres/local-db.ps1 provision   # one-time: download, initdb, roles/schema, migrate
+./dev-postgres/local-db.ps1 up          # start (fast; provisions if needed)
+./dev-postgres/local-db.ps1 status      # running? + audit_log row count
+./dev-postgres/local-db.ps1 migrate     # build + run migrations
+./dev-postgres/local-db.ps1 psql -- -c "select * from autotask_mcp.audit_log"
+./dev-postgres/local-db.ps1 down        # stop, keep everything staged
+./dev-postgres/local-db.ps1 reset       # drop + recreate the DB, re-migrate
+./dev-postgres/local-db.ps1 purge       # delete the runtime dir (forces re-download)
+```
+
+Same DB/schema/role model as prod (owner/migrator/app, app = DML only). Dev-only
+credentials are baked into the script and never used in production.
+
 ## Connecting the MCP
 
 Copy the PG block from `.env.dev-pg.example` into the MCP's `.env` and set

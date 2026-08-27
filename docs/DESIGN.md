@@ -54,12 +54,21 @@ resolves the caller and writes their resource id into that field (or returns the
 identity prompt). Wired for time entries + To-Dos; ticket-assignment/owner tools
 follow once role/owner semantics are handled (#15).
 
-### Permissions & roles — **open (#15)**
-Effective permission = intersection of (a) the caller's mapped Autotask
-role/security context, (b) GDS/Hermes policy, (c) the tool's risk class. Functional
-roles: Staff, Dispatcher, Project Manager, Sales, Finance, Executive, Administrator.
-Design: a role registry keyed by resource (config first, PG identity later) + a
-per-tool risk map; deny before dispatch with a clear reason.
+### Permissions & roles — **implemented, off by default (#15)**
+`utils/permissions.ts`. Effective permission = the caller's functional role ∩ the
+tool's risk class (GDS/Hermes policy layers on later). Functional roles: Staff,
+Dispatcher, Project Manager, Sales, Finance, Executive, Administrator, each with a
+max-risk ceiling (`ROLE_MAX_RISK`) on the risk ladder — staff/dispatcher/PM →
+reversible-update, sales/finance → financial, executive → inventory-movement,
+administrator → destructive. Reads are open to everyone; an unmapped caller may
+read but not mutate (fail-closed). Roles come from `AUTOTASK_ROLE_MAP`
+(`key=role`, keyed by email / Teams object id / resource id; config first, PG
+identity later), with an `AUTOTASK_DEFAULT_ROLE` fallback. `callTool` denies before
+dispatch *and* before the confirmation prompt, returning a structured
+`permission_denied` (audited `permission-denied`). **Gating runs only when
+`MCP_PERMISSIONS_ENABLED=true`** — disabled by default so the live server is
+unaffected until roles are mapped. Per-tool area/scope refinements (owner-only
+edits, area-scoped roles) follow as policy firms up.
 
 ### Risk & confirmation — **implemented (#13)**
 `utils/risk.ts`. Per-tool risk level (read-only / reversible-update / external-comm

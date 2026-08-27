@@ -20,6 +20,14 @@ import {
 } from '../utils/risk.js';
 import { InMemoryIdempotencyStore, deriveIdempotencyKey, isMutatingTool } from '../utils/idempotency.js';
 import {
+  FunctionalRole,
+  parseRoleMap,
+  resolveRole,
+  evaluatePermission,
+  buildPermissionDenied,
+  isPermissionsEnabled,
+} from '../utils/permissions.js';
+import {
   CallerResolution,
   ResolvedResource,
   parseUserMap,
@@ -135,6 +143,9 @@ export class AutotaskToolHandler {
   );
   // Idempotency store (§4.4): replays the prior result for a repeated mutation.
   private idempotencyStore = new InMemoryIdempotencyStore<McpToolResult>();
+  // Caller → functional role (§4.2), for the permission gate. Config-driven for
+  // now; disabled unless MCP_PERMISSIONS_ENABLED=true.
+  private roleMap = parseRoleMap(process.env.AUTOTASK_ROLE_MAP);
 
   constructor(autotaskService: AutotaskService, logger: Logger, lazyLoading = false) {
     this.autotaskService = autotaskService;
@@ -1737,10 +1748,25 @@ export class AutotaskToolHandler {
       const handler = this.getDispatchTable().get(name);
       if (!handler) throw new Error(`Unknown tool: ${name}`);
 
+      const risk = this.toolRisk.get(name) ?? 'reversible-update';
+
+      // Permission gate (§4.2): the caller's functional role must permit this
+      // tool's risk. Disabled unless MCP_PERMISSIONS_ENABLED=true, so the live
+      // server is unaffected until roles are mapped. Denied before dispatch and
+      // before the confirmation prompt — no point confirming what you can't do.
+      if (isPermissionsEnabled() && isMutatingTool(name)) {
+        const role: FunctionalRole | undefined = resolveRole(ctx, this.roleMap);
+        const decision = evaluatePermission(role, risk);
+        if (!decision.allowed) {
+          const denied = buildPermissionDenied(name, risk, decision);
+          emitAudit(this.logger, ctx, { tool: name, outcome: 'permission-denied', durationMs: Date.now() - startedAt });
+          return { content: [{ type: 'text', text: JSON.stringify({ message: denied.message, data: denied }) }] };
+        }
+      }
+
       // Risk-based confirmation gate (§4.3): destructive / financial / inventory
       // mutations require an explicit confirm:true before running. Read-only and
       // routine reversible updates pass through. `confirm` never reaches the tool.
-      const risk = this.toolRisk.get(name) ?? 'reversible-update';
       if (requiresExplicitConfirmation(risk) && args.confirm !== true) {
         const cr = buildConfirmationRequired(name, risk);
         emitAudit(this.logger, ctx, { tool: name, outcome: 'confirmation-required', durationMs: Date.now() - startedAt });

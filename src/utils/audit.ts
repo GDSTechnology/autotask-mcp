@@ -13,7 +13,8 @@ export type AuditOutcome =
   | 'not-found'
   | 'confirmation-required'
   | 'identification-required'
-  | 'idempotent-replay';
+  | 'idempotent-replay'
+  | 'permission-denied';
 
 export interface AuditEntry {
   tool: string;

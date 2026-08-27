@@ -1,0 +1,41 @@
+# Local TEST PostgreSQL for the optional Phase 2 layer (Expansion Spec §17, #18).
+#
+# Standalone and opt-in — separate from the app compose so it can never ship to
+# production. Isolated project name + volume, non-default host port (5433) to
+# avoid clashing with any other local Postgres. Mirrors the production role model
+# (dedicated DB `gds_autotask_mcp`, schema `autotask_mcp`, owner/migrator/app
+# roles) so the same code and migrations run here and against the prod VPS.
+#
+# DEV-ONLY credentials below — never reused in production (prod uses the real VPS
+# with secrets in its own .env). Bring up:  docker compose -f dev-postgres/docker-compose.yml up -d
+# Tear down + wipe:  docker compose -f dev-postgres/docker-compose.yml down -v
+
+name: gds-autotask-mcp-devpg
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gds-autotask-mcp-devpg
+    restart: unless-stopped
+    environment:
+      # Superuser — used only for the one-time init scripts.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DEVPG_SUPERUSER_PASSWORD:-devsuperpass}
+      POSTGRES_DB: gds_autotask_mcp
+      # Passed through to the init SQL (see init/01-roles-schema.sql).
+      MCP_PG_MIGRATOR_PASSWORD: ${MCP_PG_MIGRATOR_PASSWORD:-devmigrate}
+      MCP_PG_APP_PASSWORD: ${MCP_PG_APP_PASSWORD:-devapp}
+    ports:
+      - "5433:5432"
+    volumes:
+      - devpg-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gds_autotask_mcp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  devpg-data:
+    driver: local

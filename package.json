@@ -14,6 +14,7 @@
     "build:ui": "vite build && node scripts/embed-ui.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
+    "db:migrate": "node dist/db/migrate.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -44,6 +45,7 @@
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0-beta.5",
     "@modelcontextprotocol/server": "^2.0.0-beta.5",
+    "pg": "^8.23.0",
     "winston": "^3.11.0",
     "zod": "^4.4.3"
   },
@@ -57,6 +59,7 @@
     "@semantic-release/github": "^12.0.8",
     "@types/jest": "^30.0.0",
     "@types/node": "^26.0.1",
+    "@types/pg": "^8.23.1",
     "autotask-node": "github:GDSTechnology/autotask-node#b8277f0255607fd2f043069e9dea0658e18ece90",
     "dotenv": "^17.4.2",
     "eslint": "^10.4.1",

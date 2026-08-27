@@ -786,13 +786,13 @@ By submitting a pull request, you agree to the terms of our [Contributor License
 
 ## Credits & Acknowledgements
 
-This is a **GDS Technology fork** of the original **Autotask MCP Server**, created and
-maintained by **[WYRE Technology](https://github.com/wyre-technology)** and **Aaron
-Sachs ([@asachs01](https://github.com/asachs01))** with its contributors — upstream at
-**[WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp)**. Much of this
-codebase is derived from that work, and full credit for it belongs to those authors.
-GDS maintains this fork for its own Autotask automation; see [NOTICE](NOTICE) for
-attribution details.
+GDS Technology's Autotask MCP is a more robust evolution built on the original
+**Autotask MCP Server** by **[WYRE Technology](https://github.com/wyre-technology)** and
+**Aaron Sachs ([@asachs01](https://github.com/asachs01))** with its contributors —
+upstream at **[WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp)**. That
+project is the **baseline this work is founded on**, and full credit for the groundwork
+belongs to those authors. As GDS extends and hardens the server, this attribution
+stands; see [NOTICE](NOTICE) for details.
 
 ### Contributors
 

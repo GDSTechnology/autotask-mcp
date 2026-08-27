@@ -1,18 +1,18 @@
 Autotask MCP Server — GDS Technology fork
 Copyright 2026 GDS Technology
 
-This product is a derivative work of the "Autotask MCP Server" originally
-created and maintained by WYRE Technology and Aaron Sachs
+This product is a more robust evolution built on the "Autotask MCP Server"
+originally created and maintained by WYRE Technology and Aaron Sachs
 (https://github.com/asachs01), together with its contributors, and made
 available at:
 
   - https://github.com/WYRE-AI/autotask-mcp
   - https://github.com/wyre-technology/autotask-mcp
 
-The original work is licensed under the Apache License, Version 2.0. Substantial
-portions of this repository remain derived from that original work, and full
-credit for it belongs to those authors. See the README "Credits & Acknowledgements"
-section for the contributor list.
+That project is the baseline this work is founded on and is licensed under the
+Apache License, Version 2.0. Full credit for the groundwork belongs to those
+authors; this attribution stands as GDS extends and hardens the server. See the
+README "Credits & Acknowledgements" section for the contributor list.
 
 This repository (https://github.com/GDSTechnology/autotask-mcp) is maintained by
 GDS Technology. Modifications and additions are Copyright 2026 GDS Technology and

@@ -97,10 +97,16 @@ can still be retried. Bounded, TTL'd in-memory store (`InMemoryIdempotencyStore`
 FIFO eviction); the PG-backed `jobs_*` store lands in Phase 2 behind
 `MCP_PG_JOBS_ENABLED`, reusing this interface.
 
-### Canonical resolution — **open**
-One layer accepting ids / entity numbers (T…, P…, quote/PO) / names / emails /
-SKUs / serials / Autotask URLs → `{ id, canonicalName }`, ambiguity → short choice
-list. Extends the existing `resolveRecordReference` + resource/action-type resolvers.
+### Canonical resolution — **foundation implemented (#16)**
+`utils/canonical.ts`. `parseReference` classifies any input — bare id, Autotask
+deep-link URL (entity + id pulled from the query string), email, ticket/task
+display number, or free-text name — into a typed lookup hint. `resolveCanonical`
+collapses candidate records into one `{ id, canonicalName }` (matched), a short
+choice list (ambiguous), or not-found — never guessing. `pickCanonicalName` derives
+a human label from the fields Autotask entities commonly carry. Pure/HTTP-free,
+complementing `reference.resolver.ts` (ticket-vs-task display numbers). Per-entity
+live wiring — feeding each tool's search results through this layer, plus SKU/serial
+forms — is adopted incrementally by the entity tools.
 
 ### Raw-request gatekeeping — **open**
 `autotask_raw_request`: administrator-only, DELETE disabled, absolute URLs and

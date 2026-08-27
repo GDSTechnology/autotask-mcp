@@ -36,8 +36,10 @@ is stripped before tool logic. Threaded into every dispatch handler.
 ### Audit — **implemented (log-only)**
 `utils/audit.ts` emits one structured record per invocation (tool, outcome,
 duration, caller identity, correlation, idempotency, intent, result id). No
-secrets/bodies. Persisted to PG when `MCP_PG_AUDIT_ENABLED` (Phase 2); the log
-shape is the source of truth for that table.
+secrets/bodies. Also persisted to the `audit_log` table when `MCP_PG_AUDIT_ENABLED`
+(`db/audit-sink.ts`, #18) — the handler's `recordAudit` dual-writes log + PG; the
+PG write is fire-and-forget and never blocks or fails a call. The log shape is the
+source of truth for the table.
 
 ### Caller → resource resolution — **implemented**
 `utils/caller-resolution.ts` + `handler.resolveCaller`. Order: explicit

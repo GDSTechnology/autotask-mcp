@@ -11,12 +11,11 @@ import { loadPgConfig, isPgEnabled } from './config.js';
 
 let pool: Pool | null = null;
 
-/** Quote a schema identifier, rejecting anything that isn't a plain identifier. */
-function quoteIdent(name: string): string {
+/** Reject anything that isn't a plain SQL identifier (schema name goes into a startup option). */
+function assertIdent(name: string): void {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
     throw new Error(`Invalid PostgreSQL identifier: ${JSON.stringify(name)}`);
   }
-  return `"${name}"`;
 }
 
 /** Get the shared pool, or null when the layer is disabled. Never throws on disabled. */
@@ -25,7 +24,7 @@ export function getPool(logger: Logger, env: NodeJS.ProcessEnv = process.env): P
   if (pool) return pool;
 
   const cfg = loadPgConfig(env);
-  const schema = quoteIdent(cfg.schema);
+  assertIdent(cfg.schema);
   const poolConfig: PoolConfig = {
     host: cfg.host,
     port: cfg.port,
@@ -34,15 +33,12 @@ export function getPool(logger: Logger, env: NodeJS.ProcessEnv = process.env): P
     password: cfg.password,
     max: cfg.poolMax,
     ssl: cfg.ssl === 'require' ? { rejectUnauthorized: false } : false,
+    // Scope every connection to our schema at startup — set before the first
+    // query runs, so there's no post-connect race and no unqualified-table risk.
+    options: `-c search_path=${cfg.schema},public`,
   };
 
   pool = new Pool(poolConfig);
-  // Scope every physical connection to our schema.
-  pool.on('connect', (client) => {
-    client.query(`SET search_path TO ${schema}, public`).catch((err) => {
-      logger.warn('PG: failed to set search_path', err);
-    });
-  });
   // A pool-level error (e.g. an idle client dropped) must not crash the process.
   pool.on('error', (err) => logger.error('PG pool error (continuing)', err));
   logger.info(`PG pool created: ${cfg.user}@${cfg.host}:${cfg.port}/${cfg.database} schema=${cfg.schema}`);

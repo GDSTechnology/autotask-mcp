@@ -970,6 +970,10 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'Name of the resource/user (e.g., "Will Spence"). Will be resolved to a resourceID automatically. Use this instead of resourceID for convenience.'
         },
+        currentUser: {
+          type: 'boolean',
+          description: 'Log the time as the calling user — resolves the caller to their Autotask resource. Alternative to resourceID/resourceName.'
+        },
         category: {
           type: 'string',
           description: 'Category name for Regular Time entries (e.g., "Internal Meeting", "Office Management", "Training", "Research", "HR/Recruiting", "Travel Time", "Holiday", "PTO"). Required for Regular Time entries (when no ticket/task/project is specified).'
@@ -3223,7 +3227,8 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       type: 'object',
       properties: {
         companyID: { type: 'number', description: 'Owning company (required)' },
-        assignedToResourceID: { type: 'number', description: 'Resource the To-Do is assigned to (required)' },
+        assignedToResourceID: { type: 'number', description: 'Resource the To-Do is assigned to. Provide this, or set currentUser to assign it to the calling user.' },
+        currentUser: { type: 'boolean', description: 'Assign the To-Do to the calling user (resolves the caller to their Autotask resource). Alternative to assignedToResourceID.' },
         actionType: { type: 'number', description: 'Numeric action type ID. Provide this OR actionTypeName, not both.' },
         actionTypeName: { type: 'string', description: 'Action type label resolved from metadata (e.g. "Sales"). Provide this OR actionType.' },
         activityDescription: { type: 'string', description: 'Free-text description' },
@@ -3234,7 +3239,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         opportunityID: { type: 'number', description: 'Associated opportunity (same company)' },
         ticketID: { type: 'number', description: 'Associated ticket (same company)' }
       },
-      required: ['companyID', 'assignedToResourceID', 'startDateTime', 'endDateTime']
+      required: ['companyID', 'startDateTime', 'endDateTime']
     }
   },
   {

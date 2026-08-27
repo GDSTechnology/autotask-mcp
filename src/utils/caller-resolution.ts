@@ -97,6 +97,18 @@ export function identificationRequired(
   return { ...base, message };
 }
 
+/**
+ * Tools where `currentUser: true` means "act as me" — the field the resolved
+ * caller resource id is written into (proxy data input, §4.1/§9). Only tools
+ * where a lone resource id is a valid payload are listed; tools that also need a
+ * role (ticket assignment) or owner semantics are wired separately.
+ */
+export const ACTING_RESOURCE_TOOLS: Record<string, string> = {
+  autotask_create_time_entry: 'resourceID',
+  autotask_create_company_todo: 'assignedToResourceID',
+  autotask_update_company_todo: 'assignedToResourceID',
+};
+
 /** Classify the outcome of an exact-email Resources search. */
 export function classifyEmailMatch(
   providedEmail: string | undefined,

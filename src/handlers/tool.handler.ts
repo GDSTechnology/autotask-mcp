@@ -20,6 +20,7 @@ import {
   resourceDisplayName,
   classifyEmailMatch,
   identificationRequired,
+  ACTING_RESOURCE_TOOLS,
 } from '../utils/caller-resolution.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
@@ -1721,6 +1722,25 @@ export class AutotaskToolHandler {
     try {
       const handler = this.getDispatchTable().get(name);
       if (!handler) throw new Error(`Unknown tool: ${name}`);
+
+      // Proxy data input (§4.1): `currentUser: true` acts as the caller — resolve
+      // them to an Autotask resource and write it into the tool's resource field,
+      // or return the identity prompt when the caller can't be mapped.
+      const actingField = ACTING_RESOURCE_TOOLS[name];
+      if (actingField) {
+        if (args.currentUser === true && args[actingField] == null) {
+          const resolution = await this.resolveCaller(ctx);
+          if (resolution.status !== 'resolved') {
+            emitAudit(this.logger, ctx, { tool: name, outcome: 'not-found', durationMs: Date.now() - startedAt });
+            return { content: [{ type: 'text', text: JSON.stringify({ message: resolution.message, data: resolution }) }] };
+          }
+          args = { ...args, [actingField]: resolution.resource.id };
+        }
+        if ('currentUser' in args) {
+          const { currentUser: _drop, ...rest } = args;
+          args = rest;
+        }
+      }
 
       const { result: rawResult, message } = await handler(args, ctx);
 

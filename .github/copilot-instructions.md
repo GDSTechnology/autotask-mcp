@@ -1,6 +1,6 @@
 # Copilot Code Review Instructions — MCP Server Template
 
-> This file applies to all WYRE MCP servers (autotask-mcp, datto-rmm-mcp, syncro-mcp, halopsa-mcp, ninjaone-mcp, liongard-mcp, connectwise-manage-mcp, connectwise-automate-mcp, itglue-mcp, superops-mcp, atera-mcp, salesbuildr-mcp).
+> This file applies to all GDS MCP servers (autotask-mcp, datto-rmm-mcp, syncro-mcp, halopsa-mcp, ninjaone-mcp, liongard-mcp, connectwise-manage-mcp, connectwise-automate-mcp, itglue-mcp, superops-mcp, atera-mcp, salesbuildr-mcp).
 
 ## Review Philosophy
 - Only comment when you have HIGH CONFIDENCE (>80%) that an issue exists
@@ -44,7 +44,7 @@
 - `.releaserc.json`: commit message templates must use `\n` escape sequences, never literal newlines
 
 ### Vendor Client Library Usage
-- Use the corresponding `@wyre-technology/node-*` client library for API calls, not raw `fetch`
+- Use the corresponding `@gdstechnology/node-*` client library for API calls, not raw `fetch`
 - Client library methods should handle auth header construction — don't duplicate auth logic in the MCP server
 - Error responses from vendor APIs should be mapped to meaningful MCP error messages, not passed through raw
 

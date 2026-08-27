@@ -159,10 +159,10 @@ describe('Decision Tree Router', () => {
   test('should route company search with quoted name', async () => {
     const service = new AutotaskService(mockConfig, mockLogger);
     const handler = new AutotaskToolHandler(service, mockLogger);
-    const result = await handler.callTool('autotask_router', { intent: 'search companies for "Wyre Technology"' });
+    const result = await handler.callTool('autotask_router', { intent: 'search companies for "Acme Corp"' });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.data.suggestedTool).toBe('autotask_search_companies');
-    expect(parsed.data.suggestedParams.searchTerm).toBe('Wyre Technology');
+    expect(parsed.data.suggestedParams.searchTerm).toBe('Acme Corp');
   });
 });
 

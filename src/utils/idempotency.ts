@@ -39,6 +39,7 @@ const NON_MUTATING_TOOLS = new Set<string>([
   'autotask_whoami',
   'autotask_test_connection',
   'autotask_execute_tool', // passthrough — the inner tool is guarded on its own dispatch
+  'autotask_raw_request', // admin escape hatch — gated separately (§3.4); a raw GET must never be replayed
 ]);
 
 /** True when a tool mutates Autotask state and is therefore eligible for idempotency. */

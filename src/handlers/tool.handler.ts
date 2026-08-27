@@ -27,6 +27,7 @@ import {
   buildPermissionDenied,
   isPermissionsEnabled,
 } from '../utils/permissions.js';
+import { evaluateRawRequest, buildRawRequestDenied } from '../utils/raw-gate.js';
 import {
   CallerResolution,
   ResolvedResource,
@@ -1759,6 +1760,19 @@ export class AutotaskToolHandler {
         const decision = evaluatePermission(role, risk);
         if (!decision.allowed) {
           const denied = buildPermissionDenied(name, risk, decision);
+          emitAudit(this.logger, ctx, { tool: name, outcome: 'permission-denied', durationMs: Date.now() - startedAt });
+          return { content: [{ type: 'text', text: JSON.stringify({ message: denied.message, data: denied }) }] };
+        }
+      }
+
+      // Raw-request gatekeeping (§3.4): administrator-only when permissions are
+      // on, DELETE disabled by default, and a production read-only switch. The
+      // HTTP layer already blocks absolute URLs / off-zone hosts / auth overrides.
+      if (name === 'autotask_raw_request') {
+        const role = resolveRole(ctx, this.roleMap);
+        const decision = evaluateRawRequest({ method: args.method, role, permissionsEnabled: isPermissionsEnabled() });
+        if (!decision.allowed) {
+          const denied = buildRawRequestDenied(args.method, decision);
           emitAudit(this.logger, ctx, { tool: name, outcome: 'permission-denied', durationMs: Date.now() - startedAt });
           return { content: [{ type: 'text', text: JSON.stringify({ message: denied.message, data: denied }) }] };
         }

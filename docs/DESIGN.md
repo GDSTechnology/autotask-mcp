@@ -108,10 +108,18 @@ complementing `reference.resolver.ts` (ticket-vs-task display numbers). Per-enti
 live wiring — feeding each tool's search results through this layer, plus SKU/serial
 forms — is adopted incrementally by the entity tools.
 
-### Raw-request gatekeeping — **open**
-`autotask_raw_request`: administrator-only, DELETE disabled, absolute URLs and
-auth-header overrides rejected (host assertion already enforced), every call
-audited. An env switch disables mutating raw requests in production.
+### Raw-request gatekeeping — **implemented (#17)**
+`utils/raw-gate.ts`. The HTTP layer already rejects absolute URLs, auth-header
+overrides, path traversal, and off-zone hosts. On top of that, `callTool` runs a
+policy gate for `autotask_raw_request`: administrator-only when
+`MCP_PERMISSIONS_ENABLED=true` (raw bypasses the typed surface, so it is never
+subject to the ordinary role→risk ladder); DELETE disabled unless
+`MCP_RAW_ALLOW_DELETE=true` (deletes should go through a typed, risk-gated,
+idempotent tool); and a production read-only switch `MCP_RAW_READONLY=true` that
+blocks every mutating method, leaving only GET. Denials return a structured
+`raw_request_denied` (audited `permission-denied`). Raw is excluded from
+idempotency (a raw GET must never be replayed) and handled by this gate, not the
+general permission gate.
 
 ## Optional PostgreSQL layer (Phase 2)
 

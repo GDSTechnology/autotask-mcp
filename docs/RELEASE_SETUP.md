@@ -1,10 +1,15 @@
 # Release Setup Documentation
 
+> **GDS note:** GDS deploys via a **local docker-compose build** — see
+> [`DEPLOY.md`](../DEPLOY.md) and `scripts/build-image.sh`. The DockerHub /
+> semantic-release publishing flow described below is inherited from upstream and
+> is **not** part of the GDS process.
+
 This document explains how to set up automated releases for the Autotask MCP Server, including GitHub releases, NPM publishing, and Docker Hub publishing.
 
 ## Overview
 
-The release process is automated using GitHub Actions and follows these patterns inspired by the [autotask-node repository](https://github.com/wyre-technology/autotask-node):
+The release process is automated using GitHub Actions and follows these patterns inspired by the [autotask-node repository](https://github.com/GDSTechnology/autotask-node):
 
 1. **Semantic Versioning**: Uses conventional commits and semantic-release
 2. **Multi-Platform Testing**: Tests on Node.js 18, 20, and 22
@@ -22,7 +27,7 @@ Set these secrets in your GitHub repository settings (`Settings > Secrets and va
 |-------------|-------------|---------------|
 | `GITHUB_TOKEN` | Automatically provided by GitHub | *(automatic)* |
 | `NPM_TOKEN` | NPM authentication token | `npm_xxxxxxxxxxxxx` |
-| `DOCKERHUB_USERNAME` | Docker Hub username | `wyre-technology` |
+| `DOCKERHUB_USERNAME` | Docker Hub username | `gdstechnology` |
 | `DOCKERHUB_TOKEN` | Docker Hub access token | `dckr_pat_xxxxxxx` |
 
 ### Getting NPM Token
@@ -155,10 +160,10 @@ gh release create v1.0.1 --auto --notes
 npm publish
 
 # Build and push Docker image
-docker build -t wyre-technology/autotask-mcp:v1.0.1 .
-docker push wyre-technology/autotask-mcp:v1.0.1
-docker tag wyre-technology/autotask-mcp:v1.0.1 wyre-technology/autotask-mcp:latest
-docker push wyre-technology/autotask-mcp:latest
+docker build -t gdstechnology/autotask-mcp:v1.0.1 .
+docker push gdstechnology/autotask-mcp:v1.0.1
+docker tag gdstechnology/autotask-mcp:v1.0.1 gdstechnology/autotask-mcp:latest
+docker push gdstechnology/autotask-mcp:latest
 ```
 
 ## Monitoring and Maintenance
@@ -168,7 +173,7 @@ docker push wyre-technology/autotask-mcp:latest
 Monitor releases through:
 - **GitHub**: Check Actions tab for workflow status
 - **NPM**: Verify package publication at https://www.npmjs.com/package/autotask-mcp
-- **Docker Hub**: Check images at https://hub.docker.com/r/wyre-technology/autotask-mcp
+- **Docker Hub**: Check images at https://hub.docker.com/r/gdstechnology/autotask-mcp
 
 ### Security Scanning
 
@@ -222,7 +227,7 @@ git push origin :refs/tags/v1.0.1
 npm deprecate autotask-mcp@1.0.1 "Version deprecated due to critical issue"
 
 # Docker image removal
-docker push --delete wyre-technology/autotask-mcp:v1.0.1
+docker push --delete gdstechnology/autotask-mcp:v1.0.1
 ```
 
 ## Troubleshooting
@@ -290,7 +295,7 @@ Enable debug logging in GitHub Actions:
 
 - [Docker Usage Guide](DOCKER_USAGE.md)
 - [Main README](README.md)
-- [Autotask Node Library](https://github.com/wyre-technology/autotask-node)
+- [Autotask Node Library](https://github.com/GDSTechnology/autotask-node)
 - [Semantic Release Documentation](https://semantic-release.gitbook.io/)
 - [Conventional Commits](https://www.conventionalcommits.org/)
 

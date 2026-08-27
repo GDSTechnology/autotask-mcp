@@ -35,41 +35,6 @@ Your `~/.claude/settings.json` or Claude Desktop config:
 
 This configuration will continue to work exactly as before.
 
-## Migrating to Hosted MCP Gateway
-
-When the hosted MCP Gateway at `mcp.wyre.ai` becomes available, you can switch to the hosted version for a simpler setup.
-
-### Benefits of Hosted Mode
-
-- **No local credentials** - Credentials stored securely in the gateway
-- **OAuth-like flow** - One-time credential entry via web browser
-- **Automatic updates** - Always use the latest MCP server version
-- **Multi-device support** - Use from any device once authenticated
-
-### Updated Configuration for Hosted Mode
-
-Replace your local configuration with:
-
-```json
-{
-  "mcpServers": {
-    "autotask": {
-      "type": "http",
-      "url": "https://mcp.wyre.ai/v1/autotask/mcp"
-    }
-  }
-}
-```
-
-### First-Time Setup (Hosted)
-
-1. Add the hosted MCP server to your Claude configuration
-2. First request triggers OAuth-like authentication flow
-3. Browser opens to Wyre credential entry page
-4. Enter your Autotask API credentials once
-5. Credentials are encrypted and stored securely
-6. All subsequent requests use stored credentials
-
 ## Running Your Own Gateway Instance
 
 For self-hosted or enterprise deployments, you can run the MCP server in gateway mode.
@@ -78,7 +43,7 @@ For self-hosted or enterprise deployments, you can run the MCP server in gateway
 
 ```bash
 # Pull the image
-docker pull ghcr.io/wyre-technology/autotask-mcp:latest
+docker pull ghcr.io/gdstechnology/autotask-mcp:latest
 
 # Run in gateway mode (credentials via headers)
 docker run -d \
@@ -86,7 +51,7 @@ docker run -d \
   -e AUTH_MODE=gateway \
   -e MCP_TRANSPORT=http \
   -e LOG_LEVEL=info \
-  ghcr.io/wyre-technology/autotask-mcp:latest
+  ghcr.io/gdstechnology/autotask-mcp:latest
 ```
 
 ### Gateway Mode Headers
@@ -196,5 +161,5 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Support
 
-- GitHub Issues: https://github.com/wyre-technology/autotask-mcp/issues
-- Documentation: https://github.com/wyre-technology/autotask-mcp
+- GitHub Issues: https://github.com/GDSTechnology/autotask-mcp/issues
+- Documentation: https://github.com/GDSTechnology/autotask-mcp

@@ -1,5 +1,9 @@
 # 🚀 Release Setup Complete!
 
+> **GDS note:** the DockerHub / semantic-release flow below is inherited from
+> upstream and is **not** the GDS process. GDS builds and deploys locally — see
+> [`DEPLOY.md`](../DEPLOY.md) and `scripts/build-image.sh`.
+
 Your Autotask MCP Server is now ready for automated releases! Here's what has been set up:
 
 ## ✅ What's Been Created
@@ -57,7 +61,7 @@ Add these secrets in your GitHub repository (`Settings > Secrets and variables >
 |--------|----------|-------------|
 | `GITHUB_TOKEN` | ✅ Auto | Automatically provided |
 | `NPM_TOKEN` | 🔶 Optional | For NPM publishing |
-| `DOCKERHUB_USERNAME` | ✅ Required | Your Docker Hub username (`wyre-technology`) |
+| `DOCKERHUB_USERNAME` | ✅ Required | Your Docker Hub username (`gdstechnology`) |
 | `DOCKERHUB_TOKEN` | ✅ Required | Docker Hub access token |
 
 ### 2. Docker Hub Token Setup
@@ -108,8 +112,8 @@ git push origin main
 - ✅ Distribution files as assets
 
 ### Docker Hub Images
-- ✅ `wyre-technology/autotask-mcp:latest`
-- ✅ `wyre-technology/autotask-mcp:v1.0.2`
+- ✅ `gdstechnology/autotask-mcp:latest`
+- ✅ `gdstechnology/autotask-mcp:v1.0.2`
 - ✅ Multi-architecture (AMD64 + ARM64)
 - ✅ Comprehensive metadata labels
 
@@ -125,7 +129,7 @@ git push origin main
 - Security scan results in **Security** tab
 
 ### Docker Hub
-- Visit: https://hub.docker.com/r/wyre-technology/autotask-mcp
+- Visit: https://hub.docker.com/r/gdstechnology/autotask-mcp
 - Verify image tags and metadata
 - Check download statistics
 
@@ -138,7 +142,7 @@ git push origin main
 ### Quick Start with Docker
 ```bash
 # Pull the latest image
-docker pull wyre-technology/autotask-mcp:latest
+docker pull gdstechnology/autotask-mcp:latest
 
 # Run with environment variables
 docker run -d \
@@ -146,14 +150,14 @@ docker run -d \
   -e AUTOTASK_USERNAME="your-user@company.com" \
   -e AUTOTASK_SECRET="your-secret" \
   -e AUTOTASK_INTEGRATION_CODE="your-code" \
-  wyre-technology/autotask-mcp:latest
+  gdstechnology/autotask-mcp:latest
 ```
 
 ### Docker Compose
 ```yaml
 services:
   autotask-mcp:
-    image: wyre-technology/autotask-mcp:latest
+    image: gdstechnology/autotask-mcp:latest
     environment:
       - AUTOTASK_USERNAME=${AUTOTASK_USERNAME}
       - AUTOTASK_SECRET=${AUTOTASK_SECRET}
@@ -204,4 +208,4 @@ Your release setup is working when you see:
 
 ---
 
-*Based on patterns from [autotask-node](https://github.com/wyre-technology/autotask-node) repository* 
+*Based on patterns from [autotask-node](https://github.com/GDSTechnology/autotask-node) repository* 

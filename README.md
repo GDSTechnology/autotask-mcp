@@ -1,7 +1,6 @@
 # Autotask MCP Server
 
-[![Build Status](https://github.com/wyre-technology/autotask-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/wyre-technology/autotask-mcp/actions/workflows/release.yml)
-[![codecov](https://codecov.io/gh/wyre-technology/autotask-mcp/graph/badge.svg)](https://codecov.io/gh/wyre-technology/autotask-mcp)
+[![CI](https://github.com/GDSTechnology/autotask-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/GDSTechnology/autotask-mcp/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
 
@@ -11,11 +10,8 @@ This is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) serve
 
 If you run an MSP on Autotask and you're tired of the context-switching tax, this is for you.
 
-> **Part of the [MSP Claude Plugins](https://github.com/wyre-technology/msp-claude-plugins) ecosystem** — a growing suite of AI integrations for the MSP stack including [Datto RMM](https://github.com/wyre-technology/datto-rmm-mcp), [IT Glue](https://github.com/wyre-technology/itglue-mcp), [HaloPSA](https://github.com/wyre-technology/halopsa-mcp), [ConnectWise Automate](https://github.com/wyre-technology/connectwise-automate-mcp), [NinjaOne](https://github.com/wyre-technology/ninjaone-mcp), [Huntress](https://github.com/wyre-technology/huntress-mcp), and more. Built by MSPs, for MSPs.
-
-<a href="https://glama.ai/mcp/servers/@wyre-technology/autotask-mcp">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@wyre-technology/autotask-mcp/badge" alt="Autotask MCP server" />
-</a>
+A GDS Technology fork, maintained for GDS's Autotask automation (ChatGPT + n8n).
+Originally derived from the upstream `WYRE-AI/autotask-mcp` (Apache-2.0).
 
 ## Deployment
 
@@ -24,7 +20,7 @@ this repository. See **[DEPLOY.md](DEPLOY.md)** for the build → deploy → ver
 rollback runbook, and `scripts/build-image.sh` for a traceable image build.
 
 > **Note — no GitHub Packages token required.** `autotask-mcp` does **not** depend
-> on any private `@wyre-technology/*` package. Its only SDK dependency,
+> on any private GitHub Packages registry package. Its only SDK dependency,
 > `autotask-node`, is a git dependency on the **public**
 > [`GDSTechnology/autotask-node`](https://github.com/GDSTechnology/autotask-node)
 > fork, which `npm ci` / `npm install` resolve anonymously — so image builds and the
@@ -35,7 +31,7 @@ rollback runbook, and `scripts/build-image.sh` for a traceable image build.
 
 **Claude Desktop** — download, open, done:
 
-1. Download `autotask-mcp.mcpb` from the [latest release](https://github.com/wyre-technology/autotask-mcp/releases/latest)
+1. Download `autotask-mcp.mcpb` from the [latest release](https://github.com/GDSTechnology/autotask-mcp/releases/latest)
 2. Open the file (double-click or drag into Claude Desktop)
 3. Enter your Autotask credentials when prompted (Username, Secret, Integration Code)
 
@@ -48,7 +44,7 @@ claude mcp add autotask-mcp \
   -e AUTOTASK_USERNAME=your-user@company.com \
   -e AUTOTASK_SECRET=your-secret \
   -e AUTOTASK_INTEGRATION_CODE=your-code \
-  -- npx -y github:wyre-technology/autotask-mcp
+  -- npx -y github:GDSTechnology/autotask-mcp
 ```
 
 See [Installation](#installation) for Docker and from-source methods.
@@ -93,7 +89,7 @@ See [Installation](#installation) for Docker and from-source methods.
 
 The simplest method — no terminal, no JSON editing, no Node.js install required.
 
-1. Download `autotask-mcp.mcpb` from the [latest release](https://github.com/wyre-technology/autotask-mcp/releases/latest)
+1. Download `autotask-mcp.mcpb` from the [latest release](https://github.com/GDSTechnology/autotask-mcp/releases/latest)
 2. Open the file (double-click or drag into Claude Desktop)
 3. Enter your Autotask credentials when prompted (Username, Secret, Integration Code)
 
@@ -104,7 +100,7 @@ claude mcp add autotask-mcp \
   -e AUTOTASK_USERNAME=your-user@company.com \
   -e AUTOTASK_SECRET=your-secret \
   -e AUTOTASK_INTEGRATION_CODE=your-code \
-  -- npx -y github:wyre-technology/autotask-mcp
+  -- npx -y github:GDSTechnology/autotask-mcp
 ```
 
 ### Option 2: Docker
@@ -123,7 +119,7 @@ claude mcp add autotask-mcp \
         "-e", "AUTOTASK_SECRET=your-secret",
         "-e", "AUTOTASK_INTEGRATION_CODE=your-code",
         "--entrypoint", "node",
-        "ghcr.io/wyre-technology/autotask-mcp:latest",
+        "ghcr.io/gdstechnology/autotask-mcp:latest",
         "dist/entry.js"
       ]
     }
@@ -141,7 +137,7 @@ docker run -d \
   -e AUTOTASK_SECRET="your-secret" \
   -e AUTOTASK_INTEGRATION_CODE="your-code" \
   --restart unless-stopped \
-  ghcr.io/wyre-technology/autotask-mcp:latest
+  ghcr.io/gdstechnology/autotask-mcp:latest
 
 # Verify
 curl http://localhost:8080/health
@@ -159,7 +155,7 @@ docker run -d \
   -p 8080:8080 \
   -e AUTH_MODE=gateway \
   --restart unless-stopped \
-  ghcr.io/wyre-technology/autotask-mcp:latest
+  ghcr.io/gdstechnology/autotask-mcp:latest
 ```
 
 The gateway injects credentials via headers:
@@ -172,7 +168,7 @@ See [Gateway Mode](#gateway-mode) for details.
 ### Option 3: From Source (Development)
 
 ```bash
-git clone https://github.com/wyre-technology/autotask-mcp.git
+git clone https://github.com/GDSTechnology/autotask-mcp.git
 cd autotask-mcp
 npm ci && npm run build
 ```
@@ -244,7 +240,7 @@ NODE_ENV=production
 
 ### Gateway Mode
 
-When deployed behind an MCP Gateway (e.g., `mcp.wyre.ai`), the server operates in gateway mode where credentials are injected via HTTP headers on each request.
+When deployed behind an MCP Gateway, the server operates in gateway mode where credentials are injected via HTTP headers on each request.
 
 **Enable Gateway Mode:**
 
@@ -475,7 +471,7 @@ The Docker image defaults to **HTTP transport** on port 8080 — suitable for re
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/wyre-technology/autotask-mcp:latest
+docker pull ghcr.io/gdstechnology/autotask-mcp:latest
 
 # Run container with HTTP transport (default)
 docker run -d \
@@ -485,7 +481,7 @@ docker run -d \
   -e AUTOTASK_SECRET="your-secret-key" \
   -e AUTOTASK_INTEGRATION_CODE="your-integration-code" \
   --restart unless-stopped \
-  ghcr.io/wyre-technology/autotask-mcp:latest
+  ghcr.io/gdstechnology/autotask-mcp:latest
 
 # Verify it's running
 curl http://localhost:8080/health
@@ -497,7 +493,7 @@ For **stdio** usage with Claude Desktop, see [Installation Option 2](#option-2-d
 
 ```bash
 # Clone repository
-git clone https://github.com/wyre-technology/autotask-mcp.git
+git clone https://github.com/GDSTechnology/autotask-mcp.git
 cd autotask-mcp
 
 # Create environment file
@@ -534,7 +530,7 @@ docker compose --profile dev up autotask-mcp-dev
 ### Setup
 
 ```bash
-git clone https://github.com/wyre-technology/autotask-mcp.git
+git clone https://github.com/GDSTechnology/autotask-mcp.git
 cd autotask-mcp
 npm install
 ```
@@ -797,9 +793,9 @@ By submitting a pull request, you agree to the terms of our [Contributor License
 
 ## Support
 
-- 📚 [Documentation](https://github.com/wyre-technology/autotask-mcp/wiki)
-- 🐛 [Issue Tracker](https://github.com/wyre-technology/autotask-mcp/issues)
-- 💬 [Discussions](https://github.com/wyre-technology/autotask-mcp/discussions)
+- 📚 [Documentation](https://github.com/GDSTechnology/autotask-mcp/wiki)
+- 🐛 [Issue Tracker](https://github.com/GDSTechnology/autotask-mcp/issues)
+- 💬 [Discussions](https://github.com/GDSTechnology/autotask-mcp/discussions)
 
 ## Acknowledgments
 
@@ -809,4 +805,4 @@ By submitting a pull request, you agree to the terms of our [Contributor License
 
 ---
 
-Built by [WYRE Technology](https://github.com/wyre-technology) — part of the [MSP Claude Plugins](https://github.com/wyre-technology/msp-claude-plugins) ecosystem 
+Built by [GDS Technology](https://github.com/GDSTechnology) — part of the [MSP Claude Plugins](https://github.com/GDSTechnology/msp-claude-plugins) ecosystem 

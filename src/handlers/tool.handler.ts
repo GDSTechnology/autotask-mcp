@@ -10,6 +10,8 @@ import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '.
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult } from '../utils/create-result.js';
+import { extractCallerContext, stripCallerContext } from '../types/context.js';
+import { emitAudit } from '../utils/audit.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
 
@@ -1618,7 +1620,12 @@ export class AutotaskToolHandler {
   /**
    * Call a tool with the given arguments
    */
-  async callTool(name: string, args: Record<string, any>): Promise<McpToolResult> {
+  async callTool(name: string, args: Record<string, any>, meta?: Record<string, any>): Promise<McpToolResult> {
+    // Caller context (who/where/correlation) for audit + future permissions
+    // (§3.5/§23). Strip the reserved `_context` key so it never reaches tool logic.
+    const ctx = extractCallerContext(meta, args);
+    args = stripCallerContext(args);
+    const startedAt = Date.now();
     this.logger.debug(`Calling tool: ${name}`, args);
 
     try {
@@ -1631,6 +1638,7 @@ export class AutotaskToolHandler {
       const notFoundMsg = this.buildNotFoundMessage(name, args, rawResult);
       if (notFoundMsg) {
         this.logger.debug(`Not-found result for ${name}: ${notFoundMsg}`);
+        emitAudit(this.logger, ctx, { tool: name, outcome: 'not-found', durationMs: Date.now() - startedAt });
         return errorToolResult({ error: notFoundMsg, tool: name });
       }
 
@@ -1672,10 +1680,26 @@ export class AutotaskToolHandler {
       }
 
       this.logger.debug(`Successfully executed tool: ${name}`);
+      const resultId =
+        result && typeof result === 'object' && typeof (result as { id?: unknown }).id === 'number'
+          ? (result as { id: number }).id
+          : undefined;
+      emitAudit(this.logger, ctx, {
+        tool: name,
+        outcome: 'ok',
+        durationMs: Date.now() - startedAt,
+        ...(resultId !== undefined ? { resultId } : {}),
+      });
       return { content: [{ type: 'text', text: responseText }] };
 
     } catch (error) {
       this.logger.error(`Tool execution failed for ${name}:`, error);
+      emitAudit(this.logger, ctx, {
+        tool: name,
+        outcome: 'error',
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
       // Surface rate-limit errors with a typed envelope so LLM clients can
       // distinguish them from generic failures and stop retrying. Issue #91.
       if (error instanceof AutotaskRateLimitError) {

@@ -169,7 +169,7 @@ Disabled by default. Feature flags gate each capability
 - **Performance:** central request queue, per-user + global concurrency caps, retry
   with backoff + jitter, circuit breaker, metadata/picklist cache, bounded fan-out,
   stable pagination, correlation ids across ChatGPT/Hermes → MCP → PG → Autotask.
-- **Deployment:** live on MA-BOS-S-KVM1 (docker-compose). Automated release
+- **Deployment:** live on the production host (docker-compose). Automated release
   (semantic-release → GHCR image). Pinned image / rollback per `DEPLOY.md`.
 - **Testing:** unit (resolution, ambiguity, permission intersection, risk,
   idempotency, tz, inventory math, pricing, dependency ordering, sales-cycle) +

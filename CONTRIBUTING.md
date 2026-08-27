@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for your interest in contributing! This project is maintained by [GDS Technology](https://github.com/GDSTechnology).
+Thank you for your interest in contributing! This is a [GDS Technology](https://github.com/GDSTechnology) fork of the original [Autotask MCP Server](https://github.com/WYRE-AI/autotask-mcp) by [WYRE Technology](https://github.com/wyre-technology) and Aaron Sachs ([@asachs01](https://github.com/asachs01)), now maintained by GDS Technology. See [NOTICE](NOTICE) for attribution.
 
 ## Getting Started
 

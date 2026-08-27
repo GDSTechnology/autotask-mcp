@@ -778,18 +778,30 @@ Additionally, Autotask limits **10,000 total requests per hour** across all inte
 
 ## License
 
-This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) and [NOTICE](NOTICE) files for details.
 
 ### Contributor License Agreement
 
 By submitting a pull request, you agree to the terms of our [Contributor License Agreement](CLA.md). This ensures that contributions can be properly licensed and that you have the right to submit the code.
 
-## Contributors
+## Credits & Acknowledgements
+
+This is a **GDS Technology fork** of the original **Autotask MCP Server**, created and
+maintained by **[WYRE Technology](https://github.com/wyre-technology)** and **Aaron
+Sachs ([@asachs01](https://github.com/asachs01))** with its contributors — upstream at
+**[WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp)**. Much of this
+codebase is derived from that work, and full credit for it belongs to those authors.
+GDS maintains this fork for its own Autotask automation; see [NOTICE](NOTICE) for
+attribution details.
+
+### Contributors
+
+Credit to the original project's authors and contributors:
 
 | Avatar | Name | Contributions |
 | --- | --- | --- |
-| <a href="https://github.com/asachs01"><img src="https://github.com/asachs01.png" width="60" /></a> | [@asachs01](https://github.com/asachs01) | Maintainer |
-| <a href="https://github.com/Baphomet480"><img src="https://github.com/Baphomet480.png" width="60" /></a> | [@Baphomet480](https://github.com/Baphomet480) | CLI bin fix |
+| <a href="https://github.com/asachs01"><img src="https://github.com/asachs01.png" width="60" /></a> | [@asachs01](https://github.com/asachs01) | Original author & upstream maintainer |
+| <a href="https://github.com/Baphomet480"><img src="https://github.com/Baphomet480.png" width="60" /></a> | [@Baphomet480](https://github.com/Baphomet480) | CLI bin fix (upstream) |
 
 ## Support
 

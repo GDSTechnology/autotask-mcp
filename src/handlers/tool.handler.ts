@@ -18,6 +18,7 @@ import {
   requiresExplicitConfirmation,
   buildConfirmationRequired,
 } from '../utils/risk.js';
+import { InMemoryIdempotencyStore, deriveIdempotencyKey, isMutatingTool } from '../utils/idempotency.js';
 import {
   CallerResolution,
   ResolvedResource,
@@ -132,6 +133,8 @@ export class AutotaskToolHandler {
   private toolRisk = new Map<string, RiskLevel>(
     TOOL_DEFINITIONS.map((d) => [d.name, classifyRisk(d.name, d.annotations)])
   );
+  // Idempotency store (§4.4): replays the prior result for a repeated mutation.
+  private idempotencyStore = new InMemoryIdempotencyStore<McpToolResult>();
 
   constructor(autotaskService: AutotaskService, logger: Logger, lazyLoading = false) {
     this.autotaskService = autotaskService;
@@ -1767,6 +1770,19 @@ export class AutotaskToolHandler {
         }
       }
 
+      // Idempotency (§4.4): for mutating tools, replay the prior result for a
+      // repeated logical action instead of mutating twice. Keyed by a
+      // caller-supplied idempotencyKey, or derived from caller + conversation +
+      // tool + payload. No key (e.g. a context-free CLI call) → no dedup.
+      const idempotencyKey = isMutatingTool(name) ? deriveIdempotencyKey(ctx, name, args) : undefined;
+      if (idempotencyKey) {
+        const cached = this.idempotencyStore.get(idempotencyKey);
+        if (cached) {
+          emitAudit(this.logger, ctx, { tool: name, outcome: 'idempotent-replay', durationMs: Date.now() - startedAt });
+          return cached;
+        }
+      }
+
       const { result: rawResult, message } = await handler(args, ctx);
 
       // Check for empty/not-found results and return explicit error to prevent hallucination
@@ -1825,7 +1841,11 @@ export class AutotaskToolHandler {
         durationMs: Date.now() - startedAt,
         ...(resultId !== undefined ? { resultId } : {}),
       });
-      return { content: [{ type: 'text', text: responseText }] };
+      const finalResult: McpToolResult = { content: [{ type: 'text', text: responseText }] };
+      // Cache successful mutations for idempotent replay. Errors and not-found
+      // results are never cached, so a genuine failure can still be retried.
+      if (idempotencyKey) this.idempotencyStore.set(idempotencyKey, finalResult);
+      return finalResult;
 
     } catch (error) {
       this.logger.error(`Tool execution failed for ${name}:`, error);

@@ -143,6 +143,7 @@ describe('contract tool handlers (issue #237)', () => {
     const handler = new AutotaskToolHandler(service, mockLogger);
     const result = await handler.callTool('autotask_create_contracts_bulk', {
       contracts: [contractShell({ contractName: 'A' }), contractShell({ contractName: 'B' })],
+      confirm: true, // financial tool — risk gate (§4.3) requires explicit confirm
     });
     expect(spy).toHaveBeenCalledWith([
       expect.objectContaining({ contractName: 'A' }),

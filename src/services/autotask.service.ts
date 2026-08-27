@@ -893,6 +893,25 @@ export class AutotaskService {
   }
 
   /**
+   * Find active resources by exact email (for caller→resource mapping, §4.1).
+   * Returns all matches so the caller can distinguish unique vs ambiguous.
+   */
+  async searchResourcesByEmail(
+    email: string
+  ): Promise<Array<{ id: number; firstName?: string; lastName?: string; email?: string }>> {
+    const http = await this.ensureClient();
+    try {
+      return await http.query('Resources', [
+        { op: 'eq', field: 'isActive', value: true },
+        { op: 'eq', field: 'email', value: email },
+      ], { maxRecords: 5 });
+    } catch (error) {
+      this.logger.error(`Failed to search resources by email "${email}":`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Return the list of internal (non-customer-facing) billing code names.
    * Queries BillingCodes with useType = 1 (Internal Allocation Code).
    */

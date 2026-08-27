@@ -970,6 +970,10 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'Name of the resource/user (e.g., "Will Spence"). Will be resolved to a resourceID automatically. Use this instead of resourceID for convenience.'
         },
+        currentUser: {
+          type: 'boolean',
+          description: 'Log the time as the calling user — resolves the caller to their Autotask resource. Alternative to resourceID/resourceName.'
+        },
         category: {
           type: 'string',
           description: 'Category name for Regular Time entries (e.g., "Internal Meeting", "Office Management", "Training", "Research", "HR/Recruiting", "Travel Time", "Holiday", "PTO"). Required for Regular Time entries (when no ticket/task/project is specified).'
@@ -2634,6 +2638,28 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['reference'],
     }
   },
+  {
+    name: 'autotask_whoami',
+    description:
+      'READ-ONLY. Resolve the calling user to their Autotask resource — used for ' +
+      'permissions and as the acting/proxy resource for data input (time entries, ' +
+      'To-Dos, assignments). Resolves from the caller context (ChatGPT / Hermes-Teams ' +
+      '/ Telegram email or mapped handle) or an explicit resourceId / resourceEmail / ' +
+      'resourceName. Returns { status: "resolved", resource } or { status: ' +
+      '"user_identification_required", reason, candidates?, message }. When ' +
+      'identification is required, ask the user who they are and call again with ' +
+      'resourceId / resourceEmail / resourceName.',
+    annotations: { title: 'Resolve calling user to Autotask resource', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceId: { type: 'number', description: 'Explicit Autotask resource ID to identify as' },
+        resourceEmail: { type: 'string', description: 'Resolve by resource email' },
+        resourceName: { type: 'string', description: 'Resolve by resource name' }
+      },
+      required: []
+    }
+  },
 
   // Billing Items tools (Approve and Post workflow)
   {
@@ -3201,7 +3227,8 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       type: 'object',
       properties: {
         companyID: { type: 'number', description: 'Owning company (required)' },
-        assignedToResourceID: { type: 'number', description: 'Resource the To-Do is assigned to (required)' },
+        assignedToResourceID: { type: 'number', description: 'Resource the To-Do is assigned to. Provide this, or set currentUser to assign it to the calling user.' },
+        currentUser: { type: 'boolean', description: 'Assign the To-Do to the calling user (resolves the caller to their Autotask resource). Alternative to assignedToResourceID.' },
         actionType: { type: 'number', description: 'Numeric action type ID. Provide this OR actionTypeName, not both.' },
         actionTypeName: { type: 'string', description: 'Action type label resolved from metadata (e.g. "Sales"). Provide this OR actionType.' },
         activityDescription: { type: 'string', description: 'Free-text description' },
@@ -3212,7 +3239,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         opportunityID: { type: 'number', description: 'Associated opportunity (same company)' },
         ticketID: { type: 'number', description: 'Associated ticket (same company)' }
       },
-      required: ['companyID', 'assignedToResourceID', 'startDateTime', 'endDateTime']
+      required: ['companyID', 'startDateTime', 'endDateTime']
     }
   },
   {
@@ -3423,7 +3450,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_record_reference']
+    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

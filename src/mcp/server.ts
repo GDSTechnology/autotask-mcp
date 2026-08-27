@@ -240,7 +240,9 @@ export class AutotaskMcpServer {
         this.logger.debug(`Handling tool call: ${request.params.name}`);
         const result = await toolHandler.callTool(
           request.params.name,
-          request.params.arguments || {}
+          request.params.arguments || {},
+          // MCP-standard place for caller context (source/user/correlation); see §3.5.
+          (request.params as { _meta?: Record<string, any> })._meta
         );
         return {
           content: result.content,

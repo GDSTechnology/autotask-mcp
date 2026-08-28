@@ -365,6 +365,38 @@ export class AutotaskService {
     }
   }
 
+  /**
+   * Find a contact in a company by email, or create it if absent. Idempotent —
+   * safe against the "already exists" race and the create-then-GET fragility that
+   * bit automation clients. Returns the id and whether it was newly created.
+   */
+  async findOrCreateContact(
+    companyID: number,
+    contact: Partial<AutotaskContact> & { emailAddress?: string; email?: string }
+  ): Promise<{ id: number; created: boolean }> {
+    if (companyID === undefined || companyID === null) {
+      throw new Error('Cannot find-or-create contact: companyID is required.');
+    }
+    const http = await this.ensureClient();
+    const email = contact.emailAddress ?? contact.email;
+    if (email) {
+      const existing = await http.query<{ id: number }>(
+        'Contacts',
+        [
+          { op: 'eq', field: 'companyID', value: companyID },
+          { op: 'eq', field: 'emailAddress', value: email },
+        ],
+        { includeFields: ['id'], maxRecords: 1 }
+      );
+      if (existing.length > 0 && typeof existing[0].id === 'number') {
+        this.logger.info(`findOrCreateContact: matched existing contact ${existing[0].id} by email in company ${companyID}`);
+        return { id: existing[0].id, created: false };
+      }
+    }
+    const id = await this.createContact({ ...contact, companyID } as Partial<AutotaskContact>);
+    return { id, created: true };
+  }
+
   async updateContact(id: number, updates: Partial<AutotaskContact>): Promise<void> {
     const http = await this.ensureClient();
     // Enforce the 50-char contact note limit (§6.2). `truncateNote` is MCP-only.

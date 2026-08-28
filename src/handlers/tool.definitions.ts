@@ -1123,6 +1123,16 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Get project structure', readOnlyHint: true }
   },
   {
+    name: 'autotask_get_project_labor_summary',
+    description: 'Project labor summary: estimated vs actual and billable hours, variance, first/last worked dates, and a per-phase rollup. Aggregated through the task hierarchy (project tasks → task time entries) because project-scoped time queries are unreliable.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectID: { type: 'number', description: 'Project ID' } },
+      required: ['projectID']
+    },
+    annotations: { title: 'Project labor summary', readOnlyHint: true }
+  },
+  {
     name: 'autotask_create_project',
     description: 'Create a new project in Autotask',
     inputSchema: {
@@ -3689,7 +3699,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

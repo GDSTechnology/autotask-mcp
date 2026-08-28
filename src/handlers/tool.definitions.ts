@@ -2703,6 +2703,56 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['id']
     }
   },
+  {
+    name: 'autotask_list_task_resources',
+    description: 'List the secondary (additional crew) resources on a task, with their roles. The primary assignee is the task\'s assignedResourceID.',
+    inputSchema: { type: 'object', properties: { taskID: { type: 'number', description: 'Task ID' } }, required: ['taskID'] },
+    annotations: { title: 'List task resources', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_add_task_resource',
+    description: 'Add a secondary resource (additional crew member) to a task, optionally with a role.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskID: { type: 'number', description: 'Task ID' },
+        resourceID: { type: 'number', description: 'Resource to add' },
+        roleID: { type: 'number', description: 'Optional resource role' }
+      },
+      required: ['taskID', 'resourceID']
+    }
+  },
+  {
+    name: 'autotask_remove_task_resource',
+    description: 'Remove a secondary resource from a task by the TaskSecondaryResources row id (from list_task_resources).',
+    inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskSecondaryResources id' } }, required: ['id'] },
+    annotations: { title: 'Remove task resource', destructiveHint: true }
+  },
+  {
+    name: 'autotask_list_task_predecessors',
+    description: 'List the predecessor dependencies for a task (tasks that must precede it), with lag days.',
+    inputSchema: { type: 'object', properties: { taskID: { type: 'number', description: 'Successor task ID' } }, required: ['taskID'] },
+    annotations: { title: 'List task predecessors', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_add_task_predecessor',
+    description: 'Add a predecessor dependency: predecessorTaskID must precede successorTaskID, with optional lag days.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        successorTaskID: { type: 'number', description: 'The task that depends on the predecessor' },
+        predecessorTaskID: { type: 'number', description: 'The task that must come first' },
+        lagDays: { type: 'number', description: 'Optional lag in days' }
+      },
+      required: ['successorTaskID', 'predecessorTaskID']
+    }
+  },
+  {
+    name: 'autotask_remove_task_predecessor',
+    description: 'Remove a task predecessor dependency by the TaskPredecessors row id (from list_task_predecessors).',
+    inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskPredecessors id' } }, required: ['id'] },
+    annotations: { title: 'Remove task predecessor', destructiveHint: true }
+  },
 
   // Phase tools
   {
@@ -3699,7 +3749,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

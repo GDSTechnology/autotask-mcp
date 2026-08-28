@@ -1406,6 +1406,12 @@ export class AutotaskToolHandler {
         const id = await s.createTaskNote(a.taskId, note);
         return { result: id, message: `Successfully created task note with ID: ${id}` };
       }],
+      ['autotask_search_project_attachments', async (a) => {
+        const r = await s.searchProjectAttachments(a.projectId, { pageSize: a.pageSize }); return { result: r, message: `Found ${r.length} project attachment(s)` };
+      }],
+      ['autotask_search_task_attachments', async (a) => {
+        const r = await s.searchTaskAttachments(a.taskId, { pageSize: a.pageSize }); return { result: r, message: `Found ${r.length} task attachment(s)` };
+      }],
       ['autotask_get_company_note', async (a) => {
         const r = await s.getCompanyNote(a.companyId, a.noteId); return { result: r, message: 'Company note retrieved successfully' };
       }],

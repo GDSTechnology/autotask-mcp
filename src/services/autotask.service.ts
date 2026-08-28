@@ -25,6 +25,7 @@ import {
 import { summarizeTicketCharges, ChargeRow } from '../utils/charge-report';
 import { summarizeUnbilled, UnbilledItem } from '../utils/unbilled-report';
 import { buildProjectHierarchy } from '../utils/project-structure';
+import { summarizeProjectLabor } from '../utils/project-labor';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1177,6 +1178,31 @@ export class AutotaskService {
       }),
     ]);
     return buildProjectHierarchy(project as Record<string, any> | null, phases, tasks);
+  }
+
+  /**
+   * Project labor summary (§4.5) — estimated vs actual/billable hours, variance,
+   * and a per-phase rollup, aggregated through the task hierarchy (Project →
+   * Tasks → task TimeEntries) because project-scoped time queries are unreliable.
+   * Time entries are fetched in batched IN queries to stay under API thresholds.
+   */
+  async getProjectLaborSummary(projectID: number): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const tasks = await http.query<Record<string, any>>('Tasks', [{ op: 'eq', field: 'projectID', value: projectID }], {
+      includeFields: ['id', 'phaseID', 'estimatedHours', 'title'],
+      maxRecords: 5000,
+    });
+    const taskIds = tasks.map((t) => t.id).filter((x): x is number => x != null);
+    const entries: Record<string, any>[] = [];
+    for (let i = 0; i < taskIds.length; i += 200) {
+      const chunk = taskIds.slice(i, i + 200);
+      const es = await http.query<Record<string, any>>('TimeEntries', [{ op: 'in', field: 'taskID', value: chunk }], {
+        includeFields: ['taskID', 'hoursWorked', 'hoursToBill', 'isNonBillable', 'dateWorked', 'resourceID'],
+        maxRecords: 10000,
+      }).catch(() => []);
+      entries.push(...es);
+    }
+    return summarizeProjectLabor(tasks, entries);
   }
 
   // =====================================================

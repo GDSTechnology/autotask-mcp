@@ -1162,6 +1162,10 @@ export class AutotaskToolHandler {
         const r = await s.getProjectStructure(a.projectID);
         return { result: r, message: `Project ${a.projectID}: ${r.summary.phaseCount} phase(s), ${r.summary.taskCount} task(s), depth ${r.summary.maxPhaseDepth}` };
       }],
+      ['autotask_get_project_labor_summary', async (a) => {
+        const r = await s.getProjectLaborSummary(a.projectID);
+        return { result: r, message: `Project ${a.projectID} labor: ${r.actualHours}h actual vs ${r.estimatedHours}h estimated (variance ${r.variance}h), ${r.billableHours}h billable` };
+      }],
       ['autotask_create_project', async (a) => {
         const projectData = { ...a };
         // Map startDate/endDate (YYYY-MM-DD) to startDateTime/endDateTime (ISO) expected by the API

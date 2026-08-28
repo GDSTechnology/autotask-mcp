@@ -1206,6 +1206,11 @@ export class AutotaskToolHandler {
         const r = await s.listExpiringContracts(a);
         return { result: r, message: `Found ${r.length} contracts with end dates within ${a.daysAhead ?? 60} days` };
       }],
+      ['autotask_report_block_hour_usage', async (a) => {
+        const r = await s.getBlockHourUsage({ contractID: a.contractID, companyID: a.companyID, includeInactive: a.includeInactive });
+        const over = r.filter((c) => (c.billableOverageHours ?? 0) > 0).length;
+        return { result: r, message: `Block-hour usage for ${r.length} contract(s); ${over} over block hours` };
+      }],
       ['autotask_create_contracts_bulk', async (a) => {
         const r = await s.createContracts(a.contracts);
         const ok = r.filter((item) => item.success).length;

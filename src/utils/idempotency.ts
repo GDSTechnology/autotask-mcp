@@ -33,6 +33,7 @@ const READ_TOOL_PREFIXES = [
   'autotask_find_',
   'autotask_query_',
   'autotask_count_',
+  'autotask_report_',
 ];
 const NON_MUTATING_TOOLS = new Set<string>([
   'autotask_router',

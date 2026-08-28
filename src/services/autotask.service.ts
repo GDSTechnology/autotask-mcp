@@ -1762,6 +1762,29 @@ export class AutotaskService {
     }
   }
 
+  async getPhase(id: number): Promise<AutotaskPhase | null> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Getting phase ${id}`);
+      return await http.get<AutotaskPhase>('Phases', id);
+    } catch (error) {
+      this.logger.error(`Failed to get phase ${id}:`, error);
+      throw error;
+    }
+  }
+
+  async updatePhase(id: number, updates: Partial<AutotaskPhase>): Promise<void> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Updating phase ${id}:`, updates);
+      await http.update('Phases', id, updates as Record<string, any>);
+      this.logger.info(`Phase ${id} updated successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to update phase ${id}:`, error);
+      throw error;
+    }
+  }
+
   async searchPhases(projectID: number, options: AutotaskQueryOptions = {}): Promise<AutotaskPhase[]> {
     const http = await this.ensureClient();
     try {

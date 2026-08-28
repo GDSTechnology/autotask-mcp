@@ -2682,9 +2682,45 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         estimatedHours: {
           type: 'number',
           description: 'Estimated hours for the phase'
+        },
+        parentPhaseID: {
+          type: 'number',
+          description: 'Parent phase ID to nest this phase under (Autotask supports nested phases)'
+        },
+        phaseNumber: {
+          type: 'string',
+          description: 'Phase number / external ordering label'
         }
       },
       required: ['projectID', 'title']
+    }
+  },
+  {
+    name: 'autotask_get_phase',
+    description: 'Get a single project phase by ID with its full fields (parentPhaseID, title, description, start/due dates, estimatedHours, phaseNumber, isScheduled).',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'Phase ID' } },
+      required: ['id']
+    },
+    annotations: { title: 'Get phase', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_update_phase',
+    description: 'Update a project phase. Only provided fields are changed. Supports re-parenting via parentPhaseID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Phase ID' },
+        title: { type: 'string' },
+        description: { type: 'string' },
+        startDate: { type: 'string', description: 'ISO date' },
+        dueDate: { type: 'string', description: 'ISO date' },
+        estimatedHours: { type: 'number' },
+        parentPhaseID: { type: 'number', description: 'Parent phase ID (nest/re-parent)' },
+        phaseNumber: { type: 'string' }
+      },
+      required: ['id']
     }
   },
 
@@ -3591,7 +3627,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_create_project', 'autotask_search_tasks', 'autotask_create_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_create_project', 'autotask_search_tasks', 'autotask_create_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

@@ -26,6 +26,7 @@ import { summarizeTicketCharges, ChargeRow } from '../utils/charge-report';
 import { summarizeUnbilled, UnbilledItem } from '../utils/unbilled-report';
 import { buildProjectHierarchy } from '../utils/project-structure';
 import { summarizeProjectLabor } from '../utils/project-labor';
+import { toProjectBlueprint } from '../utils/project-blueprint';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1203,6 +1204,16 @@ export class AutotaskService {
       entries.push(...es);
     }
     return summarizeProjectLabor(tasks, entries);
+  }
+
+  /**
+   * Export a project as a reusable, tenant-agnostic blueprint (§2.3): the
+   * phase/task hierarchy with titles, estimated hours, and task type — without
+   * tenant-specific ids, resource assignments, or absolute dates.
+   */
+  async exportProjectBlueprint(projectID: number): Promise<Record<string, any>> {
+    const structure = await this.getProjectStructure(projectID);
+    return toProjectBlueprint(structure);
   }
 
   // =====================================================

@@ -1166,6 +1166,10 @@ export class AutotaskToolHandler {
         const r = await s.getProjectLaborSummary(a.projectID);
         return { result: r, message: `Project ${a.projectID} labor: ${r.actualHours}h actual vs ${r.estimatedHours}h estimated (variance ${r.variance}h), ${r.billableHours}h billable` };
       }],
+      ['autotask_export_project_blueprint', async (a) => {
+        const r = await s.exportProjectBlueprint(a.projectID);
+        return { result: r, message: `Blueprint of "${r.name}": ${r.phaseCount} phase(s), ${r.taskCount} task(s), ${r.estimatedHours}h` };
+      }],
       ['autotask_create_project', async (a) => {
         const projectData = { ...a };
         // Map startDate/endDate (YYYY-MM-DD) to startDateTime/endDateTime (ISO) expected by the API

@@ -1392,6 +1392,20 @@ export class AutotaskToolHandler {
         const id = await s.createProjectNote(a.projectId, { title: a.title, description: a.description, noteType: a.noteType, publish: a.publish ?? 1, isAnnouncement: a.isAnnouncement ?? false });
         return { result: id, message: `Successfully created project note with ID: ${id}` };
       }],
+      ['autotask_get_task_note', async (a) => {
+        const r = await s.getTaskNote(a.taskId, a.noteId); return { result: r, message: r ? `Task note ${a.noteId}` : `Task note ${a.noteId} not found` };
+      }],
+      ['autotask_search_task_notes', async (a) => {
+        const r = await s.searchTaskNotes(a.taskId, { pageSize: a.pageSize }); return { result: r, message: `Found ${r.length} task notes` };
+      }],
+      ['autotask_create_task_note', async (a) => {
+        const note: Record<string, any> = { description: a.description };
+        if (a.title !== undefined) note.title = a.title;
+        if (a.noteType !== undefined) note.noteType = a.noteType;
+        if (a.publish !== undefined) note.publish = a.publish;
+        const id = await s.createTaskNote(a.taskId, note);
+        return { result: id, message: `Successfully created task note with ID: ${id}` };
+      }],
       ['autotask_get_company_note', async (a) => {
         const r = await s.getCompanyNote(a.companyId, a.noteId); return { result: r, message: 'Company note retrieved successfully' };
       }],

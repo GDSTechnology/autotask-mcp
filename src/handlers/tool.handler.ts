@@ -1220,6 +1220,10 @@ export class AutotaskToolHandler {
         const r = await s.getTicketChargesReport({ sinceDays: a.sinceDays, status: a.status, unbilledOnly: a.unbilledOnly, companyID: a.companyID });
         return { result: r, message: `${r.totalCharges} charge(s) on ${r.ticketsWithCharges} ticket(s); ${r.unbilled} unbilled ($${r.unbilledBillable})` };
       }],
+      ['autotask_report_unbilled', async (a) => {
+        const r = await s.getUnbilledReport({ companyID: a.companyID, minAgeDays: a.minAgeDays });
+        return { result: r, message: `$${r.totalAmount} unbilled across ${r.totalCount} item(s); $${r.atRiskAmount} at risk (>30d)` };
+      }],
       ['autotask_report_inventory_reorder', async (a) => {
         const r = await s.getInventoryReorder({ locationID: a.locationID, warehouseOnly: a.warehouseOnly });
         return { result: r, message: `${r.count} product/location line(s) below minimum; est order cost $${r.totalEstCost}` };

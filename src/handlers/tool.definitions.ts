@@ -2892,6 +2892,20 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['entityType']
     }
   },
+  {
+    name: 'autotask_resolve_picklist_value',
+    description: 'Resolve a picklist label to its tenant-specific value id for any entity/field (e.g. Tasks/status/"Complete", Projects/status/"In Progress", Tickets/queueID). Use this instead of hard-coding status/type/department/role/billing-code ids. Returns matched / ambiguous / not-found (with suggestions and the full active value list).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Autotask entity (e.g. "Tasks", "Projects", "Tickets")' },
+        field: { type: 'string', description: 'Picklist field name (e.g. "status", "taskType", "departmentID")' },
+        label: { type: 'string', description: 'The label to resolve (case-insensitive)' }
+      },
+      required: ['entity', 'field', 'label']
+    },
+    annotations: { title: 'Resolve picklist value', readOnlyHint: true }
+  },
 
   {
     name: 'autotask_resolve_record_reference',
@@ -3733,7 +3747,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_record_reference', 'autotask_whoami']
+    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

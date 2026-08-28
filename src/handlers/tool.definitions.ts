@@ -376,6 +376,22 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_find_or_create_contact',
+    description: 'Find a contact in a company by email address, or create it if none exists. Idempotent — returns the same contact on a repeat instead of creating a duplicate, and avoids the create-then-read race. Returns the contact id and whether it was newly created. Prefer this over create_contact when a contact may already exist (e.g. inbound email automation).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Company the contact belongs to' },
+        emailAddress: { type: 'string', description: 'Email used to match an existing contact (and set on create)' },
+        firstName: { type: 'string' },
+        lastName: { type: 'string' },
+        phone: { type: 'string' },
+        title: { type: 'string' }
+      },
+      required: ['companyID']
+    }
+  },
+  {
     name: 'autotask_update_contact',
     description: 'Update contact record. Only provided fields are changed.',
     inputSchema: {

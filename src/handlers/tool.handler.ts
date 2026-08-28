@@ -945,6 +945,11 @@ export class AutotaskToolHandler {
       ['autotask_create_contact', async (a) => {
         const id = await s.createContact(a); return { result: id, message: `Successfully created contact with ID: ${id}` };
       }],
+      ['autotask_find_or_create_contact', async (a) => {
+        const { companyID, ...rest } = a;
+        const r = await s.findOrCreateContact(companyID, rest);
+        return { result: r, message: r.created ? `Created contact ${r.id}` : `Found existing contact ${r.id}` };
+      }],
       ['autotask_update_contact', async (a) => {
         await s.updateContact(a.id, a); return { result: undefined, message: `Successfully updated contact ID: ${a.id}` };
       }],

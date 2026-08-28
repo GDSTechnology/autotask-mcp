@@ -24,6 +24,7 @@ import {
 } from '../utils/inventory-reports';
 import { summarizeTicketCharges, ChargeRow } from '../utils/charge-report';
 import { summarizeUnbilled, UnbilledItem } from '../utils/unbilled-report';
+import { buildProjectHierarchy } from '../utils/project-structure';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1155,6 +1156,27 @@ export class AutotaskService {
       this.logger.error(`Failed to update project ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Normalized project outline (§4.3/§6): the project plus its phases (nested by
+   * parentPhaseID) with tasks bucketed under each phase, and any unphased tasks.
+   * Read-only; preserves Autotask-native fields for blueprint/rebuild.
+   */
+  async getProjectStructure(projectID: number): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const [project, phases, tasks] = await Promise.all([
+      this.getProject(projectID),
+      http.query<Record<string, any>>('Phases', [{ op: 'eq', field: 'projectID', value: projectID }], {
+        includeFields: ['id', 'projectID', 'parentPhaseID', 'title', 'description', 'startDate', 'dueDate', 'estimatedHours', 'phaseNumber', 'isScheduled', 'externalID'],
+        maxRecords: 1000,
+      }),
+      http.query<Record<string, any>>('Tasks', [{ op: 'eq', field: 'projectID', value: projectID }], {
+        includeFields: ['id', 'projectID', 'phaseID', 'title', 'description', 'status', 'taskType', 'taskNumber', 'startDateTime', 'endDateTime', 'estimatedHours', 'remainingHours', 'assignedResourceID', 'assignedResourceRoleID', 'departmentID', 'billingCodeID', 'priority', 'isTaskBillable', 'completedDateTime', 'externalID'],
+        maxRecords: 5000,
+      }),
+    ]);
+    return buildProjectHierarchy(project as Record<string, any> | null, phases, tasks);
   }
 
   // =====================================================

@@ -1103,6 +1103,26 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_project',
+    description: 'Get a single project by ID with its full field set (status, type, lead, department, dates, estimated/actual time, contract, opportunity, UDFs, etc.).',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'Project ID' } },
+      required: ['id']
+    },
+    annotations: { title: 'Get project', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_get_project_structure',
+    description: 'Get the normalized project outline: the project plus its phases nested by parentPhaseID, with tasks bucketed under each phase and any unphased tasks listed separately, plus a summary (phase/task counts, max phase depth, estimated hours). Preserves Autotask-native fields. The prerequisite for reliable project blueprint export and cloning.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectID: { type: 'number', description: 'Project ID' } },
+      required: ['projectID']
+    },
+    annotations: { title: 'Get project structure', readOnlyHint: true }
+  },
+  {
     name: 'autotask_create_project',
     description: 'Create a new project in Autotask',
     inputSchema: {
@@ -3571,7 +3591,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_create_project', 'autotask_search_tasks', 'autotask_create_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_create_project', 'autotask_search_tasks', 'autotask_create_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

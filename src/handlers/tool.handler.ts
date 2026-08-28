@@ -1155,6 +1155,13 @@ export class AutotaskToolHandler {
       ['autotask_search_projects', async (a) => {
         const r = await s.searchProjects(a); return { result: r, message: `Found ${r.length} projects` };
       }],
+      ['autotask_get_project', async (a) => {
+        const r = await s.getProject(a.id); return { result: r, message: r ? `Project ${a.id}` : `Project ${a.id} not found` };
+      }],
+      ['autotask_get_project_structure', async (a) => {
+        const r = await s.getProjectStructure(a.projectID);
+        return { result: r, message: `Project ${a.projectID}: ${r.summary.phaseCount} phase(s), ${r.summary.taskCount} task(s), depth ${r.summary.maxPhaseDepth}` };
+      }],
       ['autotask_create_project', async (a) => {
         const projectData = { ...a };
         // Map startDate/endDate (YYYY-MM-DD) to startDateTime/endDateTime (ISO) expected by the API

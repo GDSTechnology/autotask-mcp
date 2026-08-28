@@ -2021,6 +2021,17 @@ export class AutotaskService {
     return this.createNoteImpl('accountId', companyId, note as Record<string, any>);
   }
 
+  /** List attachment metadata on a project (§5.7 read). Binary upload/download is a follow-up. */
+  async searchProjectAttachments(projectId: number, options: AutotaskQueryOptionsExtended = {}): Promise<any[]> {
+    const http = await this.ensureClient();
+    return http.childQuery<any>('Projects', projectId, 'Attachments', MATCH_ALL, { maxRecords: options.pageSize || 25 });
+  }
+  /** List attachment metadata on a project task (§5.7 read). */
+  async searchTaskAttachments(taskId: number, options: AutotaskQueryOptionsExtended = {}): Promise<any[]> {
+    const http = await this.ensureClient();
+    return http.childQuery<any>('Tasks', taskId, 'Attachments', MATCH_ALL, { maxRecords: options.pageSize || 25 });
+  }
+
   async getTaskNote(taskId: number, noteId: number): Promise<any> {
     return this.getNoteImpl('taskId', taskId, noteId);
   }

@@ -1295,6 +1295,12 @@ export class AutotaskToolHandler {
       ['autotask_create_phase', async (a) => {
         const id = await s.createPhase(a); return { result: id, message: `Successfully created phase with ID: ${id}` };
       }],
+      ['autotask_get_phase', async (a) => {
+        const r = await s.getPhase(a.id); return { result: r, message: r ? `Phase ${a.id}` : `Phase ${a.id} not found` };
+      }],
+      ['autotask_update_phase', async (a) => {
+        const { id, ...rest } = a; await s.updatePhase(id, rest); return { result: undefined, message: `Successfully updated phase ${id}` };
+      }],
 
       // Notes (ticket/project/company)
       ['autotask_get_ticket_note', async (a) => {

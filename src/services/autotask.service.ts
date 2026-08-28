@@ -22,6 +22,7 @@ import {
   computeReorder, computeCloseouts, computeStaleStock,
   InvProductRow, ProductRow, LocationRow, OpenChargeRow, StockedItemRow,
 } from '../utils/inventory-reports';
+import { summarizeTicketCharges, ChargeRow } from '../utils/charge-report';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -689,6 +690,53 @@ export class AutotaskService {
       this.logger.error('Failed to search ticket charges:', error);
       throw error;
     }
+  }
+
+  /**
+   * Ticket-charge report: charges in a window with a status/billed breakdown,
+   * total billable, and a per-ticket rollup. `unbilledOnly` surfaces the to-bill
+   * queue; optional company/status filters.
+   */
+  async getTicketChargesReport(
+    opts: { sinceDays?: number; status?: number; unbilledOnly?: boolean; companyID?: number } = {}
+  ): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const since = new Date(Date.now() - (opts.sinceDays ?? 90) * 864e5).toISOString();
+    const filters: QueryFilter[] = [{ op: 'gte', field: 'createDate', value: since }];
+    if (opts.status !== undefined) filters.push({ op: 'eq', field: 'status', value: opts.status });
+    const charges = await http.query<ChargeRow & { ticketID: number }>('TicketCharges', filters, {
+      includeFields: ['id', 'ticketID', 'name', 'status', 'isBilled', 'billableAmount', 'extendedCost', 'unitQuantity'],
+      maxRecords: 3000,
+    });
+
+    // Join tickets for number + company (and to filter by company when requested).
+    const ticketIds = [...new Set(charges.map((c) => c.ticketID).filter((x) => x != null))];
+    const ticketsById: Record<string, { id: number; ticketNumber?: string; companyID?: number }> = {};
+    for (let i = 0; i < ticketIds.length; i += 200) {
+      const rows = await http.query<{ id: number; ticketNumber?: string; companyID?: number }>('Tickets', [{ op: 'in', field: 'id', value: ticketIds.slice(i, i + 200) }], {
+        includeFields: ['id', 'ticketNumber', 'companyID'],
+        maxRecords: 500,
+      });
+      for (const r of rows) ticketsById[String(r.id)] = r;
+    }
+    const companyIds = [...new Set(Object.values(ticketsById).map((t) => t.companyID).filter((x): x is number => x != null))];
+    const companyName: Record<string, string> = {};
+    for (let i = 0; i < companyIds.length; i += 200) {
+      const rows = await http.query<{ id: number; companyName?: string }>('Companies', [{ op: 'in', field: 'id', value: companyIds.slice(i, i + 200) }], { includeFields: ['id', 'companyName'], maxRecords: 500 });
+      for (const r of rows) companyName[String(r.id)] = r.companyName ?? '';
+    }
+
+    const enriched: ChargeRow[] = [];
+    for (const c of charges) {
+      const t = ticketsById[String(c.ticketID)];
+      if (opts.companyID !== undefined && t?.companyID !== opts.companyID) continue;
+      enriched.push({
+        ...c,
+        ...(t?.ticketNumber ? { ticketNumber: t.ticketNumber } : {}),
+        ...(t?.companyID != null && companyName[String(t.companyID)] ? { company: companyName[String(t.companyID)] } : {}),
+      });
+    }
+    return summarizeTicketCharges(enriched, { unbilledOnly: !!opts.unbilledOnly });
   }
 
   async createTicketCharge(charge: Partial<AutotaskTicketCharge>): Promise<number> {

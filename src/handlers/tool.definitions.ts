@@ -2438,6 +2438,21 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     },
     annotations: { title: 'Block-hour usage report', readOnlyHint: true }
   },
+  {
+    name: 'autotask_report_ticket_charges',
+    description: 'Ticket-charge report. Charges in a recent window with a fulfillment-status breakdown, billed vs unbilled counts, total billable amount, and a per-ticket rollup. Set unbilledOnly to surface the to-bill queue (charges not yet billed). Optional company/status/date-window filters.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sinceDays: { type: 'number', description: 'Look-back window in days (default: 90)', minimum: 1 },
+        unbilledOnly: { type: 'boolean', description: 'Only charges not yet billed — the to-bill queue (default: false)' },
+        status: { type: 'number', description: 'Filter by fulfillment status (1=Pending, 3=Need to Order, 4=On Order, 6=Ready to Ship, 7=Delivered, 8=Canceled)' },
+        companyID: { type: 'number', description: 'Limit to one company (omit for all)' }
+      },
+      required: []
+    },
+    annotations: { title: 'Ticket-charge report', readOnlyHint: true }
+  },
 
   // Invoice tools
   {
@@ -3535,7 +3550,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_report_block_hour_usage']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

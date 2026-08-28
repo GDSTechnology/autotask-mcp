@@ -1211,6 +1211,10 @@ export class AutotaskToolHandler {
         const over = r.filter((c) => (c.billableOverageHours ?? 0) > 0).length;
         return { result: r, message: `Block-hour usage for ${r.length} contract(s); ${over} over block hours` };
       }],
+      ['autotask_report_ticket_charges', async (a) => {
+        const r = await s.getTicketChargesReport({ sinceDays: a.sinceDays, status: a.status, unbilledOnly: a.unbilledOnly, companyID: a.companyID });
+        return { result: r, message: `${r.totalCharges} charge(s) on ${r.ticketsWithCharges} ticket(s); ${r.unbilled} unbilled ($${r.unbilledBillable})` };
+      }],
       ['autotask_report_inventory_reorder', async (a) => {
         const r = await s.getInventoryReorder({ locationID: a.locationID, warehouseOnly: a.warehouseOnly });
         return { result: r, message: `${r.count} product/location line(s) below minimum; est order cost $${r.totalEstCost}` };

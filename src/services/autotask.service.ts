@@ -23,6 +23,7 @@ import {
   InvProductRow, ProductRow, LocationRow, OpenChargeRow, StockedItemRow,
 } from '../utils/inventory-reports';
 import { summarizeTicketCharges, ChargeRow } from '../utils/charge-report';
+import { summarizeUnbilled, UnbilledItem } from '../utils/unbilled-report';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -769,6 +770,45 @@ export class AutotaskService {
       });
     }
     return summarizeTicketCharges(enriched, { unbilledOnly: !!opts.unbilledOnly });
+  }
+
+  /**
+   * Unbilled-work / revenue-leakage report. Uninvoiced billable BillingItems
+   * (invoiceID absent, nonBillable false) aged into buckets, with at-risk (>30d)
+   * totals and a per-company rollup — catches billable time/charges that age out
+   * unbilled because accounting only reviews recent items. Optional company filter
+   * and minimum age.
+   */
+  async getUnbilledReport(opts: { companyID?: number; minAgeDays?: number } = {}): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [
+      { op: 'notExist', field: 'invoiceID' },
+      { op: 'eq', field: 'nonBillable', value: false },
+    ];
+    if (opts.companyID !== undefined) filters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    const items = await http.query<UnbilledItem>('BillingItems', filters, {
+      includeFields: ['id', 'itemDate', 'postedDate', 'totalAmount', 'extendedPrice', 'timeEntryID', 'ticketChargeID', 'contractID', 'ticketID', 'companyID'],
+      maxRecords: 20000,
+    });
+
+    const asOf = new Date();
+    let scoped = items;
+    if (opts.minAgeDays !== undefined) {
+      scoped = items.filter((it) => {
+        const d = it.itemDate ?? it.postedDate;
+        return d ? (asOf.getTime() - new Date(d).getTime()) / 864e5 >= opts.minAgeDays! : false;
+      });
+    }
+
+    const companyIds = [...new Set(scoped.map((i) => i.companyID).filter((x): x is number => x != null))];
+    const companyName: Record<string, string> = {};
+    for (let i = 0; i < companyIds.length; i += 200) {
+      const rows = await http.query<{ id: number; companyName?: string }>('Companies', [{ op: 'in', field: 'id', value: companyIds.slice(i, i + 200) }], { includeFields: ['id', 'companyName'], maxRecords: 500 });
+      for (const r of rows) companyName[String(r.id)] = r.companyName ?? '';
+    }
+    for (const it of scoped) if (it.companyID != null && companyName[String(it.companyID)]) it.company = companyName[String(it.companyID)];
+
+    return summarizeUnbilled(scoped, asOf);
   }
 
   async createTicketCharge(charge: Partial<AutotaskTicketCharge>): Promise<number> {

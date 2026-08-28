@@ -1929,6 +1929,7 @@ export class AutotaskService {
       ticketId:  { parent: 'Tickets',   bodyField: 'ticketID' },
       projectId: { parent: 'Projects',  bodyField: 'projectID' },
       accountId: { parent: 'Companies', bodyField: 'companyID' },
+      taskId:    { parent: 'Tasks',     bodyField: 'taskID' },
     };
     const m = map[parentField];
     if (!m) throw new Error(`Unknown parent field for note operation: ${parentField}`);
@@ -2018,6 +2019,16 @@ export class AutotaskService {
   }
   async createCompanyNote(companyId: number, note: Partial<AutotaskCompanyNote>): Promise<number> {
     return this.createNoteImpl('accountId', companyId, note as Record<string, any>);
+  }
+
+  async getTaskNote(taskId: number, noteId: number): Promise<any> {
+    return this.getNoteImpl('taskId', taskId, noteId);
+  }
+  async searchTaskNotes(taskId: number, opts?: AutotaskQueryOptionsExtended): Promise<any[]> {
+    return this.searchNotesImpl('taskId', taskId, opts);
+  }
+  async createTaskNote(taskId: number, note: Record<string, any>): Promise<number> {
+    return this.createNoteImpl('taskId', taskId, note);
   }
 
   // =====================================================

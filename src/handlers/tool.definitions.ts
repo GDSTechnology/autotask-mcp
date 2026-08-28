@@ -1524,6 +1524,47 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['projectId', 'description']
     }
   },
+  {
+    name: 'autotask_get_task_note',
+    description: 'Get a specific project-task note by task ID and note ID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'number', description: 'The task ID' },
+        noteId: { type: 'number', description: 'The note ID' }
+      },
+      required: ['taskId', 'noteId']
+    },
+    annotations: { title: 'Get task note', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_task_notes',
+    description: 'List the notes on a project task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'number', description: 'The task ID' },
+        pageSize: { type: 'number', description: 'Number of results (default 25)', minimum: 1, maximum: 100 }
+      },
+      required: ['taskId']
+    },
+    annotations: { title: 'Search task notes', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_task_note',
+    description: 'Create a note on a project task. Resolve noteType/publish values from tenant metadata (autotask_get_field_info(TaskNotes)) rather than assuming constants.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'number', description: 'The task ID to add the note to' },
+        title: { type: 'string', description: 'Note title' },
+        description: { type: 'string', description: 'Note content' },
+        noteType: { type: 'number', description: 'Note type id (resolve via metadata)' },
+        publish: { type: 'number', description: 'Publish/visibility id (resolve via metadata)' }
+      },
+      required: ['taskId', 'description']
+    }
+  },
 
   // Company Notes tools
   {
@@ -3763,7 +3804,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

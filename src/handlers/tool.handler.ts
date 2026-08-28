@@ -1613,6 +1613,12 @@ export class AutotaskToolHandler {
         const summary = fields.map(f => ({ name: f.name, dataType: f.dataType, isRequired: f.isRequired, isPickList: f.isPickList, isQueryable: f.isQueryable, picklistValueCount: f.picklistValues?.length || 0 }));
         return { result: summary, message: `Found ${fields.length} fields for ${rawEntityType}` };
       }],
+      ['autotask_resolve_picklist_value', async (a) => {
+        // Note: the entityInformation/fields endpoint uses "Tasks" (not
+        // "ProjectTasks", which 404s there) — pass the entity through as given.
+        const r = await s.resolvePicklistValue(a.entity, a.field, a.label);
+        return { result: r, message: r.status === 'matched' ? `${a.entity}.${a.field} "${a.label}" → ${r.value} (${r.label})` : `${a.entity}.${a.field} "${a.label}": ${r.status}` };
+      }],
 
       // Billing Items (Approve and Post workflow)
       ['autotask_search_billing_items', async (a) => {

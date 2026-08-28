@@ -3417,6 +3417,27 @@ export class AutotaskService {
     }
   }
 
+  /**
+   * Resolve a picklist label to its tenant value (§4.4 — never hard-code IDs).
+   * Returns a structured outcome: matched / ambiguous / not-found (with
+   * suggestions + the full active value list) / field-not-found / not-a-picklist.
+   * Case-insensitive; active values only.
+   */
+  async resolvePicklistValue(entity: string, field: string, label: string): Promise<Record<string, any>> {
+    const fi = await this.getFieldInfo(entity);
+    const f = fi.find((x) => x.name === field);
+    if (!f) return { status: 'field-not-found', entity, field };
+    const values = (f.picklistValues ?? []).filter((v) => v.isActive !== false);
+    if (!values.length) return { status: 'not-a-picklist', entity, field };
+    const norm = String(label).trim().toLowerCase();
+    const brief = (v: PicklistValue) => ({ value: v.value, label: v.label });
+    const exact = values.filter((v) => String(v.label).toLowerCase() === norm);
+    if (exact.length === 1) return { status: 'matched', value: exact[0].value, label: exact[0].label };
+    if (exact.length > 1) return { status: 'ambiguous', candidates: exact.map(brief) };
+    const suggestions = values.filter((v) => String(v.label).toLowerCase().includes(norm)).map(brief);
+    return { status: 'not-found', field, entity, suggestions: suggestions.slice(0, 10), values: values.map(brief) };
+  }
+
   // =====================================================
   // Company Site Configurations
   // =====================================================

@@ -1211,6 +1211,18 @@ export class AutotaskToolHandler {
         const over = r.filter((c) => (c.billableOverageHours ?? 0) > 0).length;
         return { result: r, message: `Block-hour usage for ${r.length} contract(s); ${over} over block hours` };
       }],
+      ['autotask_report_inventory_reorder', async (a) => {
+        const r = await s.getInventoryReorder({ locationID: a.locationID, warehouseOnly: a.warehouseOnly });
+        return { result: r, message: `${r.count} product/location line(s) below minimum; est order cost $${r.totalEstCost}` };
+      }],
+      ['autotask_report_inventory_closeouts', async (a) => {
+        const r = await s.getInventoryCloseouts({ includeGenerics: a.includeGenerics });
+        return { result: r, message: `${r.count} to-order charge(s) already in stock (${r.generics} generic/flagged)` };
+      }],
+      ['autotask_report_inventory_stale', async (a) => {
+        const r = await s.getInventoryStale({ staleDays: a.staleDays, recentDays: a.recentDays });
+        return { result: r, message: `${r.staleCount} stale product(s) of ${r.count} on hand; $${r.staleValue} tied up in dead stock` };
+      }],
       ['autotask_create_contracts_bulk', async (a) => {
         const r = await s.createContracts(a.contracts);
         const ok = r.filter((item) => item.success).length;

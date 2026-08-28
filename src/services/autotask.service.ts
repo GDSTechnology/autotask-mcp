@@ -19,6 +19,10 @@ import { buildContactSearchFilter, normalizeContactNote } from '../utils/contact
 import { resolveCompanyOwnerResourceID } from '../utils/company-owner';
 import { computeBlockHourUsage } from '../utils/block-hours';
 import {
+  computeReorder, computeCloseouts, computeStaleStock,
+  InvProductRow, ProductRow, LocationRow, OpenChargeRow, StockedItemRow,
+} from '../utils/inventory-reports';
+import {
   AutotaskCompany,
   AutotaskContact,
   AutotaskTicket,
@@ -2295,6 +2299,95 @@ export class AutotaskService {
       this.logger.error('Failed to search products:', error);
       throw error;
     }
+  }
+
+  // =====================================================
+  // Inventory reports (Phase 3)
+  // =====================================================
+
+  /** Fetch a batch of Products keyed by id (for report joins). */
+  private async fetchProductsByIds(ids: number[]): Promise<Record<string, ProductRow>> {
+    const http = await this.ensureClient();
+    const out: Record<string, ProductRow> = {};
+    const unique = [...new Set(ids.filter((x) => x != null))];
+    for (let i = 0; i < unique.length; i += 200) {
+      const rows = await http.query<ProductRow>('Products', [{ op: 'in', field: 'id', value: unique.slice(i, i + 200) }], {
+        includeFields: ['id', 'name', 'sku', 'unitCost', 'isActive'],
+        maxRecords: 500,
+      });
+      for (const r of rows) out[String(r.id)] = r;
+    }
+    return out;
+  }
+
+  /** Reorder-control report: InventoryProducts below minimum → suggested order (all locations). */
+  async getInventoryReorder(opts: { locationID?: number; warehouseOnly?: boolean } = {}): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [{ op: 'gt', field: 'quantityMinimum', value: 0 }];
+    if (opts.locationID !== undefined) filters.push({ op: 'eq', field: 'inventoryLocationID', value: opts.locationID });
+    const inv = await http.query<InvProductRow>('InventoryProducts', filters, {
+      includeFields: ['productID', 'inventoryLocationID', 'onHandUnits', 'availableUnits', 'unitsOnOrder', 'quantityMinimum', 'quantityMaximum', 'bin'],
+      maxRecords: 5000,
+    });
+    const locRows = await http.query<LocationRow>('InventoryLocations', MATCH_ALL, { includeFields: ['id', 'locationName', 'resourceID'], maxRecords: 500 });
+    const locationsById: Record<string, LocationRow> = Object.fromEntries(locRows.map((l) => [String(l.id), l]));
+    const products = await this.fetchProductsByIds(inv.map((r) => r.productID));
+    const { lines, totalEstCost } = computeReorder(inv, products, locationsById);
+    const filtered = opts.warehouseOnly ? lines.filter((l) => l.locationType === 'warehouse') : lines;
+    return { count: filtered.length, totalEstCost: opts.warehouseOnly ? Math.round(filtered.reduce((s, l) => s + l.estCost, 0) * 100) / 100 : totalEstCost, lines: filtered };
+  }
+
+  /** Close-out report: to-order ticket charges (status 3/4) whose product has stock. Generics flagged. */
+  async getInventoryCloseouts(opts: { includeGenerics?: boolean } = {}): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const charges = await http.query<OpenChargeRow>('TicketCharges', [{ op: 'in', field: 'status', value: [3, 4] }], {
+      includeFields: ['id', 'ticketID', 'productID', 'name', 'status', 'unitQuantity'],
+      maxRecords: 3000,
+    });
+    const productIds = [...new Set(charges.map((c) => c.productID).filter((x): x is number => x != null))];
+    const stockByProduct: Record<string, number> = {};
+    for (let i = 0; i < productIds.length; i += 200) {
+      const rows = await http.query<InvProductRow>('InventoryProducts', [{ op: 'in', field: 'productID', value: productIds.slice(i, i + 200) }], {
+        includeFields: ['productID', 'availableUnits'],
+        maxRecords: 5000,
+      });
+      for (const r of rows) stockByProduct[String(r.productID)] = (stockByProduct[String(r.productID)] || 0) + (Number(r.availableUnits) || 0);
+    }
+    const products = await this.fetchProductsByIds(productIds);
+    let lines = computeCloseouts(charges, stockByProduct, products);
+    if (opts.includeGenerics === false) lines = lines.filter((l) => !l.isGeneric);
+    return { count: lines.length, generics: lines.filter((l) => l.isGeneric).length, lines };
+  }
+
+  /** Stale/trending report: on-hand stock aging + recent movement (dead-stock detection). */
+  async getInventoryStale(opts: { staleDays?: number; recentDays?: number } = {}): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const staleDays = opts.staleDays ?? 180;
+    const recentDays = opts.recentDays ?? 180;
+    const cutoff = new Date(Date.now() - recentDays * 864e5).toISOString();
+    const fields = ['id', 'inventoryProductID', 'onHandUnits', 'unitCost', 'createDateTime', 'pickedRemovedDateTime'];
+    const [onHand, removed] = await Promise.all([
+      http.query<StockedItemRow & { id: number }>('InventoryStockedItems', [{ op: 'gt', field: 'onHandUnits', value: 0 }], { includeFields: fields, maxRecords: 10000 }),
+      http.query<StockedItemRow & { id: number }>('InventoryStockedItems', [{ op: 'gte', field: 'pickedRemovedDateTime', value: cutoff }], { includeFields: fields, maxRecords: 10000 }),
+    ]);
+    const byId = new Map<number, StockedItemRow & { id: number }>();
+    for (const it of [...onHand, ...removed]) byId.set(it.id, it);
+    const items = [...byId.values()];
+
+    const invProductIds = [...new Set(items.map((i) => i.inventoryProductID).filter((x): x is number => x != null))];
+    const invToProduct: Record<string, number> = {};
+    for (let i = 0; i < invProductIds.length; i += 200) {
+      const rows = await http.query<{ id: number; productID: number }>('InventoryProducts', [{ op: 'in', field: 'id', value: invProductIds.slice(i, i + 200) }], { includeFields: ['id', 'productID'], maxRecords: 5000 });
+      for (const r of rows) invToProduct[String(r.id)] = r.productID;
+    }
+    const products = await this.fetchProductsByIds(Object.values(invToProduct));
+    const resolve = (ip: number) => {
+      const pid = invToProduct[String(ip)] ?? null;
+      return { productID: pid, name: (pid != null && products[String(pid)]?.name) || `invProduct#${ip}` };
+    };
+    const lines = computeStaleStock(items, resolve, { staleDays, recentDays });
+    const stale = lines.filter((l) => l.stale);
+    return { count: lines.length, staleCount: stale.length, staleValue: Math.round(stale.reduce((s, l) => s + l.value, 0) * 100) / 100, lines };
   }
 
   async getService(id: number): Promise<AutotaskServiceEntity | null> {

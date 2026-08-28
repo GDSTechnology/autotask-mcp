@@ -1986,6 +1986,44 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: []
     }
   },
+  {
+    name: 'autotask_report_inventory_reorder',
+    description: 'Inventory reorder-control report. Lists stocked products at or below their minimum (across all locations) with a suggested order quantity (up to max, net of on-order) and estimated cost. The monthly "what to order" report. Each line notes whether the location is a warehouse or a resource/tech-van.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        locationID: { type: 'number', description: 'Limit to one inventory location (omit for all)' },
+        warehouseOnly: { type: 'boolean', description: 'Exclude resource/tech-van locations (default: false — all locations)' }
+      },
+      required: []
+    },
+    annotations: { title: 'Inventory reorder report', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_report_inventory_closeouts',
+    description: 'Inventory close-out report. Ticket charges marked to-order (Need to Order / On Order) whose product already has stock on hand — candidates to fulfill from stock and close out instead of ordering. Generic/catch-all products (no SKU, Misc/Equipment/etc.) are flagged because their stock counts are unreliable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        includeGenerics: { type: 'boolean', description: 'Include generic/catch-all products, flagged (default: true)' }
+      },
+      required: []
+    },
+    annotations: { title: 'Inventory close-out report', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_report_inventory_stale',
+    description: 'Inventory stale/trending report. On-hand stock aged by receipt date with recent-movement counts, flagging dead stock (in stock longer than the stale threshold with no recent removals) and ranking by tied-up value. The "is it selling or rotting on the shelf" report.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        staleDays: { type: 'number', description: 'Days on hand before stock is considered stale (default: 180)', minimum: 1 },
+        recentDays: { type: 'number', description: 'Window for counting recent movement (default: 180)', minimum: 1 }
+      },
+      required: []
+    },
+    annotations: { title: 'Inventory stale-stock report', readOnlyHint: true }
+  },
 
   // Service tools
   {
@@ -3501,7 +3539,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',
-    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
+    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
   },
   resources: {
     description: 'Search for Autotask resources (technicians/staff)',

@@ -1287,6 +1287,16 @@ export class AutotaskToolHandler {
         const taskData = { ...a, taskType: a.taskType ?? 1 };
         const id = await s.createTask(taskData); return { result: id, message: `Successfully created task with ID: ${id}` };
       }],
+      ['autotask_get_task', async (a) => {
+        const r = await s.getTask(a.id); return { result: r, message: r ? `Task ${a.id}` : `Task ${a.id} not found` };
+      }],
+      ['autotask_update_task', async (a) => {
+        const { id, ...rest } = a; await s.updateTask(id, rest); return { result: undefined, message: `Successfully updated task ${id}` };
+      }],
+      ['autotask_complete_task', async (a) => {
+        await s.completeTask(a.id, { projectID: a.projectID, statusId: a.statusId });
+        return { result: undefined, message: `Task ${a.id} marked complete` };
+      }],
 
       // Phases
       ['autotask_list_phases', async (a) => {

@@ -1742,6 +1742,36 @@ export class AutotaskService {
     }
   }
 
+  /** Resolve a Tasks status picklist value by its label (§4.4 — no hard-coded IDs). Cached. */
+  private taskStatusByLabel?: Record<string, number>;
+  private async resolveTaskStatusId(label: string): Promise<number | undefined> {
+    if (!this.taskStatusByLabel) {
+      const fi = await this.getFieldInfo('Tasks').catch(() => [] as any[]);
+      const status = (fi as any[]).find((f) => f.name === 'status');
+      const map: Record<string, number> = {};
+      for (const pv of status?.picklistValues ?? []) map[String(pv.label).toLowerCase()] = Number(pv.value);
+      this.taskStatusByLabel = map;
+    }
+    return this.taskStatusByLabel[label.toLowerCase()];
+  }
+
+  /**
+   * Mark a task complete — sets the tenant's "Complete" status (resolved from
+   * metadata, not hard-coded) and completedDateTime. projectID is looked up from
+   * the task when not supplied (task update is a child-route PATCH).
+   */
+  async completeTask(id: number, opts: { projectID?: number; statusId?: number; completedDateTime?: string } = {}): Promise<void> {
+    let projectID = opts.projectID;
+    if (projectID === undefined) {
+      const task = await this.getTask(id);
+      projectID = (task as any)?.projectID;
+      if (projectID === undefined) throw new Error(`Cannot complete task ${id}: projectID unknown (task not found?).`);
+    }
+    const statusId = opts.statusId ?? (await this.resolveTaskStatusId('Complete'));
+    if (statusId === undefined) throw new Error('Could not resolve the "Complete" task status from tenant metadata; pass statusId explicitly.');
+    await this.updateTask(id, { projectID, status: statusId, completedDateTime: opts.completedDateTime ?? new Date().toISOString() } as any);
+  }
+
   // =====================================================
   // Phases
   // =====================================================

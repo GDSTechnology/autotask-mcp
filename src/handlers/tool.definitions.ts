@@ -2603,13 +2603,29 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'Task description'
         },
+        phaseID: {
+          type: 'number',
+          description: 'Phase to associate the task with (for phased project structure)'
+        },
         status: {
           type: 'number',
-          description: 'Task status (1=New, 2=In Progress, 5=Complete)'
+          description: 'Task status ID. Resolve valid values from tenant metadata via autotask_get_field_info(Tasks) — do not assume constants.'
         },
         assignedResourceID: {
           type: 'number',
           description: 'Assigned resource ID'
+        },
+        assignedResourceRoleID: {
+          type: 'number',
+          description: 'Role for the assigned resource'
+        },
+        departmentID: {
+          type: 'number',
+          description: 'Department ID'
+        },
+        billingCodeID: {
+          type: 'number',
+          description: 'Work type / billing code ID'
         },
         estimatedHours: {
           type: 'number',
@@ -2629,6 +2645,52 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         }
       },
       required: ['projectID', 'title', 'status']
+    }
+  },
+  {
+    name: 'autotask_get_task',
+    description: 'Get a single project task by ID with its full fields (projectID, phaseID, status, taskType, dates, estimatedHours, assigned resource + role, department, billing code, etc.).',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'Task ID' } },
+      required: ['id']
+    },
+    annotations: { title: 'Get task', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_update_task',
+    description: 'Update a project task. projectID is required (task update is a child-route PATCH). Only provided fields are changed. Supports moving between phases via phaseID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Task ID' },
+        projectID: { type: 'number', description: 'Project the task belongs to (required)' },
+        phaseID: { type: 'number' },
+        title: { type: 'string' },
+        description: { type: 'string' },
+        status: { type: 'number', description: 'Resolve via autotask_get_field_info(Tasks)' },
+        assignedResourceID: { type: 'number' },
+        assignedResourceRoleID: { type: 'number' },
+        departmentID: { type: 'number' },
+        billingCodeID: { type: 'number' },
+        estimatedHours: { type: 'number' },
+        startDateTime: { type: 'string' },
+        endDateTime: { type: 'string' }
+      },
+      required: ['id', 'projectID']
+    }
+  },
+  {
+    name: 'autotask_complete_task',
+    description: 'Mark a task complete. Sets the tenant\'s "Complete" status (resolved from metadata, not hard-coded) and completedDateTime. projectID is looked up from the task if not supplied.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Task ID' },
+        projectID: { type: 'number', description: 'Optional — looked up from the task if omitted' },
+        statusId: { type: 'number', description: 'Optional explicit complete-status id (overrides metadata resolution)' }
+      },
+      required: ['id']
     }
   },
 
@@ -3627,7 +3689,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_create_project', 'autotask_search_tasks', 'autotask_create_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

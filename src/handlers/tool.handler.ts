@@ -11,7 +11,8 @@ import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult } from '../utils/create-result.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
-import { emitAudit } from '../utils/audit.js';
+import { emitAudit, AuditEntry } from '../utils/audit.js';
+import { AuditSink, createAuditSink } from '../db/audit-sink.js';
 import {
   RiskLevel,
   classifyRisk,
@@ -144,6 +145,10 @@ export class AutotaskToolHandler {
   );
   // Idempotency store (§4.4): replays the prior result for a repeated mutation.
   private idempotencyStore = new InMemoryIdempotencyStore<McpToolResult>();
+  // Optional PG audit sink (§23): persists audit records when MCP_PG_AUDIT_ENABLED.
+  // Null when disabled — the structured log is always emitted regardless.
+  // Assigned in the constructor (needs this.logger).
+  private auditSink: AuditSink | null = null;
   // Caller → functional role (§4.2), for the permission gate. Config-driven for
   // now; disabled unless MCP_PERMISSIONS_ENABLED=true.
   private roleMap = parseRoleMap(process.env.AUTOTASK_ROLE_MAP);
@@ -152,6 +157,7 @@ export class AutotaskToolHandler {
     this.autotaskService = autotaskService;
     this.logger = logger;
     this.lazyLoading = lazyLoading;
+    this.auditSink = createAuditSink(logger);
     this.enhanceConcurrency = resolveEnhanceConcurrency(process.env.AUTOTASK_ENHANCE_CONCURRENCY);
     this.picklistCache = new PicklistCache(
       logger,
@@ -1737,6 +1743,16 @@ export class AutotaskToolHandler {
     return identificationRequired('no-identity');
   }
 
+  /**
+   * Emit one audit record: always to the structured log, and additionally to the
+   * PG audit_log table when the sink is enabled (§23). The PG write is
+   * fire-and-forget and never blocks or fails the call.
+   */
+  private recordAudit(ctx: CallerContext, entry: AuditEntry): void {
+    emitAudit(this.logger, ctx, entry);
+    this.auditSink?.record(ctx, entry);
+  }
+
   async callTool(name: string, args: Record<string, any>, meta?: Record<string, any>): Promise<McpToolResult> {
     // Caller context (who/where/correlation) for audit + future permissions
     // (§3.5/§23). Strip the reserved `_context` key so it never reaches tool logic.
@@ -1760,7 +1776,7 @@ export class AutotaskToolHandler {
         const decision = evaluatePermission(role, risk);
         if (!decision.allowed) {
           const denied = buildPermissionDenied(name, risk, decision);
-          emitAudit(this.logger, ctx, { tool: name, outcome: 'permission-denied', durationMs: Date.now() - startedAt });
+          this.recordAudit(ctx, { tool: name, outcome: 'permission-denied', durationMs: Date.now() - startedAt });
           return { content: [{ type: 'text', text: JSON.stringify({ message: denied.message, data: denied }) }] };
         }
       }
@@ -1773,7 +1789,7 @@ export class AutotaskToolHandler {
         const decision = evaluateRawRequest({ method: args.method, role, permissionsEnabled: isPermissionsEnabled() });
         if (!decision.allowed) {
           const denied = buildRawRequestDenied(args.method, decision);
-          emitAudit(this.logger, ctx, { tool: name, outcome: 'permission-denied', durationMs: Date.now() - startedAt });
+          this.recordAudit(ctx, { tool: name, outcome: 'permission-denied', durationMs: Date.now() - startedAt });
           return { content: [{ type: 'text', text: JSON.stringify({ message: denied.message, data: denied }) }] };
         }
       }
@@ -1783,7 +1799,7 @@ export class AutotaskToolHandler {
       // routine reversible updates pass through. `confirm` never reaches the tool.
       if (requiresExplicitConfirmation(risk) && args.confirm !== true) {
         const cr = buildConfirmationRequired(name, risk);
-        emitAudit(this.logger, ctx, { tool: name, outcome: 'confirmation-required', durationMs: Date.now() - startedAt });
+        this.recordAudit(ctx, { tool: name, outcome: 'confirmation-required', durationMs: Date.now() - startedAt });
         return { content: [{ type: 'text', text: JSON.stringify({ message: cr.message, data: cr }) }] };
       }
       if ('confirm' in args) {
@@ -1799,7 +1815,7 @@ export class AutotaskToolHandler {
         if (args.currentUser === true && args[actingField] == null) {
           const resolution = await this.resolveCaller(ctx);
           if (resolution.status !== 'resolved') {
-            emitAudit(this.logger, ctx, { tool: name, outcome: 'identification-required', durationMs: Date.now() - startedAt });
+            this.recordAudit(ctx, { tool: name, outcome: 'identification-required', durationMs: Date.now() - startedAt });
             return { content: [{ type: 'text', text: JSON.stringify({ message: resolution.message, data: resolution }) }] };
           }
           args = { ...args, [actingField]: resolution.resource.id };
@@ -1818,7 +1834,7 @@ export class AutotaskToolHandler {
       if (idempotencyKey) {
         const cached = this.idempotencyStore.get(idempotencyKey);
         if (cached) {
-          emitAudit(this.logger, ctx, { tool: name, outcome: 'idempotent-replay', durationMs: Date.now() - startedAt });
+          this.recordAudit(ctx, { tool: name, outcome: 'idempotent-replay', durationMs: Date.now() - startedAt });
           return cached;
         }
       }
@@ -1829,7 +1845,7 @@ export class AutotaskToolHandler {
       const notFoundMsg = this.buildNotFoundMessage(name, args, rawResult);
       if (notFoundMsg) {
         this.logger.debug(`Not-found result for ${name}: ${notFoundMsg}`);
-        emitAudit(this.logger, ctx, { tool: name, outcome: 'not-found', durationMs: Date.now() - startedAt });
+        this.recordAudit(ctx, { tool: name, outcome: 'not-found', durationMs: Date.now() - startedAt });
         return errorToolResult({ error: notFoundMsg, tool: name });
       }
 
@@ -1875,7 +1891,7 @@ export class AutotaskToolHandler {
         result && typeof result === 'object' && typeof (result as { id?: unknown }).id === 'number'
           ? (result as { id: number }).id
           : undefined;
-      emitAudit(this.logger, ctx, {
+      this.recordAudit(ctx, {
         tool: name,
         outcome: 'ok',
         durationMs: Date.now() - startedAt,
@@ -1889,7 +1905,7 @@ export class AutotaskToolHandler {
 
     } catch (error) {
       this.logger.error(`Tool execution failed for ${name}:`, error);
-      emitAudit(this.logger, ctx, {
+      this.recordAudit(ctx, {
         tool: name,
         outcome: 'error',
         durationMs: Date.now() - startedAt,

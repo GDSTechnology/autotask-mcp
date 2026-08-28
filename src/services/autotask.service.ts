@@ -17,6 +17,7 @@ import { checkProtectedCompanyMutation, isUnsafeCompanyName } from '../utils/com
 import { resolveActionType } from '../utils/company-todo';
 import { buildContactSearchFilter, normalizeContactNote } from '../utils/contact';
 import { resolveCompanyOwnerResourceID } from '../utils/company-owner';
+import { computeBlockHourUsage } from '../utils/block-hours';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1322,6 +1323,51 @@ export class AutotaskService {
       this.logger.error(`Failed to update contract service ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Block-hour contract usage report (contractType 4). Monthly, use-it-or-lose-it:
+   * each month's purchased block hours vs billable hours worked → overage /
+   * forfeited (see utils/block-hours). Scope by contractID, companyID, or all
+   * active block-hour contracts (the default).
+   */
+  async getBlockHourUsage(
+    opts: { contractID?: number; companyID?: number; includeInactive?: boolean } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [{ op: 'eq', field: 'contractType', value: 4 }];
+    if (opts.contractID !== undefined) filters.push({ op: 'eq', field: 'id', value: opts.contractID });
+    if (opts.companyID !== undefined) filters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    if (!opts.includeInactive) filters.push({ op: 'eq', field: 'status', value: 1 });
+
+    const contracts = await http.query<any>('Contracts', filters, {
+      includeFields: ['id', 'contractName', 'companyID', 'status', 'startDate', 'endDate'],
+      maxRecords: 500,
+    });
+
+    const results: Array<Record<string, any>> = [];
+    for (const c of contracts) {
+      const [blocks, entries] = await Promise.all([
+        http.query<any>('ContractBlocks', [{ op: 'eq', field: 'contractID', value: c.id }], {
+          includeFields: ['hours', 'startDate', 'status'],
+          maxRecords: 500,
+        }),
+        http.query<any>('TimeEntries', [{ op: 'eq', field: 'contractID', value: c.id }], {
+          includeFields: ['dateWorked', 'hoursWorked', 'isNonBillable'],
+          maxRecords: 5000,
+        }),
+      ]);
+      const usage = computeBlockHourUsage(blocks, entries);
+      results.push({
+        contractId: c.id,
+        contractName: c.contractName,
+        companyID: c.companyID,
+        active: c.status === 1,
+        term: { start: c.startDate, end: c.endDate },
+        ...usage,
+      });
+    }
+    return results;
   }
 
   // =====================================================

@@ -2377,6 +2377,29 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: []
     }
   },
+  {
+    name: 'autotask_report_block_hour_usage',
+    description: 'Block-hour contract usage report. For block-hour contracts (monthly, use-it-or-lose-it), returns per-month allocated vs used hours with billable overage and forfeited (expired) hours, plus contract totals and the current month in progress. Scope to one contract, one company, or all active block-hour contracts (default).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: {
+          type: 'number',
+          description: 'Report on a single block-hour contract'
+        },
+        companyID: {
+          type: 'number',
+          description: 'Limit to one company (omit for all active block-hour contracts)'
+        },
+        includeInactive: {
+          type: 'boolean',
+          description: 'Also include inactive/expired contracts (default: false — active only)'
+        }
+      },
+      required: []
+    },
+    annotations: { title: 'Block-hour usage report', readOnlyHint: true }
+  },
 
   // Invoice tools
   {
@@ -3474,7 +3497,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_report_block_hour_usage']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

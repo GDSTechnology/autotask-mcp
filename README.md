@@ -19,6 +19,10 @@ This server runs as a docker-compose service built locally from this repository.
 See **[DEPLOY.md](DEPLOY.md)** for the build → deploy → verify → rollback runbook,
 and `scripts/build-image.sh` for a traceable image build.
 
+Building an automation on top of the MCP (n8n, Hermes, ChatGPT)? See the
+**[integration cheatsheet](docs/INTEGRATION.md)** — result shapes, caller identity,
+the confirmation/idempotency/permission gates, and the common gotchas.
+
 > **Note — no GitHub Packages token required.** `autotask-mcp` does **not** depend
 > on any private GitHub Packages registry package. Its only SDK dependency,
 > `autotask-node`, is a git dependency on the **public**

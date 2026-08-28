@@ -1798,6 +1798,46 @@ export class AutotaskService {
     await this.updateTask(id, { projectID, status: statusId, completedDateTime: opts.completedDateTime ?? new Date().toISOString() } as any);
   }
 
+  // Task secondary resources (§5.4) — the primary resource is the task's
+  // assignedResourceID; additional crew are TaskSecondaryResources rows.
+  async listTaskResources(taskID: number): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    return http.query('TaskSecondaryResources', [{ op: 'eq', field: 'taskID', value: taskID }], {
+      includeFields: ['id', 'taskID', 'resourceID', 'roleID'],
+      maxRecords: 500,
+    });
+  }
+  async addTaskResource(taskID: number, resourceID: number, roleID?: number): Promise<number> {
+    const http = await this.ensureClient();
+    const body: Record<string, any> = { taskID, resourceID };
+    if (roleID !== undefined) body.roleID = roleID;
+    return http.create('TaskSecondaryResources', body);
+  }
+  async removeTaskResource(id: number): Promise<void> {
+    const http = await this.ensureClient();
+    await http.delete('TaskSecondaryResources', id);
+  }
+
+  // Task predecessors / dependencies (§5.5) — a TaskPredecessors row links a
+  // predecessor task to a successor task with an optional lag.
+  async listTaskPredecessors(taskID: number): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    return http.query('TaskPredecessors', [{ op: 'eq', field: 'successorTaskID', value: taskID }], {
+      includeFields: ['id', 'predecessorTaskID', 'successorTaskID', 'lagDays'],
+      maxRecords: 500,
+    });
+  }
+  async addTaskPredecessor(successorTaskID: number, predecessorTaskID: number, lagDays?: number): Promise<number> {
+    const http = await this.ensureClient();
+    const body: Record<string, any> = { successorTaskID, predecessorTaskID };
+    if (lagDays !== undefined) body.lagDays = lagDays;
+    return http.create('TaskPredecessors', body);
+  }
+  async removeTaskPredecessor(id: number): Promise<void> {
+    const http = await this.ensureClient();
+    await http.delete('TaskPredecessors', id);
+  }
+
   // =====================================================
   // Phases
   // =====================================================

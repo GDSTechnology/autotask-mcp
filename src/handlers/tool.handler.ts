@@ -1301,6 +1301,24 @@ export class AutotaskToolHandler {
         await s.completeTask(a.id, { projectID: a.projectID, statusId: a.statusId });
         return { result: undefined, message: `Task ${a.id} marked complete` };
       }],
+      ['autotask_list_task_resources', async (a) => {
+        const r = await s.listTaskResources(a.taskID); return { result: r, message: `${r.length} secondary resource(s) on task ${a.taskID}` };
+      }],
+      ['autotask_add_task_resource', async (a) => {
+        const id = await s.addTaskResource(a.taskID, a.resourceID, a.roleID); return { result: id, message: `Added resource ${a.resourceID} to task ${a.taskID} (row ${id})` };
+      }],
+      ['autotask_remove_task_resource', async (a) => {
+        await s.removeTaskResource(a.id); return { result: undefined, message: `Removed task resource row ${a.id}` };
+      }],
+      ['autotask_list_task_predecessors', async (a) => {
+        const r = await s.listTaskPredecessors(a.taskID); return { result: r, message: `${r.length} predecessor(s) for task ${a.taskID}` };
+      }],
+      ['autotask_add_task_predecessor', async (a) => {
+        const id = await s.addTaskPredecessor(a.successorTaskID, a.predecessorTaskID, a.lagDays); return { result: id, message: `Task ${a.predecessorTaskID} → ${a.successorTaskID} (row ${id})` };
+      }],
+      ['autotask_remove_task_predecessor', async (a) => {
+        await s.removeTaskPredecessor(a.id); return { result: undefined, message: `Removed task predecessor row ${a.id}` };
+      }],
 
       // Phases
       ['autotask_list_phases', async (a) => {

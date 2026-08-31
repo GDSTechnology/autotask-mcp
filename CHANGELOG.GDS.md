@@ -91,6 +91,7 @@ tests (316 passing at release).
 - **autotask-node** is a public GDS fork (`github:GDSTechnology/autotask-node`),
   dev-only — the runtime is a native-`fetch` client; the SDK is pruned from the
   production image.
-- **Upstream tracking:** this fork still diffs against `WYRE-AI/autotask-mcp` via a
-  git remote (`upstream`) for the monthly new-module compare, independent of the
-  GitHub fork relationship.
+- **Independent project:** this is a standalone GDS Technology project, originally
+  derived from `WYRE-AI/autotask-mcp` (Apache-2.0) and now developed separately.
+  The GitHub fork relationship and the `upstream` tracking remote have been
+  removed; the codebases have diverged and are no longer reconciled.

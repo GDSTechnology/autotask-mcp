@@ -1601,6 +1601,68 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     },
     annotations: { title: 'List task attachments', readOnlyHint: true }
   },
+  {
+    name: 'autotask_get_project_attachment',
+    description: 'Get a project attachment. With includeData=false (default) returns metadata only — fast, suitable for browsing. With includeData=true returns the base64 binary content via the top-level /ProjectAttachments/{id} endpoint (the child endpoint never populates data). The attachment is verified to belong to the given projectId. Oversized binaries are stripped with a dataOmittedReason field (base64 can exceed the MCP client tool-result limit of ~1 MB).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'number', description: 'The project ID the attachment belongs to' },
+        attachmentId: { type: 'number', description: 'The attachment ID to retrieve' },
+        includeData: { type: 'boolean', description: 'Set true to fetch the base64-encoded file bytes. Default false returns metadata only.', default: false },
+        maxInlineBase64Bytes: { type: 'number', description: 'Cap on base64 string length before data is stripped (default 750_000, ~560 KB raw). Only relevant when includeData=true. Raise carefully — your MCP client may reject oversized tool results.', minimum: 1024 }
+      },
+      required: ['projectId', 'attachmentId']
+    },
+    annotations: { title: 'Get project attachment', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_project_attachment',
+    description: 'Upload a file attachment to an existing project. The file content must be passed as a base64-encoded string in the `data` field (MCP is JSON-RPC, so binary bytes must be base64-encoded). Autotask enforces a 3 MB hard limit; this tool validates the decoded size before calling the API. Example: { projectId: 152, title: "SOW.pdf", data: "JVBERi0xLjc..." }',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'number', description: 'The project ID to attach the file to' },
+        title: { type: 'string', description: 'Display title for the attachment (typically the filename, e.g. "SOW.pdf")' },
+        data: { type: 'string', description: 'Base64-encoded file content. Maximum decoded size: 3 MB.' },
+        fullPath: { type: 'string', description: 'Original filename including any path. Defaults to `title` if not provided.' },
+        contentType: { type: 'string', description: 'MIME type of the file (e.g. "application/pdf", "image/png"). Optional.' },
+        publish: { type: 'number', description: 'Visibility: 1 = All Autotask Users (default), 2 = Internal Users Only', default: 1 }
+      },
+      required: ['projectId', 'title', 'data']
+    }
+  },
+  {
+    name: 'autotask_get_task_attachment',
+    description: 'Get a project-task attachment. With includeData=false (default) returns metadata only. With includeData=true returns the base64 binary content via the top-level /TaskAttachments/{id} endpoint (the child endpoint never populates data). The attachment is verified to belong to the given taskId. Oversized binaries are stripped with a dataOmittedReason field.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'number', description: 'The task ID the attachment belongs to' },
+        attachmentId: { type: 'number', description: 'The attachment ID to retrieve' },
+        includeData: { type: 'boolean', description: 'Set true to fetch the base64-encoded file bytes. Default false returns metadata only.', default: false },
+        maxInlineBase64Bytes: { type: 'number', description: 'Cap on base64 string length before data is stripped (default 750_000, ~560 KB raw). Only relevant when includeData=true. Raise carefully — your MCP client may reject oversized tool results.', minimum: 1024 }
+      },
+      required: ['taskId', 'attachmentId']
+    },
+    annotations: { title: 'Get task attachment', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_task_attachment',
+    description: 'Upload a file attachment to an existing project task. The file content must be passed as a base64-encoded string in the `data` field. Autotask enforces a 3 MB hard limit; this tool validates the decoded size before calling the API. Example: { taskId: 45678, title: "as-built.pdf", data: "JVBERi0xLjc..." }',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'number', description: 'The task ID to attach the file to' },
+        title: { type: 'string', description: 'Display title for the attachment (typically the filename, e.g. "as-built.pdf")' },
+        data: { type: 'string', description: 'Base64-encoded file content. Maximum decoded size: 3 MB.' },
+        fullPath: { type: 'string', description: 'Original filename including any path. Defaults to `title` if not provided.' },
+        contentType: { type: 'string', description: 'MIME type of the file (e.g. "application/pdf", "image/png"). Optional.' },
+        publish: { type: 'number', description: 'Visibility: 1 = All Autotask Users (default), 2 = Internal Users Only', default: 1 }
+      },
+      required: ['taskId', 'title', 'data']
+    }
+  },
 
   // Company Notes tools
   {
@@ -3840,7 +3902,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

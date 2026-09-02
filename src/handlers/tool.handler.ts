@@ -1459,6 +1459,58 @@ export class AutotaskToolHandler {
         });
         return { result: id, message: `Successfully created ticket attachment with ID: ${id}` };
       }],
+      ['autotask_get_project_attachment', async (a) => {
+        const r = await s.getProjectAttachment(a.projectId, a.attachmentId, {
+          includeData: a.includeData,
+          maxInlineBase64Bytes: a.maxInlineBase64Bytes,
+        });
+        if (!r) return { result: null, message: `No project attachment found with ID ${a.attachmentId} on project ${a.projectId}` };
+        const message = r.dataOmittedReason
+          ? 'Project attachment retrieved (data omitted: oversized for inline transport)'
+          : 'Project attachment retrieved successfully';
+        return { result: r, message };
+      }],
+      ['autotask_create_project_attachment', async (a) => {
+        // Never log `data` (base64 file bytes) — can be large / contain PII.
+        const decodedBytes = typeof a.data === 'string' ? Buffer.from(a.data, 'base64').length : 0;
+        this.logger.info(
+          `autotask_create_project_attachment invoked: projectId=${a.projectId} title="${a.title}" bytes=${decodedBytes}`
+        );
+        const id = await s.createProjectAttachment(a.projectId, {
+          title: a.title,
+          fullPath: a.fullPath || a.title,
+          data: a.data,
+          contentType: a.contentType,
+          publish: a.publish ?? 1
+        });
+        return { result: id, message: `Successfully created project attachment with ID: ${id}` };
+      }],
+      ['autotask_get_task_attachment', async (a) => {
+        const r = await s.getTaskAttachment(a.taskId, a.attachmentId, {
+          includeData: a.includeData,
+          maxInlineBase64Bytes: a.maxInlineBase64Bytes,
+        });
+        if (!r) return { result: null, message: `No task attachment found with ID ${a.attachmentId} on task ${a.taskId}` };
+        const message = r.dataOmittedReason
+          ? 'Task attachment retrieved (data omitted: oversized for inline transport)'
+          : 'Task attachment retrieved successfully';
+        return { result: r, message };
+      }],
+      ['autotask_create_task_attachment', async (a) => {
+        // Never log `data` (base64 file bytes) — can be large / contain PII.
+        const decodedBytes = typeof a.data === 'string' ? Buffer.from(a.data, 'base64').length : 0;
+        this.logger.info(
+          `autotask_create_task_attachment invoked: taskId=${a.taskId} title="${a.title}" bytes=${decodedBytes}`
+        );
+        const id = await s.createTaskAttachment(a.taskId, {
+          title: a.title,
+          fullPath: a.fullPath || a.title,
+          data: a.data,
+          contentType: a.contentType,
+          publish: a.publish ?? 1
+        });
+        return { result: id, message: `Successfully created task attachment with ID: ${id}` };
+      }],
 
       // Expense Reports
       ['autotask_get_expense_report', async (a) => {

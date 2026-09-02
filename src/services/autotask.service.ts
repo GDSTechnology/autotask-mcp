@@ -43,6 +43,9 @@ import {
   AutotaskProjectNote,
   AutotaskCompanyNote,
   AutotaskTicketAttachment,
+  AutotaskProjectAttachment,
+  AutotaskTaskAttachment,
+  AutotaskAttachmentCreateRequest,
   AutotaskTicketChecklistItem,
   AutotaskTicketAttachmentCreateRequest,
   AutotaskExpenseReport,
@@ -2131,6 +2134,171 @@ export class AutotaskService {
   // MCP client tool-result limits (~1 MB). Callable overrides via options.
   private static readonly DEFAULT_MAX_INLINE_ATTACHMENT_BASE64 = 750_000;
 
+  // Autotask hard limit on attachment upload size (decoded bytes). Applies to
+  // ticket, project, and task attachments alike.
+  private static readonly MAX_ATTACHMENT_UPLOAD_BYTES = 3 * 1024 * 1024; // 3 MB
+
+  /**
+   * Validate a base64 attachment payload shared by all attachment-create paths:
+   * `title`/`data` present, `data` is real base64, non-empty, within the size
+   * limit. Returns the decoded byte length. Throws with a `${method}:`-prefixed
+   * message on any violation.
+   */
+  private validateAttachmentUploadData(method: string, data: AutotaskAttachmentCreateRequest): number {
+    if (!data || typeof data.data !== 'string' || data.data.length === 0) {
+      throw new Error(`${method}: \`data\` (base64-encoded file content) is required`);
+    }
+    if (!data.title) {
+      throw new Error(`${method}: \`title\` is required`);
+    }
+
+    let decodedLength: number;
+    try {
+      const buf = Buffer.from(data.data, 'base64');
+      if (buf.toString('base64').replace(/=+$/, '') !== data.data.replace(/\s+/g, '').replace(/=+$/, '')) {
+        throw new Error('invalid base64');
+      }
+      decodedLength = buf.length;
+    } catch {
+      throw new Error(`${method}: \`data\` is not valid base64-encoded content`);
+    }
+
+    if (decodedLength === 0) {
+      throw new Error(`${method}: decoded attachment is empty`);
+    }
+    if (decodedLength > AutotaskService.MAX_ATTACHMENT_UPLOAD_BYTES) {
+      throw new Error(
+        `${method}: attachment is ${decodedLength} bytes which exceeds the Autotask 3MB (${AutotaskService.MAX_ATTACHMENT_UPLOAD_BYTES} byte) limit`
+      );
+    }
+    return decodedLength;
+  }
+
+  /**
+   * Fetch an attachment for a Projects/Tasks-style parent. Metadata comes from
+   * the child endpoint (never populates `data`); binary content comes from the
+   * top-level entity endpoint by id, then is scope-verified against the parent
+   * and stripped if too large for inline transport. Mirrors getTicketAttachment.
+   */
+  private async getChildAttachmentImpl<T extends { data?: string; parentID?: number; [k: string]: any }>(
+    parentEntity: string,
+    parentId: number,
+    childEntity: string,
+    topLevelEntity: string,
+    fkField: string,
+    attachmentId: number,
+    options: { includeData?: boolean; maxInlineBase64Bytes?: number } = {}
+  ): Promise<(T & { dataOmittedReason?: string }) | null> {
+    const includeData = options.includeData ?? false;
+    const maxInlineBase64Bytes =
+      options.maxInlineBase64Bytes ?? AutotaskService.DEFAULT_MAX_INLINE_ATTACHMENT_BASE64;
+
+    const http = await this.ensureClient();
+    this.logger.debug(
+      `Getting ${parentEntity} attachment - parentId: ${parentId}, attachmentId: ${attachmentId}, includeData: ${includeData}`
+    );
+
+    if (!includeData) {
+      return await http.childGet<T>(parentEntity, parentId, childEntity, attachmentId);
+    }
+
+    const attachment = await http.get<T>(topLevelEntity, attachmentId);
+    if (!attachment) return null;
+
+    // The top-level endpoint accepts any attachment ID, so enforce parent scope
+    // ourselves. Prefer the entity-specific FK; fall back to the generic parentID.
+    const scopeVal =
+      typeof attachment[fkField] === 'number' ? attachment[fkField]
+      : typeof attachment.parentID === 'number' ? attachment.parentID
+      : undefined;
+    if (typeof scopeVal === 'number' && scopeVal !== parentId) {
+      this.logger.warn(
+        `${topLevelEntity} ${attachmentId} belongs to parent ${scopeVal}, not ${parentId}. Returning null.`
+      );
+      return null;
+    }
+
+    if (typeof attachment.data === 'string' && attachment.data.length > maxInlineBase64Bytes) {
+      const decodedBytes = Buffer.byteLength(attachment.data, 'base64');
+      const reason =
+        `Attachment data omitted: base64 length ${attachment.data.length} bytes ` +
+        `(${decodedBytes} bytes decoded) exceeds inline limit of ${maxInlineBase64Bytes} bytes. ` +
+        `Fetch directly from Autotask, or call again with a larger maxInlineBase64Bytes (caveat: ` +
+        `the MCP client may reject the oversized response).`;
+      this.logger.warn(
+        `getChildAttachmentImpl: stripping oversized data for ${topLevelEntity} ${attachmentId} (${attachment.data.length} base64 bytes)`
+      );
+      const { data: _omitted, ...rest } = attachment;
+      return { ...(rest as T), dataOmittedReason: reason };
+    }
+
+    return attachment;
+  }
+
+  /**
+   * Create an attachment under a Projects/Tasks-style parent via the child
+   * endpoint. The parent linkage is established by the URL (parentID is
+   * read-only), so no parentId/parentType is sent. Mirrors createTicketAttachment.
+   */
+  private async createChildAttachmentImpl(
+    parentEntity: string,
+    parentId: number,
+    childEntity: string,
+    method: string,
+    data: AutotaskAttachmentCreateRequest
+  ): Promise<number> {
+    const decodedLength = this.validateAttachmentUploadData(method, data);
+    const http = await this.ensureClient();
+
+    const payload = {
+      title: data.title,
+      fullPath: data.fullPath || data.title,
+      data: data.data,
+      attachmentType: data.attachmentType || 'FILE_ATTACHMENT',
+      contentType: data.contentType,
+      publish: data.publish ?? 1
+    };
+
+    this.logger.info(
+      `${method}: ${parentEntity.toLowerCase()}Id=${parentId} title="${data.title}" bytes=${decodedLength}`
+    );
+    const id = await http.childCreate(parentEntity, parentId, childEntity, payload);
+    this.logger.info(`${method}: created attachment ${id} on ${parentEntity} ${parentId}`);
+    return id;
+  }
+
+  /** Get a project attachment (metadata, or binary via includeData=true). */
+  async getProjectAttachment(
+    projectId: number,
+    attachmentId: number,
+    options: { includeData?: boolean; maxInlineBase64Bytes?: number } = {}
+  ): Promise<(AutotaskProjectAttachment & { dataOmittedReason?: string }) | null> {
+    return this.getChildAttachmentImpl<AutotaskProjectAttachment>(
+      'Projects', projectId, 'Attachments', 'ProjectAttachments', 'projectID', attachmentId, options
+    );
+  }
+
+  /** Upload a base64 file attachment to a project. */
+  async createProjectAttachment(projectId: number, data: AutotaskAttachmentCreateRequest): Promise<number> {
+    return this.createChildAttachmentImpl('Projects', projectId, 'Attachments', 'createProjectAttachment', data);
+  }
+
+  /** Get a task attachment (metadata, or binary via includeData=true). */
+  async getTaskAttachment(
+    taskId: number,
+    attachmentId: number,
+    options: { includeData?: boolean; maxInlineBase64Bytes?: number } = {}
+  ): Promise<(AutotaskTaskAttachment & { dataOmittedReason?: string }) | null> {
+    return this.getChildAttachmentImpl<AutotaskTaskAttachment>(
+      'Tasks', taskId, 'Attachments', 'TaskAttachments', 'taskID', attachmentId, options
+    );
+  }
+
+  /** Upload a base64 file attachment to a project task. */
+  async createTaskAttachment(taskId: number, data: AutotaskAttachmentCreateRequest): Promise<number> {
+    return this.createChildAttachmentImpl('Tasks', taskId, 'Attachments', 'createTaskAttachment', data);
+  }
+
   async getTicketAttachment(
     ticketId: number,
     attachmentId: number,
@@ -2221,34 +2389,7 @@ export class AutotaskService {
     ticketId: number,
     data: AutotaskTicketAttachmentCreateRequest
   ): Promise<number> {
-    const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024; // 3 MB
-
-    if (!data || typeof data.data !== 'string' || data.data.length === 0) {
-      throw new Error('createTicketAttachment: `data` (base64-encoded file content) is required');
-    }
-    if (!data.title) {
-      throw new Error('createTicketAttachment: `title` is required');
-    }
-
-    let decodedLength: number;
-    try {
-      const buf = Buffer.from(data.data, 'base64');
-      if (buf.toString('base64').replace(/=+$/, '') !== data.data.replace(/\s+/g, '').replace(/=+$/, '')) {
-        throw new Error('invalid base64');
-      }
-      decodedLength = buf.length;
-    } catch {
-      throw new Error('createTicketAttachment: `data` is not valid base64-encoded content');
-    }
-
-    if (decodedLength === 0) {
-      throw new Error('createTicketAttachment: decoded attachment is empty');
-    }
-    if (decodedLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error(
-        `createTicketAttachment: attachment is ${decodedLength} bytes which exceeds the Autotask 3MB (${MAX_ATTACHMENT_BYTES} byte) limit for ticket attachments`
-      );
-    }
+    const decodedLength = this.validateAttachmentUploadData('createTicketAttachment', data);
 
     const http = await this.ensureClient();
 

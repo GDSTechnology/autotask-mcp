@@ -13,6 +13,11 @@
 
 ### Added
 
+- **Project & task attachment upload/download (binary)** ([#55](https://github.com/GDSTechnology/autotask-mcp/issues/55)). Completes the Phase 4 attachment surface — listing metadata already existed (#54); this adds the binary side so SOWs, drawings, as-builts, and closeout files can be attached to and retrieved from projects and tasks:
+  - `autotask_create_project_attachment` / `autotask_create_task_attachment` — upload a base64-encoded file via the child endpoint (`Projects|Tasks/{id}/Attachments`); the parent linkage comes from the URL (`parentID` is read-only), so no parent id/type is sent. Decoded size is validated against Autotask's 3 MB limit before the API call.
+  - `autotask_get_project_attachment` / `autotask_get_task_attachment` — metadata by default (fast child-endpoint read); `includeData: true` fetches the base64 bytes via the top-level entity endpoint (`ProjectAttachments|TaskAttachments/{id}`, the only one that populates `data`), verified to belong to the given parent. Oversized binaries are stripped with a `dataOmittedReason` (base64 can exceed the MCP client's ~1 MB tool-result limit).
+  - Shared base64/size validation and the get/create routing were factored into reusable service helpers, and `createTicketAttachment` now reuses the same validator.
+
 - **Contract management tools** ([#237](https://github.com/wyre-technology/autotask-mcp/issues/237)). Contract coverage now spans the full read/report/create lifecycle:
   - `autotask_get_contract` — single contract header by ID (the service method existed but was never exposed as a tool).
   - `autotask_search_contracts` gained `contractType` and `endDateFrom`/`endDateTo` filters alongside the existing name/company/status ones.

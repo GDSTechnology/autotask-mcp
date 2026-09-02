@@ -286,6 +286,50 @@ export interface AutotaskTicketAttachmentCreateRequest {
   publish?: number; // 1 = All Autotask Users, 2 = Internal Users Only
 }
 
+/**
+ * Project/Task attachment shape (child of Projects / Tasks). `data` is
+ * populated only when fetched from the top-level entity endpoint by id.
+ */
+export interface AutotaskProjectAttachment {
+  id?: number;
+  parentID?: number;
+  projectID?: number;
+  fileName?: string;
+  fileSize?: number;
+  contentType?: string;
+  data?: string; // Base64 encoded file data
+  createDate?: string;
+  attachedByResourceID?: number;
+  [key: string]: any;
+}
+
+export interface AutotaskTaskAttachment {
+  id?: number;
+  parentID?: number;
+  taskID?: number;
+  fileName?: string;
+  fileSize?: number;
+  contentType?: string;
+  data?: string; // Base64 encoded file data
+  createDate?: string;
+  attachedByResourceID?: number;
+  [key: string]: any;
+}
+
+/**
+ * Request payload for creating a project or task attachment. Same shape as the
+ * ticket variant — the parent (project/task) is established by the child
+ * endpoint URL, so no parent id/type is carried here. Bytes are base64-encoded.
+ */
+export interface AutotaskAttachmentCreateRequest {
+  title: string;
+  fullPath: string;
+  data: string; // base64-encoded file bytes
+  attachmentType?: string; // defaults to 'FILE_ATTACHMENT'
+  contentType?: string;
+  publish?: number; // 1 = All Autotask Users, 2 = Internal Users Only
+}
+
 export interface AutotaskExpenseReport {
   id?: number;
   name?: string;

@@ -161,3 +161,28 @@ description: Example prompts for adding and searching notes and attachments.
 > "Get attachment 60001 from ticket 48231"
 
 **What happens:** The server calls `autotask_get_ticket_attachment` with `ticketId: 48231` and `attachmentId: 60001`.
+
+## Project & Task Attachments
+
+Projects and tasks support the same binary attachment flow as tickets — upload a base64-encoded file, list metadata, and download the bytes. Useful for SOWs, drawings, as-builts, and closeout documents.
+
+### Upload a file to a project
+
+**Prompt:**
+> "Attach the SOW PDF to project 152"
+
+**What happens:** The server calls `autotask_create_project_attachment` with `projectId: 152`, `title: "SOW.pdf"`, and `data` set to the base64-encoded file bytes. Autotask enforces a 3 MB limit, validated before upload. The task equivalent is `autotask_create_task_attachment` with a `taskId`.
+
+### List attachments on a project or task
+
+**Prompt:**
+> "Show attachments on project 152"
+
+**What happens:** The server calls `autotask_search_project_attachments` (metadata only — name, type, size, attach date). Use `autotask_search_task_attachments` for a task.
+
+### Download a project or task attachment
+
+**Prompt:**
+> "Download attachment 60050 from project 152"
+
+**What happens:** The server calls `autotask_get_project_attachment` with `projectId: 152`, `attachmentId: 60050`, and `includeData: true` to return the base64 file bytes (verified to belong to that project). Without `includeData` it returns metadata only. Oversized binaries are stripped with a `dataOmittedReason` since base64 payloads can exceed the MCP client's ~1 MB tool-result limit. `autotask_get_task_attachment` does the same for a task.

@@ -13,6 +13,11 @@
 
 ### Added
 
+- **Deterministic project scheduler** — first slice of the Phase 4 Layer 2 SOW→project pipeline ([#46](https://github.com/GDSTechnology/autotask-mcp/issues/46)):
+  - `autotask_calculate_project_schedule` — schedules a normalized build plan into dated tasks using pure arithmetic (no Autotask writes, no AI, no reference-project inference). Task duration = `ceil(estimatedHours ÷ (crewSize × hoursPerDay))` working days; tasks are laid out in dependency order across a configurable working week (weekends/holidays skipped); target completion is the latest task finish. Returns per-task start/end dates, the project span, the driving (critical) path, milestone dates, and warnings (e.g. deadline overrun). Same inputs always yield the same schedule.
+  - Introduces the shared **`ProjectBuildPlan`** data model (`src/utils/project-plan.ts`) — phases and tasks keyed by client-side string `ref`s (not Autotask ids) so a plan can be validated, scheduled, and reviewed before anything is created in the tenant — plus `validateBuildPlan()` (unique refs, resolvable phase/predecessor refs, acyclic dependencies). The scheduler lives in `src/utils/project-schedule.ts`; both are pure/HTTP-free with 20 unit tests covering working-day math, weekend/holiday skips, crew/ceil duration, critical-path selection, lag, milestones, determinism, and validation errors.
+  - Remaining Layer 2 slices (scope/BOM extraction, labor planning, project classification, dry-run + build engine, project extension) are tracked in #46; the build engine writes to the live tenant and will land behind an explicit approval gate.
+
 - **Contract management tools** ([#237](https://github.com/wyre-technology/autotask-mcp/issues/237)). Contract coverage now spans the full read/report/create lifecycle:
   - `autotask_get_contract` — single contract header by ID (the service method existed but was never exposed as a tool).
   - `autotask_search_contracts` gained `contractType` and `endDateFrom`/`endDateTo` filters alongside the existing name/company/status ones.

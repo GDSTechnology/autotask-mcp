@@ -10,6 +10,7 @@ import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '.
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult } from '../utils/create-result.js';
+import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1169,6 +1170,22 @@ export class AutotaskToolHandler {
       ['autotask_export_project_blueprint', async (a) => {
         const r = await s.exportProjectBlueprint(a.projectID);
         return { result: r, message: `Blueprint of "${r.name}": ${r.phaseCount} phase(s), ${r.taskCount} task(s), ${r.estimatedHours}h` };
+      }],
+      ['autotask_calculate_project_schedule', async (a) => {
+        // Pure/deterministic — no Autotask I/O. Schedules a caller-provided plan.
+        const r = calculateProjectSchedule(a.plan, {
+          startDate: a.startDate,
+          hoursPerDay: a.hoursPerDay,
+          defaultCrewSize: a.defaultCrewSize,
+          workweek: a.workweek,
+          holidays: a.holidays,
+          targetCompletionDate: a.targetCompletionDate,
+        });
+        const warn = r.warnings.length ? `; ${r.warnings.length} warning(s)` : '';
+        return {
+          result: r,
+          message: `Scheduled ${r.taskCount} task(s): ${r.startDate} → ${r.targetCompletionDate} (${r.durationWorkingDays} working days, ${r.totalEstimatedHours}h)${warn}`,
+        };
       }],
       ['autotask_create_project', async (a) => {
         const projectData = { ...a };

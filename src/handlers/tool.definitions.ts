@@ -1143,6 +1143,66 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Export project blueprint', readOnlyHint: true }
   },
   {
+    name: 'autotask_calculate_project_schedule',
+    description: 'Deterministically schedule a project build plan (no Autotask writes, no AI, no reference-project inference). Each task\'s duration = ceil(estimatedHours ÷ (crewSize × hoursPerDay)) working days; tasks are laid out in dependency order across a configurable working week (weekends/holidays skipped); target completion is the latest task finish. Returns per-task start/end dates, the project start → target completion span, the driving (critical) path, and milestone dates. Same inputs always yield the same schedule. The `plan` uses client-side string refs (not Autotask ids) so it can be scheduled before anything exists in the tenant.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan: {
+          type: 'object',
+          description: 'Normalized project build plan.',
+          properties: {
+            name: { type: 'string', description: 'Project name' },
+            archetype: { type: 'string', description: 'Optional GDS archetype classification' },
+            phases: {
+              type: 'array',
+              description: 'Phases (optional). Each: { ref, title, parentRef? } — ref is a unique client-side id; parentRef nests a sub-phase.',
+              items: {
+                type: 'object',
+                properties: {
+                  ref: { type: 'string' },
+                  title: { type: 'string' },
+                  parentRef: { type: 'string' },
+                  description: { type: 'string' }
+                },
+                required: ['ref', 'title']
+              }
+            },
+            tasks: {
+              type: 'array',
+              description: 'Tasks. Each: { ref, title, estimatedHours, phaseRef?, crewSize?, predecessors?, lagDays?, milestone? }. predecessors are task refs that must finish first; set milestone:true for a zero-duration date marker.',
+              items: {
+                type: 'object',
+                properties: {
+                  ref: { type: 'string' },
+                  title: { type: 'string' },
+                  estimatedHours: { type: 'number' },
+                  phaseRef: { type: 'string' },
+                  crewSize: { type: 'number', description: 'Parallel resources on this task (overrides defaultCrewSize)' },
+                  predecessors: { type: 'array', items: { type: 'string' }, description: 'Refs of tasks that must finish before this one starts' },
+                  lagDays: { type: 'number', description: 'Working-day gap after predecessors finish' },
+                  taskType: { type: 'number' },
+                  milestone: { type: 'boolean' },
+                  description: { type: 'string' }
+                },
+                required: ['ref', 'title', 'estimatedHours']
+              }
+            }
+          },
+          required: ['name', 'tasks']
+        },
+        startDate: { type: 'string', description: 'Earliest project start, ISO date (YYYY-MM-DD). Rolled forward to the next working day if needed.' },
+        hoursPerDay: { type: 'number', description: 'Productive hours per working day (default 8)', default: 8 },
+        defaultCrewSize: { type: 'number', description: 'Parallel resources per task when a task does not set its own crewSize (default 1)', default: 1 },
+        workweek: { type: 'array', items: { type: 'number' }, description: 'Working weekdays as ISO numbers (Mon=1 … Sun=7). Default [1,2,3,4,5] (Mon–Fri).' },
+        holidays: { type: 'array', items: { type: 'string' }, description: 'Non-working dates (holidays), ISO YYYY-MM-DD.' },
+        targetCompletionDate: { type: 'string', description: 'Optional deadline (ISO date). A target completion beyond it produces a warning.' }
+      },
+      required: ['plan', 'startDate']
+    },
+    annotations: { title: 'Calculate project schedule', readOnlyHint: true }
+  },
+  {
     name: 'autotask_create_project',
     description: 'Create a new project in Autotask',
     inputSchema: {
@@ -3840,7 +3900,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

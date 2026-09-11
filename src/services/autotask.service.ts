@@ -1867,6 +1867,43 @@ export class AutotaskService {
     await http.delete('TaskPredecessors', id);
   }
 
+  /** Get one TaskPredecessors row by id, or null if it doesn't exist. */
+  async getTaskPredecessor(id: number): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    return http.get<Record<string, any>>('TaskPredecessors', id);
+  }
+
+  /**
+   * Search TaskPredecessors by either endpoint of the dependency. Filtering by
+   * `successorTaskID` lists what a task waits on; by `predecessorTaskID`, what
+   * waits on it. Both may be combined. With neither, returns nothing rather than
+   * scanning the whole tenant (a project-wide graph is built from the task set,
+   * not an unfiltered dump).
+   */
+  async searchTaskPredecessors(
+    options: { successorTaskID?: number; predecessorTaskID?: number; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'successorTaskID', options.successorTaskID);
+    pushEq(filters, 'predecessorTaskID', options.predecessorTaskID);
+    if (filters.length === 0) return [];
+    return http.query('TaskPredecessors', filters, {
+      includeFields: ['id', 'predecessorTaskID', 'successorTaskID', 'lagDays'],
+      maxRecords: options.pageSize || 500,
+    });
+  }
+
+  /**
+   * Update a TaskPredecessors row. Only `lagDays` is writable — Autotask marks
+   * predecessorTaskID and successorTaskID readonly (verified against live entity
+   * metadata), so re-pointing a dependency requires delete + recreate, not update.
+   */
+  async updateTaskPredecessor(id: number, lagDays: number): Promise<void> {
+    const http = await this.ensureClient();
+    await http.update('TaskPredecessors', id, { lagDays });
+  }
+
   // =====================================================
   // Phases
   // =====================================================

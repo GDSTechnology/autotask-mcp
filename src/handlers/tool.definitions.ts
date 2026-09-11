@@ -2890,6 +2890,37 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskPredecessors id' } }, required: ['id'] },
     annotations: { title: 'Remove task predecessor', destructiveHint: true }
   },
+  {
+    name: 'autotask_get_task_predecessor',
+    description: 'Get a single TaskPredecessors dependency row by its id. Returns { id, predecessorTaskID, successorTaskID, lagDays }.',
+    inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskPredecessors row id' } }, required: ['id'] },
+    annotations: { title: 'Get task predecessor', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_task_predecessors',
+    description: 'Search task dependency rows by either endpoint. Filter by successorTaskID (what a task waits on) and/or predecessorTaskID (what waits on a task); both may be combined. Provide at least one — an unfiltered search returns nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        successorTaskID: { type: 'number', description: 'Return rows whose successor is this task' },
+        predecessorTaskID: { type: 'number', description: 'Return rows whose predecessor is this task' },
+        pageSize: { type: 'number', description: 'Max rows to return (default 500)' }
+      }
+    },
+    annotations: { title: 'Search task predecessors', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_update_task_predecessor',
+    description: 'Update a task dependency. Only lagDays can be changed — Autotask marks predecessorTaskID and successorTaskID readonly, so to re-point a dependency remove this row and add a new one instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'TaskPredecessors row id' },
+        lagDays: { type: 'number', description: 'New lag in days' }
+      },
+      required: ['id', 'lagDays']
+    }
+  },
 
   // Phase tools
   {
@@ -3900,7 +3931,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

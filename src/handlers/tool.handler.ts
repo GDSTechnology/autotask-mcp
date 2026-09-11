@@ -1340,6 +1340,16 @@ export class AutotaskToolHandler {
       ['autotask_remove_task_predecessor', async (a) => {
         await s.removeTaskPredecessor(a.id); return { result: undefined, message: `Removed task predecessor row ${a.id}` };
       }],
+      ['autotask_get_task_predecessor', async (a) => {
+        const r = await s.getTaskPredecessor(a.id); return { result: r, message: r ? `Task predecessor row ${a.id}` : `Task predecessor row ${a.id} not found` };
+      }],
+      ['autotask_search_task_predecessors', async (a) => {
+        const r = await s.searchTaskPredecessors({ successorTaskID: a.successorTaskID, predecessorTaskID: a.predecessorTaskID, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} task predecessor row(s)` };
+      }],
+      ['autotask_update_task_predecessor', async (a) => {
+        await s.updateTaskPredecessor(a.id, a.lagDays); return { result: undefined, message: `Updated task predecessor row ${a.id} (lagDays=${a.lagDays})` };
+      }],
 
       // Phases
       ['autotask_list_phases', async (a) => {

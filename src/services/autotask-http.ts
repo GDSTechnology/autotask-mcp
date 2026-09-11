@@ -95,6 +95,39 @@ export class AutotaskRateLimitError extends Error {
 }
 
 /**
+ * Thrown when Autotask returns a 2xx (other than a legitimate 204 No Content)
+ * whose body cannot be turned into a usable payload — an empty body where one
+ * is expected, a body-read that aborted or errored mid-stream, or text that
+ * fails to JSON.parse (the classic truncated-response case).
+ *
+ * This exists to FAIL CLOSED. The old behavior returned `undefined` here, which
+ * `get()` turned into `null` (indistinguishable from a 404 / "not found") and
+ * `query()` turned into `[]` (indistinguishable from "zero records"). During a
+ * heavy Sanctuary Park build session that masqueraded as: project reads with no
+ * payload, phase/task lookups returning zero for projects known to contain them,
+ * and a just-created task reading back as absent — inviting duplicate creates on
+ * rerun. A transient truncation/timeout must never be mistaken for real absence,
+ * so we surface it as a distinct, retryable error instead. (Consolidated plan §2,
+ * §29, §31.)
+ */
+export class AutotaskResponseError extends Error {
+  readonly status: number;
+  /** Payload-integrity failures are safe to retry — the request may have succeeded upstream. */
+  readonly retryable = true;
+
+  constructor(method: string, path: string, status: number, detail: string, cause?: unknown) {
+    super(
+      `Autotask ${method} ${path} returned HTTP ${status} but the response payload was unusable: ${detail}. ` +
+        `Failing closed instead of returning an empty result, so a transient truncation/timeout is not ` +
+        `mistaken for "not found" or "no records". This is safe to retry.`,
+      cause !== undefined ? { cause } : undefined
+    );
+    this.name = 'AutotaskResponseError';
+    this.status = status;
+  }
+}
+
+/**
  * Per-request ceiling for a single Autotask REST call. Distant zones (e.g.
  * an Azure US region talking to the Sydney zone) add meaningful RTT, and
  * heavyweight requests (500-row query pages, entityInformation) can
@@ -208,7 +241,13 @@ export class AutotaskHttpClient {
    * (resolved against the zone base URL) or an absolute URL (used by
    * pageDetails.nextPageUrl pagination).
    */
-  private async request<T>(method: string, path: string, body?: any, isZoneRetry = false): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: any,
+    isZoneRetry = false,
+    opts: { allowEmptyBody?: boolean } = {}
+  ): Promise<T> {
     // Cooldown gate: while this tenant is inside a known 429 window, fail
     // fast locally instead of sending more requests upstream. See
     // rateLimitCooldowns.
@@ -251,7 +290,19 @@ export class AutotaskHttpClient {
       return undefined as unknown as T;
     }
 
-    const text = await response.text().catch(() => '');
+    // Read the body defensively but do NOT silently swallow a read failure.
+    // A body-read that rejects on a 2xx (e.g. the 60s AbortSignal fires
+    // mid-stream, or the connection drops after headers arrive) previously
+    // collapsed to '' → undefined → a misleading empty payload. We remember
+    // the failure and fail closed below on the success path; on an error
+    // response an unreadable body just means we have no detail to show.
+    let text = '';
+    let bodyReadError: unknown;
+    try {
+      text = await response.text();
+    } catch (err) {
+      bodyReadError = err;
+    }
 
     if (!response.ok) {
       // A 401 against a relative (zone-resolved) path — as opposed to an
@@ -266,7 +317,7 @@ export class AutotaskHttpClient {
         );
         this.resolvedBaseUrl = null;
         invalidateZoneUrlCache(this.username);
-        return this.request<T>(method, path, body, true);
+        return this.request<T>(method, path, body, true, opts);
       }
       let detail = text.slice(0, 1000);
       try {
@@ -305,11 +356,32 @@ export class AutotaskHttpClient {
       throw httpError;
     }
 
-    if (!text) return undefined as unknown as T;
+    // Success path — fail closed on any payload anomaly (plan §2/§29/§31).
+    // A body-read failure on a 2xx is always an anomaly.
+    if (bodyReadError !== undefined) {
+      const msg = bodyReadError instanceof Error ? bodyReadError.message : String(bodyReadError);
+      throw new AutotaskResponseError(method, path, response.status, `response body could not be read (${msg})`, bodyReadError);
+    }
+    if (!text) {
+      // Writes (update/delete) legitimately answer some 2xx with an empty body;
+      // they opt in via allowEmptyBody. For reads/creates an empty 2xx body is
+      // an anomaly, not "not found" (404) or "no records" (an empty items array).
+      if (opts.allowEmptyBody) return undefined as unknown as T;
+      throw new AutotaskResponseError(method, path, response.status, 'empty response body on a successful (non-204) response');
+    }
     try {
       return JSON.parse(text) as T;
-    } catch {
-      return undefined as unknown as T;
+    } catch (err) {
+      // Non-empty body that will not parse is the truncation signature — the
+      // exact case §2 calls out ("transport, or truncation loses the payload").
+      // Never downgrade this to an empty result.
+      throw new AutotaskResponseError(
+        method,
+        path,
+        response.status,
+        `response body was not valid JSON — likely truncated (${text.length} bytes received)`,
+        err
+      );
     }
   }
 
@@ -524,13 +596,13 @@ export class AutotaskHttpClient {
    */
   async update(entity: string, id: number, body: Record<string, any>): Promise<void> {
     try {
-      await this.request<void>('PATCH', `/${entity}`, { id, ...body });
+      await this.request<void>('PATCH', `/${entity}`, { id, ...body }, false, { allowEmptyBody: true });
     } catch (err) {
       if ((err as { status?: number })?.status === 404) {
         this.logger.debug(
           `Autotask PATCH /${entity} returned 404 (likely Zone DE1) — retrying as PUT /${entity}/${id}`
         );
-        await this.request<void>('PUT', `/${entity}/${id}`, body);
+        await this.request<void>('PUT', `/${entity}/${id}`, body, false, { allowEmptyBody: true });
         return;
       }
       throw err;
@@ -541,7 +613,7 @@ export class AutotaskHttpClient {
    * DELETE /{Entity}/{id}
    */
   async delete(entity: string, id: number): Promise<void> {
-    await this.request<void>('DELETE', `/${entity}/${id}`);
+    await this.request<void>('DELETE', `/${entity}/${id}`, undefined, false, { allowEmptyBody: true });
   }
 
   /**
@@ -669,7 +741,9 @@ export class AutotaskHttpClient {
     await this.request<void>(
       'PATCH',
       `/${parentEntity}/${parentId}/${childEntity}`,
-      { id, ...body }
+      { id, ...body },
+      false,
+      { allowEmptyBody: true }
     );
   }
 
@@ -684,7 +758,10 @@ export class AutotaskHttpClient {
   ): Promise<void> {
     await this.request<void>(
       'DELETE',
-      `/${parentEntity}/${parentId}/${childEntity}/${childId}`
+      `/${parentEntity}/${parentId}/${childEntity}/${childId}`,
+      undefined,
+      false,
+      { allowEmptyBody: true }
     );
   }
 }

@@ -18,6 +18,14 @@ export interface NormalizedCreateResult {
   parentId?: number;
   /** Full object when read-after-create is enabled; omitted for a stable id-only result. */
   item?: Record<string, unknown>;
+  /**
+   * Read-after-write verification outcome (§2), present only for create tools
+   * flagged `verifyRead`. `true` — the entity was read back and confirmed (see
+   * `item`); `false` — the create's itemId is authoritative but the entity was
+   * not yet visible within the retry budget (Autotask read lag). Never means the
+   * create failed.
+   */
+  verified?: boolean;
 }
 
 export function normalizeCreateResult(
@@ -41,6 +49,15 @@ interface CreateToolMeta {
    * match, parentId is simply omitted.
    */
   parentIdArgs?: string[];
+  /**
+   * When true, the tool handler performs read-after-write verification: after
+   * the create returns an id, it reads the entity back (bounded retry for
+   * Autotask's post-create read lag) and attaches `item` + `verified` to the
+   * result (§2). Enabled for Project-Builder entities whose top-level
+   * GET /{Entity}/{id} is known to work; left off elsewhere so those tools keep
+   * their exact id-only contract.
+   */
+  verifyRead?: boolean;
 }
 
 /**
@@ -57,11 +74,11 @@ export const CREATE_TOOL_META: Record<string, CreateToolMeta> = {
   autotask_create_service_call_ticket: { entityType: 'ServiceCallTickets', parentType: 'ServiceCalls', parentIdArgs: ['serviceCallID', 'serviceCallId'] },
   autotask_create_service_call_ticket_resource: { entityType: 'ServiceCallTicketResources', parentType: 'ServiceCallTickets', parentIdArgs: ['serviceCallTicketID', 'serviceCallTicketId'] },
   autotask_create_time_entry: { entityType: 'TimeEntries' },
-  autotask_create_project: { entityType: 'Projects' },
+  autotask_create_project: { entityType: 'Projects', verifyRead: true },
   autotask_create_contract: { entityType: 'Contracts' },
   autotask_create_contract_service: { entityType: 'ContractServices' },
-  autotask_create_task: { entityType: 'Tasks', parentType: 'Projects', parentIdArgs: ['projectID', 'projectId'] },
-  autotask_create_phase: { entityType: 'Phases', parentType: 'Projects', parentIdArgs: ['projectID', 'projectId'] },
+  autotask_create_task: { entityType: 'Tasks', parentType: 'Projects', parentIdArgs: ['projectID', 'projectId'], verifyRead: true },
+  autotask_create_phase: { entityType: 'Phases', parentType: 'Projects', parentIdArgs: ['projectID', 'projectId'], verifyRead: true },
   autotask_create_ticket_note: { entityType: 'TicketNotes', parentType: 'Tickets', parentIdArgs: ['ticketId', 'ticketID'] },
   autotask_create_ticket_checklist_item: { entityType: 'TicketChecklistItems', parentType: 'Tickets', parentIdArgs: ['ticketId', 'ticketID'] },
   autotask_create_project_note: { entityType: 'ProjectNotes', parentType: 'Projects', parentIdArgs: ['projectId', 'projectID'] },

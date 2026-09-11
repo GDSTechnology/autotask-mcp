@@ -9,7 +9,7 @@ import { Logger } from '../utils/logger.js';
 import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '../utils/response.formatter.js';
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
-import { normalizeCreateToolResult } from '../utils/create-result.js';
+import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
 import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
@@ -1866,6 +1866,42 @@ export class AutotaskToolHandler {
   }
 
   /**
+   * Read-after-write verification for a create result (§2). Reads the just-
+   * created entity back (bounded retry for Autotask's post-create read lag) and
+   * returns the result augmented with `verified` and, when visible, `item`.
+   *
+   * Fail-safe by construction: the create's itemId is already authoritative, so
+   * a read that never resolves (lag beyond budget) or that errors is reported as
+   * `verified: false` — never re-thrown. Throwing here would make a successful
+   * create look failed and invite a duplicate on rerun (§42).
+   */
+  private async verifyCreatedEntity(
+    name: string,
+    normalized: NormalizedCreateResult
+  ): Promise<NormalizedCreateResult> {
+    try {
+      const item = await this.autotaskService.readEntityForVerification(
+        normalized.entityType,
+        normalized.id
+      );
+      if (item) {
+        return { ...normalized, verified: true, item: item as Record<string, unknown> };
+      }
+      this.logger.warn(
+        `Read-after-create for ${name} id=${normalized.id} (${normalized.entityType}): entity not visible within retry budget — returning verified:false (the create itemId is authoritative; do NOT recreate).`
+      );
+      return { ...normalized, verified: false };
+    } catch (err) {
+      // A payload anomaly / transport error on the read-back is a verification
+      // failure, not a create failure. Surface verified:false and move on.
+      this.logger.warn(
+        `Read-after-create for ${name} id=${normalized.id} (${normalized.entityType}) errored: ${err instanceof Error ? err.message : String(err)} — returning verified:false.`
+      );
+      return { ...normalized, verified: false };
+    }
+  }
+
+  /**
    * Emit one audit record: always to the structured log, and additionally to the
    * PG audit_log table when the sink is enabled (§23). The PG write is
    * fire-and-forget and never blocks or fails the call.
@@ -1974,7 +2010,20 @@ export class AutotaskToolHandler {
       // Normalize create-tool ids into the { id, entityType, parentType?,
       // parentId? } contract (§5/§7.1) — one shape for every create, so callers
       // never special-case itemId vs item. Non-create results pass through.
-      const result = normalizeCreateToolResult(name, args, rawResult);
+      let result = normalizeCreateToolResult(name, args, rawResult);
+
+      // Read-after-write verification (§2): for create tools flagged verifyRead
+      // (Project-Builder entities), read the just-created entity back and attach
+      // `item` + `verified`. The create's itemId is authoritative — this only
+      // confirms/enriches — so it never converts a successful create into a
+      // failure (which would risk a duplicate on rerun, §42).
+      if (
+        typeof rawResult === 'number' &&
+        result !== null && typeof result === 'object' && !Array.isArray(result) &&
+        CREATE_TOOL_META[name]?.verifyRead
+      ) {
+        result = await this.verifyCreatedEntity(name, result as NormalizedCreateResult);
+      }
 
       // Format and enhance response
       let responseText: string;

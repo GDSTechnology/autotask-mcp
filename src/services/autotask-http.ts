@@ -60,6 +60,26 @@ interface QueryResponse<T> {
 const RAW_REQUEST_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
 
 /**
+ * Unwrap an Autotask GET-by-id response into the entity, or null when absent.
+ *
+ * Autotask returns `{ item: {...} }`, but two not-found shapes must both map to
+ * null: a genuine 404 (handled by the caller) and — the subtle one — an HTTP
+ * 200 carrying `{ item: null }`, which Autotask uses for a missing id on several
+ * entities (verified live: GET /Tasks/{missing} and /Projects/{missing}). The
+ * previous `res?.item ?? res` returned the truthy `{ item: null }` wrapper for
+ * that case, so a missing entity read as "found" — which would defeat
+ * read-after-write retry (getWithRetry would stop on a null-item wrapper) and
+ * hand callers a useless shell. When `item` is present we use it (even if null);
+ * otherwise the entity is at the top level (some legacy routes).
+ */
+function unwrapEntity<T>(res: unknown): T | null {
+  if (res && typeof res === 'object' && 'item' in (res as Record<string, unknown>)) {
+    return ((res as { item?: T }).item ?? null) as T | null;
+  }
+  return ((res as T) ?? null) as T | null;
+}
+
+/**
  * Maximum value Autotask accepts for the per-page `MaxRecords` body param on
  * `/query` endpoints. Anything outside [1, AUTOTASK_MAX_PAGE_SIZE] returns
  * HTTP 500 with the body "maxCountOfRecordsToReturn must be between 1 and 500".
@@ -430,13 +450,47 @@ export class AutotaskHttpClient {
   async get<T>(entity: string, id: number): Promise<T | null> {
     try {
       const res = await this.request<{ item?: T } & T>('GET', `/${entity}/${id}`);
-      // Autotask returns { item: {...} } but some legacy routes return the entity at top level.
-      return ((res as any)?.item ?? (res as any)) || null;
+      return unwrapEntity<T>(res);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('HTTP 404')) return null;
       throw err;
     }
+  }
+
+  /**
+   * GET /{Entity}/{id} with a bounded retry for read-after-write verification
+   * (plan §2). Autotask can briefly return 404 for an entity that was just
+   * created (replication lag between the write node and the read node), so a
+   * single read immediately after a create can falsely report "not found".
+   *
+   * This retries ONLY on a genuine null (not-yet-visible). It does NOT retry a
+   * payload anomaly: get() now throws AutotaskResponseError on a truncated/empty
+   * 2xx, and that propagates immediately — a corrupt response is a real error to
+   * surface, not a lag to wait out. Returns the entity once visible, or null if
+   * it never appears within the attempt budget (the caller decides what an
+   * unverified-but-created result means — for creates, the itemId is already
+   * authoritative, so this is confirmation, not the source of truth).
+   *
+   * Delays are linear (delayMs, 2·delayMs, …); the first read is immediate, so
+   * the common case (entity already visible) costs nothing extra.
+   */
+  async getWithRetry<T>(
+    entity: string,
+    id: number,
+    opts: { attempts?: number; delayMs?: number } = {}
+  ): Promise<T | null> {
+    const attempts = Math.max(1, Math.floor(opts.attempts ?? 4));
+    const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 250));
+    let found: T | null = null;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      found = await this.get<T>(entity, id);
+      if (found !== null) return found;
+      if (attempt < attempts - 1 && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+      }
+    }
+    return found;
   }
 
   /**
@@ -653,7 +707,7 @@ export class AutotaskHttpClient {
         'GET',
         `/${parentEntity}/${parentId}/${childEntity}/${childId}`
       );
-      return ((res as any)?.item ?? (res as any)) || null;
+      return unwrapEntity<T>(res);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('HTTP 404')) return null;

@@ -1216,6 +1216,24 @@ export class AutotaskService {
     return toProjectBlueprint(structure);
   }
 
+  /**
+   * Read-after-write verification helper (§2): read a just-created entity back
+   * by id, with a bounded retry that tolerates Autotask's brief post-create read
+   * lag (a fresh entity can 404 for a moment). Returns the entity once visible,
+   * or null if it never appears within the budget. This is confirmation/
+   * enrichment only — the create response's itemId remains the source of truth
+   * for whether the write succeeded, so a null here means "created but not yet
+   * verifiable", never "not created".
+   */
+  async readEntityForVerification(
+    entityType: string,
+    id: number,
+    opts?: { attempts?: number; delayMs?: number }
+  ): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    return http.getWithRetry<Record<string, any>>(entityType, id, opts ?? {});
+  }
+
   // =====================================================
   // Resources
   // =====================================================

@@ -105,6 +105,14 @@ describe('get() — single-entity read fails closed on payload anomaly', () => {
     mockFetch({ status: 404, text: '{"errors":["not found"]}' });
     await expect(client().get('Projects', 999999)).resolves.toBeNull();
   });
+
+  it('treats an HTTP 200 { item: null } as not-found, not a truthy wrapper', async () => {
+    // Autotask answers a missing-by-id GET with 200 {item:null} on several
+    // entities (verified live). It must map to null, or read-after-write retry
+    // would treat a missing entity as "found".
+    mockFetch({ status: 200, body: { item: null } });
+    await expect(client().get('Tasks', 999999999)).resolves.toBeNull();
+  });
 });
 
 describe('query() — collection read fails closed on payload anomaly', () => {

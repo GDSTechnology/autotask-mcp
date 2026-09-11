@@ -77,6 +77,7 @@ export const CREATE_TOOL_META: Record<string, CreateToolMeta> = {
   autotask_create_project: { entityType: 'Projects', verifyRead: true },
   autotask_create_contract: { entityType: 'Contracts' },
   autotask_create_contract_service: { entityType: 'ContractServices' },
+  autotask_create_contract_milestone: { entityType: 'ContractMilestones', parentType: 'Contracts', parentIdArgs: ['contractID', 'contractId'], verifyRead: true },
   autotask_create_task: { entityType: 'Tasks', parentType: 'Projects', parentIdArgs: ['projectID', 'projectId'], verifyRead: true },
   autotask_create_phase: { entityType: 'Phases', parentType: 'Projects', parentIdArgs: ['projectID', 'projectId'], verifyRead: true },
   autotask_create_ticket_note: { entityType: 'TicketNotes', parentType: 'Tickets', parentIdArgs: ['ticketId', 'ticketID'] },

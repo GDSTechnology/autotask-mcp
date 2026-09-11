@@ -1526,6 +1526,67 @@ export class AutotaskService {
     }
   }
 
+  // =====================================================
+  // ContractMilestones (§30) — commercial milestone payments on a contract.
+  // Live entity metadata: canDelete=false (no delete tool); contractID is
+  // required + readonly (set at create, immutable); status is a tenant picklist.
+  // =====================================================
+
+  async getContractMilestone(id: number): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    return http.get<Record<string, any>>('ContractMilestones', id);
+  }
+
+  /**
+   * Search contract milestones, primarily by contractID (all milestones on a
+   * contract). Optional status narrows to a picklist state. Returns [] when no
+   * filter is given rather than scanning every milestone in the tenant.
+   */
+  async searchContractMilestones(
+    options: { contractID?: number; status?: number; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'contractID', options.contractID);
+    pushEq(filters, 'status', options.status);
+    if (filters.length === 0) return [];
+    return http.query('ContractMilestones', filters, { maxRecords: options.pageSize || 500 });
+  }
+
+  async createContractMilestone(milestone: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug('Creating contract milestone:', milestone);
+      if (!milestone.contractID) {
+        throw new Error('contractID is required to create a contract milestone');
+      }
+      const id = await http.create('ContractMilestones', milestone);
+      this.logger.info(`ContractMilestone created with ID: ${id}`);
+      return id;
+    } catch (error) {
+      this.logger.error('Failed to create contract milestone:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update a contract milestone. contractID is readonly in Autotask, so it is
+   * dropped if passed — every other writable field (title, amount, dateDue,
+   * status, isInitialPayment, description, billingCodeID) is forwarded.
+   */
+  async updateContractMilestone(id: number, updates: Record<string, any>): Promise<void> {
+    const http = await this.ensureClient();
+    const { contractID, ...writable } = updates;
+    try {
+      this.logger.debug(`Updating contract milestone ${id}:`, writable);
+      await http.update('ContractMilestones', id, writable);
+      this.logger.info(`ContractMilestone ${id} updated successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to update contract milestone ${id}:`, error);
+      throw error;
+    }
+  }
+
   /**
    * Block-hour contract usage report (contractType 4). Monthly, use-it-or-lose-it:
    * each month's purchased block hours vs billable hours worked → overage /

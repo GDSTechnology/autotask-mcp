@@ -1287,6 +1287,20 @@ export class AutotaskToolHandler {
         const { id, ...rest } = a;
         await s.updateContractService(id, rest); return { result: undefined, message: `Successfully updated contract service ID: ${id}` };
       }],
+      ['autotask_get_contract_milestone', async (a) => {
+        const r = await s.getContractMilestone(a.id); return { result: r, message: r ? `Contract milestone ${a.id}` : `Contract milestone ${a.id} not found` };
+      }],
+      ['autotask_search_contract_milestones', async (a) => {
+        const r = await s.searchContractMilestones({ contractID: a.contractID, status: a.status, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} contract milestone(s)` };
+      }],
+      ['autotask_create_contract_milestone', async (a) => {
+        const id = await s.createContractMilestone(a); return { result: id, message: `Successfully created contract milestone with ID: ${id}` };
+      }],
+      ['autotask_update_contract_milestone', async (a) => {
+        const { id, ...rest } = a;
+        await s.updateContractMilestone(id, rest); return { result: undefined, message: `Successfully updated contract milestone ${id}` };
+      }],
 
       // Raw REST passthrough (escape hatch)
       ['autotask_raw_request', async (a) => {

@@ -3882,6 +3882,61 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_contract_milestone',
+    description: 'Get a single ContractMilestone by id — a commercial milestone payment on a contract (title, amount, dateDue, status, description, billingCodeID, isInitialPayment).',
+    inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'ContractMilestone id' } }, required: ['id'] },
+    annotations: { title: 'Get contract milestone', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_contract_milestones',
+    description: 'Search contract milestones, primarily by contractID (all milestones on a contract). Optionally narrow by status. Provide at least one filter — an unfiltered search returns nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: { type: 'number', description: 'Return milestones on this contract' },
+        status: { type: 'number', description: 'Optional status picklist id to filter by (tenant-specific — see autotask_get_field_info entityType "ContractMilestones" fieldName "status")' },
+        pageSize: { type: 'number', description: 'Max rows to return (default 500)' }
+      }
+    },
+    annotations: { title: 'Search contract milestones', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_contract_milestone',
+    description: 'Create a ContractMilestone on a contract. contractID is required and immutable after create. status is a tenant-specific picklist — resolve the id with autotask_get_field_info (entityType "ContractMilestones", fieldName "status") or autotask_resolve_picklist_value.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: { type: 'number', description: 'Parent Contract ID (immutable after create)' },
+        title: { type: 'string', description: 'Milestone title' },
+        amount: { type: 'number', description: 'Milestone amount' },
+        dateDue: { type: 'string', description: 'Due date (ISO 8601, e.g. 2026-09-18)' },
+        status: { type: 'number', description: 'Status picklist id (tenant-specific)' },
+        isInitialPayment: { type: 'boolean', description: 'Whether this is the initial payment' },
+        description: { type: 'string', description: 'Optional description' },
+        billingCodeID: { type: 'number', description: 'Optional billing/labor code id' }
+      },
+      required: ['contractID', 'title', 'amount', 'dateDue', 'status', 'isInitialPayment']
+    }
+  },
+  {
+    name: 'autotask_update_contract_milestone',
+    description: 'Update a ContractMilestone. Pass only fields to change. contractID is readonly and ignored if sent. (Autotask does not support deleting milestones — set status or amount instead.)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'ContractMilestone id to update' },
+        title: { type: 'string', description: 'Milestone title' },
+        amount: { type: 'number', description: 'Milestone amount' },
+        dateDue: { type: 'string', description: 'Due date (ISO 8601)' },
+        status: { type: 'number', description: 'Status picklist id (tenant-specific)' },
+        isInitialPayment: { type: 'boolean', description: 'Whether this is the initial payment' },
+        description: { type: 'string', description: 'Description' },
+        billingCodeID: { type: 'number', description: 'Billing/labor code id' }
+      },
+      required: ['id']
+    }
+  },
+  {
     name: 'autotask_raw_request',
     description: 'Escape hatch for Autotask REST endpoints not yet wrapped by a typed tool. Use sparingly — typed tools are preferred for safety. The existing Content-Type, Accept, ApiIntegrationcode, UserName, Secret headers are added automatically. The path is resolved against the zone-resolved base URL (https://webservices<N>.autotask.net/ATServicesRest/v1.0). Pass queryParams as a flat object of string/number/boolean values; they will be URL-encoded and appended to the path.',
     inputSchema: {
@@ -3939,7 +3994,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

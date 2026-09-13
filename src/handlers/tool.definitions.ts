@@ -2861,7 +2861,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_remove_task_resource',
-    description: 'Remove a secondary resource from a task by the TaskSecondaryResources row id (from list_task_resources).',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently removes a secondary resource from a task by the TaskSecondaryResources row id (from list_task_resources). Re-adding requires autotask_add_task_resource.',
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskSecondaryResources id' } }, required: ['id'] },
     annotations: { title: 'Remove task resource', destructiveHint: true }
   },
@@ -2886,7 +2886,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_remove_task_predecessor',
-    description: 'Remove a task predecessor dependency by the TaskPredecessors row id (from list_task_predecessors).',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently removes a task predecessor dependency by the TaskPredecessors row id (from list_task_predecessors or search_task_predecessors). Re-adding requires autotask_add_task_predecessor.',
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskPredecessors id' } }, required: ['id'] },
     annotations: { title: 'Remove task predecessor', destructiveHint: true }
   },

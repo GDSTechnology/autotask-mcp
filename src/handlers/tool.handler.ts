@@ -85,7 +85,14 @@ const TICKET_WRITABLE_FIELDS = [
   // "Created, Edited" workflow rules). companyLocationID pairs with companyID.
   'dueDateTime',
   'companyLocationID',
-  'configurationItemID'
+  'configurationItemID',
+  // §7: contract/service linkage + idempotency + problem-ticket grouping. All
+  // verified writable on the live Tickets schema.
+  'contractID',
+  'contractServiceID',
+  'contractServiceBundleID',
+  'externalID',
+  'problemTicketId'
 ] as const;
 
 function buildTicketPayload(args: Record<string, any>): Record<string, any> {
@@ -960,7 +967,8 @@ export class AutotaskToolHandler {
         // Elicitation for zero-filter ticket searches
         const hasFilters = a.searchTerm || a.companyID || a.contactID || a.status !== undefined ||
           a.priority !== undefined || a.queueID !== undefined ||
-          a.assignedResourceID || a.unassigned || a.createdAfter || a.createdBefore || a.lastActivityAfter;
+          a.assignedResourceID || a.unassigned || a.createdAfter || a.createdBefore || a.lastActivityAfter ||
+          a.externalID;
         if (!hasFilters && this.mcpServer) {
           const dateChoice = await this.elicitDateRange();
           if (dateChoice) a = { ...a, ...dateChoice };
@@ -975,6 +983,19 @@ export class AutotaskToolHandler {
       }],
       ['autotask_create_ticket', async (a) => {
         const payload = buildTicketPayload(a);
+        const additional: number[] = Array.isArray(a.additionalConfigurationItemIDs)
+          ? a.additionalConfigurationItemIDs.filter((n: unknown) => typeof n === 'number')
+          : [];
+        if (additional.length > 0) {
+          // §7 convenience: create → link additional CIs → read back → enriched.
+          const r = await s.createTicketWithConfigurationItems(payload, additional);
+          const linked = r.additionalConfigurationItems.length;
+          const failed = r.linkErrors.length;
+          return {
+            result: r,
+            message: `Created ticket ${r.id}; linked ${linked} additional CI(s)` + (failed ? `, ${failed} failed` : ''),
+          };
+        }
         const id = await s.createTicket(payload);
         return { result: id, message: `Successfully created ticket with ID: ${id}` };
       }],
@@ -987,6 +1008,23 @@ export class AutotaskToolHandler {
       ['autotask_move_ticket_to_company', async (a) => {
         const r = await s.moveTicketToCompany(a.ticketId, a.companyID, { contactID: a.contactID, force: a.force });
         return { result: r, message: (r.message as string) ?? `Ticket ${a.ticketId} move result: ${r.status}` };
+      }],
+      ['autotask_find_ticket_by_external_id', async (a) => {
+        const r = await s.findTicketByExternalId(a.externalID);
+        return { result: r, message: r.length ? `Found ${r.length} ticket(s) with externalID "${a.externalID}"` : `No ticket found with externalID "${a.externalID}"` };
+      }],
+      // TicketAdditionalConfigurationItems (§8)
+      ['autotask_search_ticket_configuration_items', async (a) => {
+        const r = await s.searchTicketConfigurationItems(a.ticketID, a.configurationItemID);
+        return { result: r, message: `Found ${r.length} additional configuration item(s) on ticket ${a.ticketID}` };
+      }],
+      ['autotask_add_ticket_configuration_item', async (a) => {
+        const id = await s.addTicketConfigurationItem(a.ticketID, a.configurationItemID);
+        return { result: id, message: `Linked CI ${a.configurationItemID} to ticket ${a.ticketID} (association ${id})` };
+      }],
+      ['autotask_remove_ticket_configuration_item', async (a) => {
+        await s.removeTicketConfigurationItem(a.associationID);
+        return { result: a.associationID, message: `Removed ticket additional-CI association ${a.associationID}` };
       }],
       // Ticket Charges
       ['autotask_get_ticket_charge', async (a) => {

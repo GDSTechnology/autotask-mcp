@@ -524,6 +524,9 @@ export class AutotaskService {
       if (options.lastActivityAfter) {
         filters.push({ op: 'gte', field: 'lastActivityDate', value: options.lastActivityAfter });
       }
+      if (options.externalID) {
+        filters.push({ op: 'eq', field: 'externalID', value: options.externalID });
+      }
 
       const pageSize = Math.min(options.pageSize || 25, 500);
       const tickets = await http.query<AutotaskTicket>('Tickets', filters, { maxRecords: pageSize });
@@ -549,6 +552,11 @@ export class AutotaskService {
     }
     if (ticket.status !== undefined) optimized.status = ticket.status;
     if (ticket.priority !== undefined) optimized.priority = ticket.priority;
+    // externalID is the idempotency/occurrence key — preserve it so a search by
+    // externalID returns it, not just the ticket id.
+    if ((ticket as any).externalID !== undefined && (ticket as any).externalID !== null) {
+      (optimized as any).externalID = (ticket as any).externalID;
+    }
     if (ticket.companyID !== undefined) optimized.companyID = ticket.companyID;
     if (ticket.contactID !== undefined) optimized.contactID = ticket.contactID;
     if (ticket.assignedResourceID !== undefined) optimized.assignedResourceID = ticket.assignedResourceID;
@@ -612,6 +620,88 @@ export class AutotaskService {
       this.logger.error(`Failed to update ticket ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Idempotency primitive (§9): find the ticket(s) carrying a given externalID
+   * (occurrence key). Returns the full matching records (NOT run through the
+   * aggressive optimizer, so `externalID` is preserved) so a controller can
+   * confirm an occurrence already exists before creating a duplicate. externalID
+   * is not enforced-unique by Autotask, so all matches are returned.
+   */
+  async findTicketByExternalId(externalID: string): Promise<AutotaskTicket[]> {
+    const http = await this.ensureClient();
+    return http.query<AutotaskTicket>(
+      'Tickets',
+      [{ op: 'eq', field: 'externalID', value: externalID }],
+      { maxRecords: 25 }
+    );
+  }
+
+  // =====================================================
+  // TicketAdditionalConfigurationItems (§8) — link extra CIs to a ticket beyond
+  // the primary configurationItemID. Live schema: exactly {id, ticketID,
+  // configurationItemID}; top-level queryable/creatable/deletable.
+  // =====================================================
+
+  /** List the additional-CI associations on a ticket, optionally one CI. */
+  async searchTicketConfigurationItems(
+    ticketID: number,
+    configurationItemID?: number
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [{ op: 'eq', field: 'ticketID', value: ticketID }];
+    pushEq(filters, 'configurationItemID', configurationItemID);
+    return http.query<Record<string, any>>('TicketAdditionalConfigurationItems', filters, { maxRecords: 500 });
+  }
+
+  /** Link an additional CI to a ticket; returns the new association id. */
+  async addTicketConfigurationItem(ticketID: number, configurationItemID: number): Promise<number> {
+    const http = await this.ensureClient();
+    const id = await http.create('TicketAdditionalConfigurationItems', { ticketID, configurationItemID });
+    this.logger.info(`Linked CI ${configurationItemID} to ticket ${ticketID} (association ${id})`);
+    return id;
+  }
+
+  /** Remove an additional-CI association by its association id (destructive). */
+  async removeTicketConfigurationItem(associationID: number): Promise<void> {
+    const http = await this.ensureClient();
+    await http.delete('TicketAdditionalConfigurationItems', associationID);
+    this.logger.info(`Removed ticket additional-CI association ${associationID}`);
+  }
+
+  /**
+   * Convenience create (§7): create a ticket, then link one or more additional
+   * configuration items, then read the ticket and its CI associations back
+   * (§12 read-after-write). The created ticket's id is authoritative — a CI link
+   * that fails is recorded per-item rather than aborting (the ticket already
+   * exists; failing the whole call would invite a duplicate on retry). Returns
+   * the enriched result the tool surfaces.
+   */
+  async createTicketWithConfigurationItems(
+    ticket: Partial<AutotaskTicket>,
+    additionalConfigurationItemIDs: number[]
+  ): Promise<{
+    id: number;
+    item: AutotaskTicket | null;
+    additionalConfigurationItems: Array<Record<string, any>>;
+    linkErrors: Array<{ configurationItemID: number; error: string }>;
+  }> {
+    const id = await this.createTicket(ticket);
+    const linkErrors: Array<{ configurationItemID: number; error: string }> = [];
+    for (const ciID of additionalConfigurationItemIDs) {
+      try {
+        await this.addTicketConfigurationItem(id, ciID);
+      } catch (error) {
+        linkErrors.push({ configurationItemID: ciID, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    // Read-after-write: surface the persisted ticket and its associations.
+    let item: AutotaskTicket | null = null;
+    let additionalConfigurationItems: Array<Record<string, any>> = [];
+    try { item = await this.getTicket(id, true); } catch { /* read-back is best-effort; id stays authoritative */ }
+    try { additionalConfigurationItems = await this.searchTicketConfigurationItems(id); } catch { /* best-effort */ }
+    return { id, item, additionalConfigurationItems, linkErrors };
   }
 
   /** The active locations for a company; the primary is preferred by callers. */

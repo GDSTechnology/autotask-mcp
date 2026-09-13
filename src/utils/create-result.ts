@@ -70,6 +70,9 @@ export const CREATE_TOOL_META: Record<string, CreateToolMeta> = {
   autotask_create_contact: { entityType: 'Contacts', parentType: 'Companies', parentIdArgs: ['companyID', 'companyId'] },
   autotask_create_ticket: { entityType: 'Tickets' },
   autotask_create_ticket_charge: { entityType: 'TicketCharges', parentType: 'Tickets', parentIdArgs: ['ticketId', 'ticketID'] },
+  // Note: autotask_add_ticket_configuration_item deliberately omitted — the
+  // normalized-create contract is keyed to autotask_create* tool names (enforced
+  // by a parity test); this association-add tool returns its raw association id.
   autotask_create_service_call: { entityType: 'ServiceCalls' },
   autotask_create_service_call_ticket: { entityType: 'ServiceCallTickets', parentType: 'ServiceCalls', parentIdArgs: ['serviceCallID', 'serviceCallId'] },
   autotask_create_service_call_ticket_resource: { entityType: 'ServiceCallTicketResources', parentType: 'ServiceCallTickets', parentIdArgs: ['serviceCallTicketID', 'serviceCallTicketId'] },

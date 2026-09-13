@@ -650,6 +650,8 @@ export interface AutotaskQueryOptionsExtended extends AutotaskQueryOptions {
   createdAfter?: string;
   createdBefore?: string;
   lastActivityAfter?: string;
+  // Idempotency: the caller-supplied external correlation id (occurrence key)
+  externalID?: string;
   // Expense item filters
   expenseReportId?: number;
   startDate?: string;

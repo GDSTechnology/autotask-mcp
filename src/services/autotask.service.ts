@@ -2436,6 +2436,81 @@ export class AutotaskService {
   }
 
   // =====================================================
+  // Checklist Libraries (§10) — reusable checklists (ChecklistLibraries, live
+  // schema {id, name, description, isActive, entityType}) whose items live in
+  // ChecklistLibraryChecklistItems ({id, checklistLibraryID, itemName,
+  // isImportant, knowledgebaseArticleID, position}). Autotask has no native
+  // "apply library" endpoint, so applying expands the library's items into
+  // per-ticket TicketChecklistItems.
+  // =====================================================
+
+  /** Search checklist libraries; optional isActive/entityType/searchTerm. */
+  async searchChecklistLibraries(
+    options: { isActive?: boolean; entityType?: number; searchTerm?: string; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'isActive', options.isActive);
+    pushEq(filters, 'entityType', options.entityType);
+    if (options.searchTerm) filters.push({ op: 'contains', field: 'name', value: options.searchTerm });
+    const pageSize = Math.min(options.pageSize || 100, 500);
+    return http.query<Record<string, any>>(
+      'ChecklistLibraries',
+      filters.length > 0 ? filters : MATCH_ALL,
+      { maxRecords: pageSize }
+    );
+  }
+
+  /** The items belonging to a checklist library, ordered by position. */
+  async getChecklistLibraryItems(checklistLibraryID: number): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const items = await http.query<Record<string, any>>(
+      'ChecklistLibraryChecklistItems',
+      [{ op: 'eq', field: 'checklistLibraryID', value: checklistLibraryID }],
+      { maxRecords: 500 }
+    );
+    return items.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  }
+
+  /** Get a checklist library plus its items (§10). Returns null if not found. */
+  async getChecklistLibrary(id: number): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    const library = await http.get<Record<string, any>>('ChecklistLibraries', id);
+    if (!library) return null;
+    const items = await this.getChecklistLibraryItems(id);
+    return { ...library, items };
+  }
+
+  /**
+   * Apply a checklist library to a ticket (§10): expand the library's items into
+   * TicketChecklistItems on the ticket (itemName / isImportant / position /
+   * knowledgebaseArticleID carried over). Each item is created independently; a
+   * failed item is reported rather than aborting the rest. Returns the created
+   * item ids and any per-item errors.
+   */
+  async applyChecklistLibraryToTicket(
+    ticketID: number,
+    checklistLibraryID: number
+  ): Promise<{ ticketID: number; checklistLibraryID: number; created: number[]; itemErrors: Array<{ itemName: string; error: string }> }> {
+    const items = await this.getChecklistLibraryItems(checklistLibraryID);
+    const created: number[] = [];
+    const itemErrors: Array<{ itemName: string; error: string }> = [];
+    for (const item of items) {
+      const data: Partial<AutotaskTicketChecklistItem> = { itemName: item.itemName };
+      if (item.isImportant !== undefined) (data as any).isImportant = item.isImportant;
+      if (item.position !== undefined) (data as any).position = item.position;
+      if (item.knowledgebaseArticleID != null) (data as any).knowledgebaseArticleID = item.knowledgebaseArticleID;
+      try {
+        created.push(await this.createTicketChecklistItem(ticketID, data));
+      } catch (error) {
+        itemErrors.push({ itemName: String(item.itemName), error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    this.logger.info(`Applied checklist library ${checklistLibraryID} to ticket ${ticketID}: ${created.length} item(s), ${itemErrors.length} failed`);
+    return { ticketID, checklistLibraryID, created, itemErrors };
+  }
+
+  // =====================================================
   // Ticket Attachments (child of Tickets)
   // =====================================================
 

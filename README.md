@@ -10,8 +10,8 @@ This is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) serve
 
 If you run an MSP on Autotask and you're tired of the context-switching tax, this is for you.
 
-A GDS Technology fork, maintained for GDS's Autotask automation (ChatGPT + n8n).
-Originally derived from the upstream `WYRE-AI/autotask-mcp` (Apache-2.0).
+An independent GDS Technology project, maintained for GDS's Autotask automation (ChatGPT + n8n).
+Originally derived from `WYRE-AI/autotask-mcp` (Apache-2.0).
 
 ## Deployment
 
@@ -794,7 +794,7 @@ By submitting a pull request, you agree to the terms of our [Contributor License
 GDS Technology's Autotask MCP is a more robust evolution built on the original
 **Autotask MCP Server** by **[WYRE Technology](https://github.com/wyre-technology)** and
 **Aaron Sachs ([@asachs01](https://github.com/asachs01))** with its contributors —
-upstream at **[WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp)**. That
+originally published at **[WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp)**. That
 project is the **baseline this work is founded on**, and full credit for the groundwork
 belongs to those authors. As GDS extends and hardens the server, this attribution
 stands; see [NOTICE](NOTICE) for details.

@@ -1231,6 +1231,15 @@ export class AutotaskToolHandler {
       ['autotask_search_configuration_items', async (a) => {
         const r = await s.searchConfigurationItems(a); return { result: r, message: `Found ${r.length} configuration items` };
       }],
+      ['autotask_get_configuration_item', async (a) => {
+        const ci = await s.getConfigurationItem(a.configurationItemId);
+        if (!ci) return { result: null, message: `No configuration item found with ID ${a.configurationItemId}` };
+        if (a.enrichReferences) {
+          const _enriched = await s.enrichConfigurationItemReferences(ci);
+          return { result: { ...ci, _enriched }, message: `Retrieved configuration item ${a.configurationItemId} (enriched)` };
+        }
+        return { result: ci, message: `Retrieved configuration item ${a.configurationItemId}` };
+      }],
 
       // Contracts
       ['autotask_search_contracts', async (a) => {
@@ -1286,6 +1295,14 @@ export class AutotaskToolHandler {
       ['autotask_update_contract_service', async (a) => {
         const { id, ...rest } = a;
         await s.updateContractService(id, rest); return { result: undefined, message: `Successfully updated contract service ID: ${id}` };
+      }],
+      ['autotask_get_contract_service', async (a) => {
+        const r = await s.getContractService(a.id);
+        return { result: r, message: r ? `Retrieved contract service ${a.id}` : `Contract service ${a.id} not found` };
+      }],
+      ['autotask_search_contract_services', async (a) => {
+        const r = await s.searchContractServices({ contractID: a.contractID, serviceID: a.serviceID, quoteItemID: a.quoteItemID, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} contract service(s)` };
       }],
       ['autotask_get_contract_milestone', async (a) => {
         const r = await s.getContractMilestone(a.id); return { result: r, message: r ? `Contract milestone ${a.id}` : `Contract milestone ${a.id} not found` };

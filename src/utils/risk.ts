@@ -20,6 +20,8 @@ export const FINANCIAL_TOOLS = new Set<string>([
   'autotask_update_contract',
   'autotask_create_contract_service',
   'autotask_update_contract_service',
+  'autotask_create_contract_milestone',
+  'autotask_update_contract_milestone',
   'autotask_create_quote',
   'autotask_create_quote_item',
   'autotask_update_quote_item',

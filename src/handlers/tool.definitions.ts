@@ -1143,6 +1143,66 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Export project blueprint', readOnlyHint: true }
   },
   {
+    name: 'autotask_calculate_project_schedule',
+    description: 'Deterministically schedule a project build plan (no Autotask writes, no AI, no reference-project inference). Each task\'s duration = ceil(estimatedHours ÷ (crewSize × hoursPerDay)) working days; tasks are laid out in dependency order across a configurable working week (weekends/holidays skipped); target completion is the latest task finish. Returns per-task start/end dates, the project start → target completion span, the driving (critical) path, and milestone dates. Same inputs always yield the same schedule. The `plan` uses client-side string refs (not Autotask ids) so it can be scheduled before anything exists in the tenant.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan: {
+          type: 'object',
+          description: 'Normalized project build plan.',
+          properties: {
+            name: { type: 'string', description: 'Project name' },
+            archetype: { type: 'string', description: 'Optional GDS archetype classification' },
+            phases: {
+              type: 'array',
+              description: 'Phases (optional). Each: { ref, title, parentRef? } — ref is a unique client-side id; parentRef nests a sub-phase.',
+              items: {
+                type: 'object',
+                properties: {
+                  ref: { type: 'string' },
+                  title: { type: 'string' },
+                  parentRef: { type: 'string' },
+                  description: { type: 'string' }
+                },
+                required: ['ref', 'title']
+              }
+            },
+            tasks: {
+              type: 'array',
+              description: 'Tasks. Each: { ref, title, estimatedHours, phaseRef?, crewSize?, predecessors?, lagDays?, milestone? }. predecessors are task refs that must finish first; set milestone:true for a zero-duration date marker.',
+              items: {
+                type: 'object',
+                properties: {
+                  ref: { type: 'string' },
+                  title: { type: 'string' },
+                  estimatedHours: { type: 'number' },
+                  phaseRef: { type: 'string' },
+                  crewSize: { type: 'number', description: 'Parallel resources on this task (overrides defaultCrewSize)' },
+                  predecessors: { type: 'array', items: { type: 'string' }, description: 'Refs of tasks that must finish before this one starts' },
+                  lagDays: { type: 'number', description: 'Working-day gap after predecessors finish' },
+                  taskType: { type: 'number' },
+                  milestone: { type: 'boolean' },
+                  description: { type: 'string' }
+                },
+                required: ['ref', 'title', 'estimatedHours']
+              }
+            }
+          },
+          required: ['name', 'tasks']
+        },
+        startDate: { type: 'string', description: 'Earliest project start, ISO date (YYYY-MM-DD). Rolled forward to the next working day if needed.' },
+        hoursPerDay: { type: 'number', description: 'Productive hours per working day (default 8)', default: 8 },
+        defaultCrewSize: { type: 'number', description: 'Parallel resources per task when a task does not set its own crewSize (default 1)', default: 1 },
+        workweek: { type: 'array', items: { type: 'number' }, description: 'Working weekdays as ISO numbers (Mon=1 … Sun=7). Default [1,2,3,4,5] (Mon–Fri).' },
+        holidays: { type: 'array', items: { type: 'string' }, description: 'Non-working dates (holidays), ISO YYYY-MM-DD.' },
+        targetCompletionDate: { type: 'string', description: 'Optional deadline (ISO date). A target completion beyond it produces a warning.' }
+      },
+      required: ['plan', 'startDate']
+    },
+    annotations: { title: 'Calculate project schedule', readOnlyHint: true }
+  },
+  {
     name: 'autotask_create_project',
     description: 'Create a new project in Autotask',
     inputSchema: {
@@ -2801,7 +2861,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_remove_task_resource',
-    description: 'Remove a secondary resource from a task by the TaskSecondaryResources row id (from list_task_resources).',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently removes a secondary resource from a task by the TaskSecondaryResources row id (from list_task_resources). Re-adding requires autotask_add_task_resource.',
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskSecondaryResources id' } }, required: ['id'] },
     annotations: { title: 'Remove task resource', destructiveHint: true }
   },
@@ -2826,9 +2886,40 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_remove_task_predecessor',
-    description: 'Remove a task predecessor dependency by the TaskPredecessors row id (from list_task_predecessors).',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently removes a task predecessor dependency by the TaskPredecessors row id (from list_task_predecessors or search_task_predecessors). Re-adding requires autotask_add_task_predecessor.',
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskPredecessors id' } }, required: ['id'] },
     annotations: { title: 'Remove task predecessor', destructiveHint: true }
+  },
+  {
+    name: 'autotask_get_task_predecessor',
+    description: 'Get a single TaskPredecessors dependency row by its id. Returns { id, predecessorTaskID, successorTaskID, lagDays }.',
+    inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'TaskPredecessors row id' } }, required: ['id'] },
+    annotations: { title: 'Get task predecessor', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_task_predecessors',
+    description: 'Search task dependency rows by either endpoint. Filter by successorTaskID (what a task waits on) and/or predecessorTaskID (what waits on a task); both may be combined. Provide at least one — an unfiltered search returns nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        successorTaskID: { type: 'number', description: 'Return rows whose successor is this task' },
+        predecessorTaskID: { type: 'number', description: 'Return rows whose predecessor is this task' },
+        pageSize: { type: 'number', description: 'Max rows to return (default 500)' }
+      }
+    },
+    annotations: { title: 'Search task predecessors', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_update_task_predecessor',
+    description: 'Update a task dependency. Only lagDays can be changed — Autotask marks predecessorTaskID and successorTaskID readonly, so to re-point a dependency remove this row and add a new one instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'TaskPredecessors row id' },
+        lagDays: { type: 'number', description: 'New lag in days' }
+      },
+      required: ['id', 'lagDays']
+    }
   },
 
   // Phase tools
@@ -3791,6 +3882,61 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_contract_milestone',
+    description: 'Get a single ContractMilestone by id — a commercial milestone payment on a contract (title, amount, dateDue, status, description, billingCodeID, isInitialPayment).',
+    inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'ContractMilestone id' } }, required: ['id'] },
+    annotations: { title: 'Get contract milestone', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_contract_milestones',
+    description: 'Search contract milestones, primarily by contractID (all milestones on a contract). Optionally narrow by status. Provide at least one filter — an unfiltered search returns nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: { type: 'number', description: 'Return milestones on this contract' },
+        status: { type: 'number', description: 'Optional status picklist id to filter by (tenant-specific — see autotask_get_field_info entityType "ContractMilestones" fieldName "status")' },
+        pageSize: { type: 'number', description: 'Max rows to return (default 500)' }
+      }
+    },
+    annotations: { title: 'Search contract milestones', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_contract_milestone',
+    description: 'Create a ContractMilestone on a contract. contractID is required and immutable after create. status is a tenant-specific picklist — resolve the id with autotask_get_field_info (entityType "ContractMilestones", fieldName "status") or autotask_resolve_picklist_value.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: { type: 'number', description: 'Parent Contract ID (immutable after create)' },
+        title: { type: 'string', description: 'Milestone title' },
+        amount: { type: 'number', description: 'Milestone amount' },
+        dateDue: { type: 'string', description: 'Due date (ISO 8601, e.g. 2026-09-18)' },
+        status: { type: 'number', description: 'Status picklist id (tenant-specific)' },
+        isInitialPayment: { type: 'boolean', description: 'Whether this is the initial payment' },
+        description: { type: 'string', description: 'Optional description' },
+        billingCodeID: { type: 'number', description: 'Optional billing/labor code id' }
+      },
+      required: ['contractID', 'title', 'amount', 'dateDue', 'status', 'isInitialPayment']
+    }
+  },
+  {
+    name: 'autotask_update_contract_milestone',
+    description: 'Update a ContractMilestone. Pass only fields to change. contractID is readonly and ignored if sent. (Autotask does not support deleting milestones — set status or amount instead.)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'ContractMilestone id to update' },
+        title: { type: 'string', description: 'Milestone title' },
+        amount: { type: 'number', description: 'Milestone amount' },
+        dateDue: { type: 'string', description: 'Due date (ISO 8601)' },
+        status: { type: 'number', description: 'Status picklist id (tenant-specific)' },
+        isInitialPayment: { type: 'boolean', description: 'Whether this is the initial payment' },
+        description: { type: 'string', description: 'Description' },
+        billingCodeID: { type: 'number', description: 'Billing/labor code id' }
+      },
+      required: ['id']
+    }
+  },
+  {
     name: 'autotask_raw_request',
     description: 'Escape hatch for Autotask REST endpoints not yet wrapped by a typed tool. Use sparingly — typed tools are preferred for safety. The existing Content-Type, Accept, ApiIntegrationcode, UserName, Secret headers are added automatically. The path is resolved against the zone-resolved base URL (https://webservices<N>.autotask.net/ATServicesRest/v1.0). Pass queryParams as a flat object of string/number/boolean values; they will be URL-encoded and appended to the path.',
     inputSchema: {
@@ -3840,7 +3986,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
@@ -3848,7 +3994,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

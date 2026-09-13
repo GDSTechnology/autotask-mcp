@@ -1216,6 +1216,24 @@ export class AutotaskService {
     return toProjectBlueprint(structure);
   }
 
+  /**
+   * Read-after-write verification helper (§2): read a just-created entity back
+   * by id, with a bounded retry that tolerates Autotask's brief post-create read
+   * lag (a fresh entity can 404 for a moment). Returns the entity once visible,
+   * or null if it never appears within the budget. This is confirmation/
+   * enrichment only — the create response's itemId remains the source of truth
+   * for whether the write succeeded, so a null here means "created but not yet
+   * verifiable", never "not created".
+   */
+  async readEntityForVerification(
+    entityType: string,
+    id: number,
+    opts?: { attempts?: number; delayMs?: number }
+  ): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    return http.getWithRetry<Record<string, any>>(entityType, id, opts ?? {});
+  }
+
   // =====================================================
   // Resources
   // =====================================================
@@ -1504,6 +1522,67 @@ export class AutotaskService {
       this.logger.info(`ContractService ${id} updated successfully`);
     } catch (error) {
       this.logger.error(`Failed to update contract service ${id}:`, error);
+      throw error;
+    }
+  }
+
+  // =====================================================
+  // ContractMilestones (§30) — commercial milestone payments on a contract.
+  // Live entity metadata: canDelete=false (no delete tool); contractID is
+  // required + readonly (set at create, immutable); status is a tenant picklist.
+  // =====================================================
+
+  async getContractMilestone(id: number): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    return http.get<Record<string, any>>('ContractMilestones', id);
+  }
+
+  /**
+   * Search contract milestones, primarily by contractID (all milestones on a
+   * contract). Optional status narrows to a picklist state. Returns [] when no
+   * filter is given rather than scanning every milestone in the tenant.
+   */
+  async searchContractMilestones(
+    options: { contractID?: number; status?: number; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'contractID', options.contractID);
+    pushEq(filters, 'status', options.status);
+    if (filters.length === 0) return [];
+    return http.query('ContractMilestones', filters, { maxRecords: options.pageSize || 500 });
+  }
+
+  async createContractMilestone(milestone: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug('Creating contract milestone:', milestone);
+      if (!milestone.contractID) {
+        throw new Error('contractID is required to create a contract milestone');
+      }
+      const id = await http.create('ContractMilestones', milestone);
+      this.logger.info(`ContractMilestone created with ID: ${id}`);
+      return id;
+    } catch (error) {
+      this.logger.error('Failed to create contract milestone:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update a contract milestone. contractID is readonly in Autotask, so it is
+   * dropped if passed — every other writable field (title, amount, dateDue,
+   * status, isInitialPayment, description, billingCodeID) is forwarded.
+   */
+  async updateContractMilestone(id: number, updates: Record<string, any>): Promise<void> {
+    const http = await this.ensureClient();
+    const { contractID, ...writable } = updates;
+    try {
+      this.logger.debug(`Updating contract milestone ${id}:`, writable);
+      await http.update('ContractMilestones', id, writable);
+      this.logger.info(`ContractMilestone ${id} updated successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to update contract milestone ${id}:`, error);
       throw error;
     }
   }
@@ -1847,6 +1926,43 @@ export class AutotaskService {
   async removeTaskPredecessor(id: number): Promise<void> {
     const http = await this.ensureClient();
     await http.delete('TaskPredecessors', id);
+  }
+
+  /** Get one TaskPredecessors row by id, or null if it doesn't exist. */
+  async getTaskPredecessor(id: number): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    return http.get<Record<string, any>>('TaskPredecessors', id);
+  }
+
+  /**
+   * Search TaskPredecessors by either endpoint of the dependency. Filtering by
+   * `successorTaskID` lists what a task waits on; by `predecessorTaskID`, what
+   * waits on it. Both may be combined. With neither, returns nothing rather than
+   * scanning the whole tenant (a project-wide graph is built from the task set,
+   * not an unfiltered dump).
+   */
+  async searchTaskPredecessors(
+    options: { successorTaskID?: number; predecessorTaskID?: number; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'successorTaskID', options.successorTaskID);
+    pushEq(filters, 'predecessorTaskID', options.predecessorTaskID);
+    if (filters.length === 0) return [];
+    return http.query('TaskPredecessors', filters, {
+      includeFields: ['id', 'predecessorTaskID', 'successorTaskID', 'lagDays'],
+      maxRecords: options.pageSize || 500,
+    });
+  }
+
+  /**
+   * Update a TaskPredecessors row. Only `lagDays` is writable — Autotask marks
+   * predecessorTaskID and successorTaskID readonly (verified against live entity
+   * metadata), so re-pointing a dependency requires delete + recreate, not update.
+   */
+  async updateTaskPredecessor(id: number, lagDays: number): Promise<void> {
+    const http = await this.ensureClient();
+    await http.update('TaskPredecessors', id, { lagDays });
   }
 
   // =====================================================

@@ -9,7 +9,8 @@ import { Logger } from '../utils/logger.js';
 import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '../utils/response.formatter.js';
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
-import { normalizeCreateToolResult } from '../utils/create-result.js';
+import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
+import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1170,6 +1171,22 @@ export class AutotaskToolHandler {
         const r = await s.exportProjectBlueprint(a.projectID);
         return { result: r, message: `Blueprint of "${r.name}": ${r.phaseCount} phase(s), ${r.taskCount} task(s), ${r.estimatedHours}h` };
       }],
+      ['autotask_calculate_project_schedule', async (a) => {
+        // Pure/deterministic — no Autotask I/O. Schedules a caller-provided plan.
+        const r = calculateProjectSchedule(a.plan, {
+          startDate: a.startDate,
+          hoursPerDay: a.hoursPerDay,
+          defaultCrewSize: a.defaultCrewSize,
+          workweek: a.workweek,
+          holidays: a.holidays,
+          targetCompletionDate: a.targetCompletionDate,
+        });
+        const warn = r.warnings.length ? `; ${r.warnings.length} warning(s)` : '';
+        return {
+          result: r,
+          message: `Scheduled ${r.taskCount} task(s): ${r.startDate} → ${r.targetCompletionDate} (${r.durationWorkingDays} working days, ${r.totalEstimatedHours}h)${warn}`,
+        };
+      }],
       ['autotask_create_project', async (a) => {
         const projectData = { ...a };
         // Map startDate/endDate (YYYY-MM-DD) to startDateTime/endDateTime (ISO) expected by the API
@@ -1270,6 +1287,20 @@ export class AutotaskToolHandler {
         const { id, ...rest } = a;
         await s.updateContractService(id, rest); return { result: undefined, message: `Successfully updated contract service ID: ${id}` };
       }],
+      ['autotask_get_contract_milestone', async (a) => {
+        const r = await s.getContractMilestone(a.id); return { result: r, message: r ? `Contract milestone ${a.id}` : `Contract milestone ${a.id} not found` };
+      }],
+      ['autotask_search_contract_milestones', async (a) => {
+        const r = await s.searchContractMilestones({ contractID: a.contractID, status: a.status, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} contract milestone(s)` };
+      }],
+      ['autotask_create_contract_milestone', async (a) => {
+        const id = await s.createContractMilestone(a); return { result: id, message: `Successfully created contract milestone with ID: ${id}` };
+      }],
+      ['autotask_update_contract_milestone', async (a) => {
+        const { id, ...rest } = a;
+        await s.updateContractMilestone(id, rest); return { result: undefined, message: `Successfully updated contract milestone ${id}` };
+      }],
 
       // Raw REST passthrough (escape hatch)
       ['autotask_raw_request', async (a) => {
@@ -1322,6 +1353,16 @@ export class AutotaskToolHandler {
       }],
       ['autotask_remove_task_predecessor', async (a) => {
         await s.removeTaskPredecessor(a.id); return { result: undefined, message: `Removed task predecessor row ${a.id}` };
+      }],
+      ['autotask_get_task_predecessor', async (a) => {
+        const r = await s.getTaskPredecessor(a.id); return { result: r, message: r ? `Task predecessor row ${a.id}` : `Task predecessor row ${a.id} not found` };
+      }],
+      ['autotask_search_task_predecessors', async (a) => {
+        const r = await s.searchTaskPredecessors({ successorTaskID: a.successorTaskID, predecessorTaskID: a.predecessorTaskID, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} task predecessor row(s)` };
+      }],
+      ['autotask_update_task_predecessor', async (a) => {
+        await s.updateTaskPredecessor(a.id, a.lagDays); return { result: undefined, message: `Updated task predecessor row ${a.id} (lagDays=${a.lagDays})` };
       }],
 
       // Phases
@@ -1849,6 +1890,42 @@ export class AutotaskToolHandler {
   }
 
   /**
+   * Read-after-write verification for a create result (§2). Reads the just-
+   * created entity back (bounded retry for Autotask's post-create read lag) and
+   * returns the result augmented with `verified` and, when visible, `item`.
+   *
+   * Fail-safe by construction: the create's itemId is already authoritative, so
+   * a read that never resolves (lag beyond budget) or that errors is reported as
+   * `verified: false` — never re-thrown. Throwing here would make a successful
+   * create look failed and invite a duplicate on rerun (§42).
+   */
+  private async verifyCreatedEntity(
+    name: string,
+    normalized: NormalizedCreateResult
+  ): Promise<NormalizedCreateResult> {
+    try {
+      const item = await this.autotaskService.readEntityForVerification(
+        normalized.entityType,
+        normalized.id
+      );
+      if (item) {
+        return { ...normalized, verified: true, item: item as Record<string, unknown> };
+      }
+      this.logger.warn(
+        `Read-after-create for ${name} id=${normalized.id} (${normalized.entityType}): entity not visible within retry budget — returning verified:false (the create itemId is authoritative; do NOT recreate).`
+      );
+      return { ...normalized, verified: false };
+    } catch (err) {
+      // A payload anomaly / transport error on the read-back is a verification
+      // failure, not a create failure. Surface verified:false and move on.
+      this.logger.warn(
+        `Read-after-create for ${name} id=${normalized.id} (${normalized.entityType}) errored: ${err instanceof Error ? err.message : String(err)} — returning verified:false.`
+      );
+      return { ...normalized, verified: false };
+    }
+  }
+
+  /**
    * Emit one audit record: always to the structured log, and additionally to the
    * PG audit_log table when the sink is enabled (§23). The PG write is
    * fire-and-forget and never blocks or fails the call.
@@ -1957,7 +2034,20 @@ export class AutotaskToolHandler {
       // Normalize create-tool ids into the { id, entityType, parentType?,
       // parentId? } contract (§5/§7.1) — one shape for every create, so callers
       // never special-case itemId vs item. Non-create results pass through.
-      const result = normalizeCreateToolResult(name, args, rawResult);
+      let result = normalizeCreateToolResult(name, args, rawResult);
+
+      // Read-after-write verification (§2): for create tools flagged verifyRead
+      // (Project-Builder entities), read the just-created entity back and attach
+      // `item` + `verified`. The create's itemId is authoritative — this only
+      // confirms/enriches — so it never converts a successful create into a
+      // failure (which would risk a duplicate on rerun, §42).
+      if (
+        typeof rawResult === 'number' &&
+        result !== null && typeof result === 'object' && !Array.isArray(result) &&
+        CREATE_TOOL_META[name]?.verifyRead
+      ) {
+        result = await this.verifyCreatedEntity(name, result as NormalizedCreateResult);
+      }
 
       // Format and enhance response
       let responseText: string;

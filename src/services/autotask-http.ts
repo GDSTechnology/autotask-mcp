@@ -60,6 +60,26 @@ interface QueryResponse<T> {
 const RAW_REQUEST_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
 
 /**
+ * Unwrap an Autotask GET-by-id response into the entity, or null when absent.
+ *
+ * Autotask returns `{ item: {...} }`, but two not-found shapes must both map to
+ * null: a genuine 404 (handled by the caller) and — the subtle one — an HTTP
+ * 200 carrying `{ item: null }`, which Autotask uses for a missing id on several
+ * entities (verified live: GET /Tasks/{missing} and /Projects/{missing}). The
+ * previous `res?.item ?? res` returned the truthy `{ item: null }` wrapper for
+ * that case, so a missing entity read as "found" — which would defeat
+ * read-after-write retry (getWithRetry would stop on a null-item wrapper) and
+ * hand callers a useless shell. When `item` is present we use it (even if null);
+ * otherwise the entity is at the top level (some legacy routes).
+ */
+function unwrapEntity<T>(res: unknown): T | null {
+  if (res && typeof res === 'object' && 'item' in (res as Record<string, unknown>)) {
+    return ((res as { item?: T }).item ?? null) as T | null;
+  }
+  return ((res as T) ?? null) as T | null;
+}
+
+/**
  * Maximum value Autotask accepts for the per-page `MaxRecords` body param on
  * `/query` endpoints. Anything outside [1, AUTOTASK_MAX_PAGE_SIZE] returns
  * HTTP 500 with the body "maxCountOfRecordsToReturn must be between 1 and 500".
@@ -91,6 +111,39 @@ export class AutotaskRateLimitError extends Error {
     super(message);
     this.name = 'AutotaskRateLimitError';
     this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/**
+ * Thrown when Autotask returns a 2xx (other than a legitimate 204 No Content)
+ * whose body cannot be turned into a usable payload — an empty body where one
+ * is expected, a body-read that aborted or errored mid-stream, or text that
+ * fails to JSON.parse (the classic truncated-response case).
+ *
+ * This exists to FAIL CLOSED. The old behavior returned `undefined` here, which
+ * `get()` turned into `null` (indistinguishable from a 404 / "not found") and
+ * `query()` turned into `[]` (indistinguishable from "zero records"). During a
+ * heavy Sanctuary Park build session that masqueraded as: project reads with no
+ * payload, phase/task lookups returning zero for projects known to contain them,
+ * and a just-created task reading back as absent — inviting duplicate creates on
+ * rerun. A transient truncation/timeout must never be mistaken for real absence,
+ * so we surface it as a distinct, retryable error instead. (Consolidated plan §2,
+ * §29, §31.)
+ */
+export class AutotaskResponseError extends Error {
+  readonly status: number;
+  /** Payload-integrity failures are safe to retry — the request may have succeeded upstream. */
+  readonly retryable = true;
+
+  constructor(method: string, path: string, status: number, detail: string, cause?: unknown) {
+    super(
+      `Autotask ${method} ${path} returned HTTP ${status} but the response payload was unusable: ${detail}. ` +
+        `Failing closed instead of returning an empty result, so a transient truncation/timeout is not ` +
+        `mistaken for "not found" or "no records". This is safe to retry.`,
+      cause !== undefined ? { cause } : undefined
+    );
+    this.name = 'AutotaskResponseError';
+    this.status = status;
   }
 }
 
@@ -208,7 +261,13 @@ export class AutotaskHttpClient {
    * (resolved against the zone base URL) or an absolute URL (used by
    * pageDetails.nextPageUrl pagination).
    */
-  private async request<T>(method: string, path: string, body?: any, isZoneRetry = false): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: any,
+    isZoneRetry = false,
+    opts: { allowEmptyBody?: boolean } = {}
+  ): Promise<T> {
     // Cooldown gate: while this tenant is inside a known 429 window, fail
     // fast locally instead of sending more requests upstream. See
     // rateLimitCooldowns.
@@ -251,7 +310,19 @@ export class AutotaskHttpClient {
       return undefined as unknown as T;
     }
 
-    const text = await response.text().catch(() => '');
+    // Read the body defensively but do NOT silently swallow a read failure.
+    // A body-read that rejects on a 2xx (e.g. the 60s AbortSignal fires
+    // mid-stream, or the connection drops after headers arrive) previously
+    // collapsed to '' → undefined → a misleading empty payload. We remember
+    // the failure and fail closed below on the success path; on an error
+    // response an unreadable body just means we have no detail to show.
+    let text = '';
+    let bodyReadError: unknown;
+    try {
+      text = await response.text();
+    } catch (err) {
+      bodyReadError = err;
+    }
 
     if (!response.ok) {
       // A 401 against a relative (zone-resolved) path — as opposed to an
@@ -266,7 +337,7 @@ export class AutotaskHttpClient {
         );
         this.resolvedBaseUrl = null;
         invalidateZoneUrlCache(this.username);
-        return this.request<T>(method, path, body, true);
+        return this.request<T>(method, path, body, true, opts);
       }
       let detail = text.slice(0, 1000);
       try {
@@ -305,11 +376,32 @@ export class AutotaskHttpClient {
       throw httpError;
     }
 
-    if (!text) return undefined as unknown as T;
+    // Success path — fail closed on any payload anomaly (plan §2/§29/§31).
+    // A body-read failure on a 2xx is always an anomaly.
+    if (bodyReadError !== undefined) {
+      const msg = bodyReadError instanceof Error ? bodyReadError.message : String(bodyReadError);
+      throw new AutotaskResponseError(method, path, response.status, `response body could not be read (${msg})`, bodyReadError);
+    }
+    if (!text) {
+      // Writes (update/delete) legitimately answer some 2xx with an empty body;
+      // they opt in via allowEmptyBody. For reads/creates an empty 2xx body is
+      // an anomaly, not "not found" (404) or "no records" (an empty items array).
+      if (opts.allowEmptyBody) return undefined as unknown as T;
+      throw new AutotaskResponseError(method, path, response.status, 'empty response body on a successful (non-204) response');
+    }
     try {
       return JSON.parse(text) as T;
-    } catch {
-      return undefined as unknown as T;
+    } catch (err) {
+      // Non-empty body that will not parse is the truncation signature — the
+      // exact case §2 calls out ("transport, or truncation loses the payload").
+      // Never downgrade this to an empty result.
+      throw new AutotaskResponseError(
+        method,
+        path,
+        response.status,
+        `response body was not valid JSON — likely truncated (${text.length} bytes received)`,
+        err
+      );
     }
   }
 
@@ -358,13 +450,47 @@ export class AutotaskHttpClient {
   async get<T>(entity: string, id: number): Promise<T | null> {
     try {
       const res = await this.request<{ item?: T } & T>('GET', `/${entity}/${id}`);
-      // Autotask returns { item: {...} } but some legacy routes return the entity at top level.
-      return ((res as any)?.item ?? (res as any)) || null;
+      return unwrapEntity<T>(res);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('HTTP 404')) return null;
       throw err;
     }
+  }
+
+  /**
+   * GET /{Entity}/{id} with a bounded retry for read-after-write verification
+   * (plan §2). Autotask can briefly return 404 for an entity that was just
+   * created (replication lag between the write node and the read node), so a
+   * single read immediately after a create can falsely report "not found".
+   *
+   * This retries ONLY on a genuine null (not-yet-visible). It does NOT retry a
+   * payload anomaly: get() now throws AutotaskResponseError on a truncated/empty
+   * 2xx, and that propagates immediately — a corrupt response is a real error to
+   * surface, not a lag to wait out. Returns the entity once visible, or null if
+   * it never appears within the attempt budget (the caller decides what an
+   * unverified-but-created result means — for creates, the itemId is already
+   * authoritative, so this is confirmation, not the source of truth).
+   *
+   * Delays are linear (delayMs, 2·delayMs, …); the first read is immediate, so
+   * the common case (entity already visible) costs nothing extra.
+   */
+  async getWithRetry<T>(
+    entity: string,
+    id: number,
+    opts: { attempts?: number; delayMs?: number } = {}
+  ): Promise<T | null> {
+    const attempts = Math.max(1, Math.floor(opts.attempts ?? 4));
+    const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 250));
+    let found: T | null = null;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      found = await this.get<T>(entity, id);
+      if (found !== null) return found;
+      if (attempt < attempts - 1 && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+      }
+    }
+    return found;
   }
 
   /**
@@ -524,13 +650,13 @@ export class AutotaskHttpClient {
    */
   async update(entity: string, id: number, body: Record<string, any>): Promise<void> {
     try {
-      await this.request<void>('PATCH', `/${entity}`, { id, ...body });
+      await this.request<void>('PATCH', `/${entity}`, { id, ...body }, false, { allowEmptyBody: true });
     } catch (err) {
       if ((err as { status?: number })?.status === 404) {
         this.logger.debug(
           `Autotask PATCH /${entity} returned 404 (likely Zone DE1) — retrying as PUT /${entity}/${id}`
         );
-        await this.request<void>('PUT', `/${entity}/${id}`, body);
+        await this.request<void>('PUT', `/${entity}/${id}`, body, false, { allowEmptyBody: true });
         return;
       }
       throw err;
@@ -541,7 +667,7 @@ export class AutotaskHttpClient {
    * DELETE /{Entity}/{id}
    */
   async delete(entity: string, id: number): Promise<void> {
-    await this.request<void>('DELETE', `/${entity}/${id}`);
+    await this.request<void>('DELETE', `/${entity}/${id}`, undefined, false, { allowEmptyBody: true });
   }
 
   /**
@@ -581,7 +707,7 @@ export class AutotaskHttpClient {
         'GET',
         `/${parentEntity}/${parentId}/${childEntity}/${childId}`
       );
-      return ((res as any)?.item ?? (res as any)) || null;
+      return unwrapEntity<T>(res);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('HTTP 404')) return null;
@@ -669,7 +795,9 @@ export class AutotaskHttpClient {
     await this.request<void>(
       'PATCH',
       `/${parentEntity}/${parentId}/${childEntity}`,
-      { id, ...body }
+      { id, ...body },
+      false,
+      { allowEmptyBody: true }
     );
   }
 
@@ -684,7 +812,10 @@ export class AutotaskHttpClient {
   ): Promise<void> {
     await this.request<void>(
       'DELETE',
-      `/${parentEntity}/${parentId}/${childEntity}/${childId}`
+      `/${parentEntity}/${parentId}/${childEntity}/${childId}`,
+      undefined,
+      false,
+      { allowEmptyBody: true }
     );
   }
 }

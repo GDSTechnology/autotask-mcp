@@ -2511,6 +2511,251 @@ export class AutotaskService {
   }
 
   // =====================================================
+  // Entitlement + coverage helpers, and the maintenance-ticket orchestrator
+  // (§13/§14/§15). The MCP owns HOW to read state / verify entitlement / create
+  // safe objects; the automation layer owns WHEN/WHICH/WHETHER (§20).
+  // =====================================================
+
+  /** Normalized entitlement reasons (§14). EXCLUDED_BY_POLICY is reserved for the
+   * automation layer (policy is not owned by the MCP) and is never emitted here. */
+  static readonly ENTITLEMENT_REASONS = [
+    'ACTIVE_CI_ACTIVE_CONTRACT_SERVICE',
+    'ACTIVE_CI_NO_CONTRACT',
+    'CONTRACT_EXPIRED',
+    'CONTRACT_TERMINATED',
+    'CONTRACT_SERVICE_MISMATCH',
+    'SERVICE_NOT_MAPPED',
+    'CI_INACTIVE',
+    'EXCLUDED_BY_POLICY',
+  ] as const;
+
+  /** Map a Contracts.status picklist value to its label (tenant-specific). */
+  private async contractStatusLabel(statusValue: unknown): Promise<string | undefined> {
+    if (statusValue == null) return undefined;
+    try {
+      const fields = await this.getFieldInfo('Contracts');
+      const status = fields.find((f) => f.name === 'status');
+      const pv = (status?.picklistValues ?? []).find((v) => String(v.value) === String(statusValue));
+      return pv?.label;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Determine whether a configuration item is entitled to recurring service and
+   * why (§14). Deterministic and evidence-backed: reads the CI, its contract,
+   * and its contract-service line, then classifies. Contract "active" is decided
+   * by the status LABEL (tenant picklists differ — this tenant uses
+   * 0=Inactive/1=Active, others use In Effect/Terminated) plus the endDate, not a
+   * hardcoded numeric. Entitled ⇔ reason === ACTIVE_CI_ACTIVE_CONTRACT_SERVICE.
+   */
+  async getConfigurationItemEntitlement(configurationItemId: number): Promise<{
+    configurationItemId: number;
+    found: boolean;
+    isEntitled: boolean;
+    reason: string | null;
+    evidence: Record<string, any>;
+  }> {
+    const ci = await this.getConfigurationItem(configurationItemId);
+    if (!ci) {
+      return { configurationItemId, found: false, isEntitled: false, reason: null, evidence: {} };
+    }
+    const evidence: Record<string, any> = {
+      isActive: ci.isActive,
+      contractID: ci.contractID ?? null,
+      contractServiceID: ci.contractServiceID ?? null,
+      serviceID: ci.serviceID ?? null,
+    };
+    const done = (reason: string) => ({ configurationItemId, found: true, isEntitled: reason === 'ACTIVE_CI_ACTIVE_CONTRACT_SERVICE', reason, evidence });
+
+    if (ci.isActive === false) return done('CI_INACTIVE');
+    if (ci.contractID == null && ci.contractServiceID == null) return done('ACTIVE_CI_NO_CONTRACT');
+
+    // Resolve the contract and classify its state.
+    const contract = ci.contractID != null ? await this.getContract(ci.contractID) as Record<string, any> | null : null;
+    if (ci.contractID != null && !contract) {
+      evidence.contractFound = false;
+      return done('CONTRACT_TERMINATED'); // referenced contract no longer readable
+    }
+    if (contract) {
+      const label = await this.contractStatusLabel(contract.status);
+      const endDate = contract.endDate ? new Date(contract.endDate) : null;
+      const expired = endDate != null && !Number.isNaN(endDate.getTime()) && endDate.getTime() < Date.now();
+      const active = label != null && /\bactive\b|\bin effect\b/i.test(label);
+      evidence.contractStatus = contract.status;
+      evidence.contractStatusLabel = label ?? null;
+      evidence.contractEndDate = contract.endDate ?? null;
+      evidence.contractExpired = expired;
+      if (label != null && /terminat/i.test(label)) return done('CONTRACT_TERMINATED');
+      if (expired) return done('CONTRACT_EXPIRED');
+      if (!active) return done('CONTRACT_TERMINATED'); // inactive/on-hold/etc — not generating work
+    }
+
+    // Contract is active — validate the contract-service linkage.
+    if (ci.contractServiceID == null) return done('SERVICE_NOT_MAPPED');
+    const cs = await this.getContractService(ci.contractServiceID);
+    if (!cs) { evidence.contractServiceFound = false; return done('CONTRACT_SERVICE_MISMATCH'); }
+    evidence.contractServiceContractID = cs.contractID;
+    evidence.contractServiceServiceID = cs.serviceID;
+    if (ci.contractID != null && cs.contractID !== ci.contractID) return done('CONTRACT_SERVICE_MISMATCH');
+    if (ci.serviceID != null && cs.serviceID != null && cs.serviceID !== ci.serviceID) return done('CONTRACT_SERVICE_MISMATCH');
+    return done('ACTIVE_CI_ACTIVE_CONTRACT_SERVICE');
+  }
+
+  /**
+   * Active configuration items with no contract coverage — for Sales / Account
+   * review (§15). NOTE: Autotask's `eq null` / `noteExist` filters on CI foreign
+   * keys (contractID/contractServiceID) return zero rows even when null-valued
+   * records exist (verified live), so coverage is computed in-memory: query
+   * active CIs and keep those with neither a contract nor a contract-service link.
+   */
+  async searchConfigurationItemCoverageGaps(
+    options: { companyID?: number; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [{ op: 'eq', field: 'isActive', value: true }];
+    pushEq(filters, 'companyID', options.companyID);
+    const cap = Math.min(options.pageSize || 500, 500);
+    const active = await http.query<Record<string, any>>('ConfigurationItems', filters, { maxRecords: cap });
+    return active.filter((ci) => ci.contractID == null && ci.contractServiceID == null);
+  }
+
+  /**
+   * Maintenance-ticket orchestrator (§13). Validates company → contract →
+   * contract service → CI ownership/activity, checks the externalID for an
+   * existing occurrence (idempotency), then (unless dryRun) creates the ticket,
+   * links additional CIs, applies a checklist library, and reads everything back.
+   * The MCP does not own recurrence scheduling — the caller decides WHEN/WHICH.
+   */
+  async createMaintenanceTicket(params: {
+    companyID: number;
+    title: string;
+    description: string;
+    configurationItemID?: number;
+    additionalConfigurationItemIDs?: number[];
+    contractID?: number;
+    contractServiceID?: number;
+    companyLocationID?: number;
+    externalID?: string;
+    checklistLibraryID?: number;
+    ticketFields?: Record<string, any>;
+    dryRun?: boolean;
+    allowDuplicate?: boolean;
+    requireEntitlement?: boolean;
+  }): Promise<Record<string, any>> {
+    const validation: Array<{ step: string; ok: boolean; detail?: any }> = [];
+    const fail = (step: string, detail: any) => {
+      validation.push({ step, ok: false, detail });
+      return { status: 'validation_failed', step, detail, validation };
+    };
+
+    // 1. Company
+    const company = await this.getCompany(params.companyID).catch(() => null);
+    if (!company) return fail('company', `Company ${params.companyID} not found`);
+    validation.push({ step: 'company', ok: true });
+
+    // 2. Contract (if supplied)
+    if (params.contractID != null) {
+      const contract = await this.getContract(params.contractID) as Record<string, any> | null;
+      if (!contract) return fail('contract', `Contract ${params.contractID} not found`);
+      const label = await this.contractStatusLabel(contract.status);
+      const endDate = contract.endDate ? new Date(contract.endDate) : null;
+      const expired = endDate != null && !Number.isNaN(endDate.getTime()) && endDate.getTime() < Date.now();
+      const active = label != null && /\bactive\b|\bin effect\b/i.test(label);
+      if (expired) return fail('contract', `Contract ${params.contractID} is expired (endDate ${contract.endDate})`);
+      if (label != null && !active) return fail('contract', `Contract ${params.contractID} is not active (status "${label}")`);
+      validation.push({ step: 'contract', ok: true, detail: { statusLabel: label, endDate: contract.endDate } });
+    }
+
+    // 3. Contract service (if supplied)
+    if (params.contractServiceID != null) {
+      const cs = await this.getContractService(params.contractServiceID);
+      if (!cs) return fail('contractService', `ContractService ${params.contractServiceID} not found`);
+      if (params.contractID != null && cs.contractID !== params.contractID) {
+        return fail('contractService', `ContractService ${params.contractServiceID} belongs to contract ${cs.contractID}, not ${params.contractID}`);
+      }
+      validation.push({ step: 'contractService', ok: true });
+    }
+
+    // 4. Primary CI ownership + activity (if supplied)
+    if (params.configurationItemID != null) {
+      const ci = await this.getConfigurationItem(params.configurationItemID);
+      if (!ci) return fail('configurationItem', `Configuration item ${params.configurationItemID} not found`);
+      if (ci.companyID != null && ci.companyID !== params.companyID) {
+        return fail('configurationItem', `CI ${params.configurationItemID} belongs to company ${ci.companyID}, not ${params.companyID}`);
+      }
+      if (ci.isActive === false) return fail('configurationItem', `CI ${params.configurationItemID} is inactive`);
+      if (params.requireEntitlement) {
+        const ent = await this.getConfigurationItemEntitlement(params.configurationItemID);
+        if (!ent.isEntitled) return fail('entitlement', { reason: ent.reason, evidence: ent.evidence });
+        validation.push({ step: 'entitlement', ok: true, detail: { reason: ent.reason } });
+      }
+      validation.push({ step: 'configurationItem', ok: true });
+    }
+
+    // 5. Idempotency: existing occurrence?
+    let existing: AutotaskTicket[] = [];
+    if (params.externalID) {
+      existing = await this.findTicketByExternalId(params.externalID);
+      if (existing.length > 0 && !params.allowDuplicate) {
+        return { status: 'duplicate', existingTickets: existing, validation };
+      }
+      validation.push({ step: 'idempotency', ok: true, detail: { existing: existing.length } });
+    }
+
+    const ticketPayload: Record<string, any> = {
+      companyID: params.companyID,
+      title: params.title,
+      description: params.description,
+      ...(params.configurationItemID != null && { configurationItemID: params.configurationItemID }),
+      ...(params.contractID != null && { contractID: params.contractID }),
+      ...(params.contractServiceID != null && { contractServiceID: params.contractServiceID }),
+      ...(params.companyLocationID != null && { companyLocationID: params.companyLocationID }),
+      ...(params.externalID != null && { externalID: params.externalID }),
+      ...(params.ticketFields ?? {}),
+    };
+
+    // 6. Dry run stops here — return the plan without writing.
+    if (params.dryRun) {
+      return {
+        status: 'dry_run',
+        validation,
+        plannedTicket: ticketPayload,
+        wouldLinkConfigurationItems: params.additionalConfigurationItemIDs ?? [],
+        wouldApplyChecklistLibraryID: params.checklistLibraryID ?? null,
+        existingTickets: existing,
+      };
+    }
+
+    // 7-9. Create → link CIs → apply checklist → read back.
+    const additional = (params.additionalConfigurationItemIDs ?? []).filter((n) => typeof n === 'number');
+    const createResult = additional.length > 0
+      ? await this.createTicketWithConfigurationItems(ticketPayload, additional)
+      : { id: await this.createTicket(ticketPayload), item: null as AutotaskTicket | null, additionalConfigurationItems: [] as Array<Record<string, any>>, linkErrors: [] as Array<{ configurationItemID: number; error: string }> };
+
+    let checklist: Awaited<ReturnType<AutotaskService['applyChecklistLibraryToTicket']>> | null = null;
+    if (params.checklistLibraryID != null) {
+      checklist = await this.applyChecklistLibraryToTicket(createResult.id, params.checklistLibraryID);
+    }
+
+    // 10. Read the ticket back if the convenience flow didn't already.
+    let item = createResult.item;
+    if (!item) { try { item = await this.getTicket(createResult.id, true); } catch { /* id authoritative */ } }
+
+    return {
+      status: 'created',
+      id: createResult.id,
+      entityType: 'Tickets',
+      item,
+      additionalConfigurationItems: createResult.additionalConfigurationItems,
+      linkErrors: createResult.linkErrors,
+      checklist,
+      validation,
+    };
+  }
+
+  // =====================================================
   // Ticket Attachments (child of Tickets)
   // =====================================================
 

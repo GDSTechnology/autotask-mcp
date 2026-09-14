@@ -1296,6 +1296,67 @@ export class AutotaskService {
     }
   }
 
+  /**
+   * Resolve human-readable names for a configuration item's reference fields
+   * (§5 enrichReferences). Best-effort: every lookup is independent and a
+   * failed/absent reference is simply omitted — enrichment never throws or
+   * fails the underlying get. Only references with a single-record getter are
+   * resolved; the resolved names are returned under a `_enriched` bag so the
+   * raw CI fields stay untouched.
+   */
+  async enrichConfigurationItemReferences(
+    ci: AutotaskConfigurationItem
+  ): Promise<Record<string, string>> {
+    const enriched: Record<string, string> = {};
+    const set = (key: string, value: unknown) => {
+      if (typeof value === 'string' && value.length > 0) enriched[key] = value;
+    };
+    const tryGet = async (fn: () => Promise<void>) => {
+      try { await fn(); } catch { /* best-effort: skip a reference that won't resolve */ }
+    };
+
+    const tasks: Array<Promise<void>> = [];
+    if (ci.companyID != null) {
+      tasks.push(tryGet(async () => {
+        const c = await this.getCompany(ci.companyID as number);
+        set('companyName', c?.companyName);
+      }));
+    }
+    if (ci.contractID != null) {
+      tasks.push(tryGet(async () => {
+        const c = await this.getContract(ci.contractID as number) as Record<string, any> | null;
+        set('contractName', c?.contractName);
+        if (c?.status != null) enriched.contractStatus = String(c.status);
+      }));
+    }
+    if (ci.serviceID != null) {
+      tasks.push(tryGet(async () => {
+        const svc = await this.getService(ci.serviceID as number) as Record<string, any> | null;
+        set('serviceName', svc?.name);
+      }));
+    }
+    if (ci.contractServiceID != null) {
+      tasks.push(tryGet(async () => {
+        const cs = await this.getContractService(ci.contractServiceID as number);
+        set('contractServiceName', cs?.invoiceDescription || cs?.internalDescription);
+      }));
+    }
+    if (ci.productID != null) {
+      tasks.push(tryGet(async () => {
+        const p = await this.getProduct(ci.productID as number) as Record<string, any> | null;
+        set('productName', p?.name);
+      }));
+    }
+    if (ci.parentConfigurationItemID != null) {
+      tasks.push(tryGet(async () => {
+        const parent = await this.getConfigurationItem(ci.parentConfigurationItemID as number);
+        set('parentConfigurationItemName', parent?.referenceTitle as string | undefined);
+      }));
+    }
+    await Promise.all(tasks);
+    return enriched;
+  }
+
   async searchConfigurationItems(options: AutotaskQueryOptions = {}): Promise<AutotaskConfigurationItem[]> {
     const http = await this.ensureClient();
     try {
@@ -1309,6 +1370,16 @@ export class AutotaskService {
       pushEq(filters, 'productID', o.productID);
       pushEq(filters, 'configurationItemType', o.configurationItemType);
       pushEq(filters, 'configurationItemCategoryID', o.configurationItemCategoryID);
+      // Entitlement filters (§4.1) — the native CI→contract/service linkage the
+      // revenue-first automation matches against. All verified queryable on the
+      // live ConfigurationItems schema.
+      pushEq(filters, 'companyLocationID', o.companyLocationID);
+      pushEq(filters, 'contractID', o.contractID);
+      pushEq(filters, 'contractServiceID', o.contractServiceID);
+      pushEq(filters, 'contractServiceBundleID', o.contractServiceBundleID);
+      pushEq(filters, 'serviceID', o.serviceID);
+      pushEq(filters, 'serviceBundleID', o.serviceBundleID);
+      pushEq(filters, 'parentConfigurationItemID', o.parentConfigurationItemID);
       if (o.searchTerm) {
         filters.push({ op: 'contains', field: 'referenceTitle', value: o.searchTerm });
       }
@@ -1527,6 +1598,39 @@ export class AutotaskService {
       this.logger.error(`Failed to update contract service ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Get a single ContractService line by id (§6). Returns null on a missing-by-id
+   * GET (Autotask 200 {item:null}); `http.get` routes through unwrapEntity.
+   */
+  async getContractService(id: number): Promise<Record<string, any> | null> {
+    const http = await this.ensureClient();
+    return http.get<Record<string, any>>('ContractServices', id);
+  }
+
+  /**
+   * Search ContractService lines (§6) — the "is this CI still entitled through
+   * an active Contract Service?" read. Filter by contractID (all service lines
+   * on a contract), serviceID, and/or quoteItemID; all three are verified
+   * queryable on the live ContractServices schema. With no filter this returns
+   * the first page of contract services (bounded by pageSize) rather than
+   * scanning the whole tenant.
+   */
+  async searchContractServices(
+    options: { contractID?: number; serviceID?: number; quoteItemID?: number; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'contractID', options.contractID);
+    pushEq(filters, 'serviceID', options.serviceID);
+    pushEq(filters, 'quoteItemID', options.quoteItemID);
+    const pageSize = Math.min(options.pageSize || 25, 500);
+    return http.query<Record<string, any>>(
+      'ContractServices',
+      filters.length > 0 ? filters : MATCH_ALL,
+      { maxRecords: pageSize }
+    );
   }
 
   // =====================================================

@@ -2533,21 +2533,49 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   // Configuration Item tools
   {
     name: 'autotask_search_configuration_items',
-    description: 'Search for configuration items in Autotask with optional filters',
+    description: 'Search configuration items (assets) with optional filters, including native contract/service entitlement links. Combine filters (e.g. contractID + isActive) to find the assets a recurring service covers. Returns full CI records — all entitlement fields (contractID, contractServiceID, serviceID, etc.) are included.',
     inputSchema: {
       type: 'object',
       properties: {
         searchTerm: {
           type: 'string',
-          description: 'Search term for configuration item name'
+          description: 'Search term matched against the CI reference title (name)'
         },
         companyID: {
           type: 'number',
           description: 'Filter by company ID'
         },
+        companyLocationID: {
+          type: 'number',
+          description: 'Filter by company location ID (the site the asset lives at)'
+        },
+        contractID: {
+          type: 'number',
+          description: 'Filter by the contract the asset is entitled through'
+        },
+        contractServiceID: {
+          type: 'number',
+          description: 'Filter by the specific contract service line the asset is covered by'
+        },
+        contractServiceBundleID: {
+          type: 'number',
+          description: 'Filter by the contract service bundle the asset is covered by'
+        },
+        serviceID: {
+          type: 'number',
+          description: 'Filter by the service the asset maps to'
+        },
+        serviceBundleID: {
+          type: 'number',
+          description: 'Filter by the service bundle the asset maps to'
+        },
+        parentConfigurationItemID: {
+          type: 'number',
+          description: 'Filter by parent CI — returns the child assets of a given configuration item'
+        },
         isActive: {
           type: 'boolean',
-          
+          description: 'Filter by active state. Set true to exclude sunset/inactive assets from a maintenance run.'
         },
         productID: {
           type: 'number',
@@ -2569,6 +2597,24 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         }
       },
       required: []
+    }
+  },
+  {
+    name: 'autotask_get_configuration_item',
+    description: 'Get a single configuration item (asset) by ID with all current details, including entitlement fields (companyID, companyLocationID, contractID, contractServiceID, serviceID, isActive, serialNumber, installDate, warrantyExpirationDate). Set enrichReferences=true to also resolve human-readable names for the linked company, contract, service, product, and parent CI.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        configurationItemId: {
+          type: 'number',
+          description: 'The configuration item (asset) ID to retrieve'
+        },
+        enrichReferences: {
+          type: 'boolean',
+          description: 'When true, resolve reference names (companyName, contractName, contractStatus, serviceName, contractServiceName, productName, parentConfigurationItemName) best-effort into an `_enriched` object. Adds extra read calls; default false.'
+        }
+      },
+      required: ['configurationItemId']
     }
   },
 
@@ -3944,6 +3990,30 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_contract_service',
+    description: 'Get a single ContractService line by ID — the service entitlement on a contract (contractID, serviceID, quoteItemID, unitPrice, unitCost, internalDescription, invoiceDescription). Used to confirm a configuration item is still entitled through an active contract service.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'ContractService record ID' } },
+      required: ['id']
+    },
+    annotations: { title: 'Get contract service', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_contract_services',
+    description: 'Search ContractService lines (service entitlements on contracts). Filter by contractID (all service lines on a contract), serviceID, and/or quoteItemID. Answers "which services does this contract cover?" and "is this service entitled on any contract?". With no filter, returns the first page of contract services.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: { type: 'number', description: 'Return service lines on this contract' },
+        serviceID: { type: 'number', description: 'Return service lines for this service' },
+        quoteItemID: { type: 'number', description: 'Return the service line originating from this quote item' },
+        pageSize: { type: 'number', description: 'Max rows to return (default 25, max 500)', minimum: 1, maximum: 500 }
+      }
+    },
+    annotations: { title: 'Search contract services', readOnlyHint: true }
+  },
+  {
     name: 'autotask_get_contract_milestone',
     description: 'Get a single ContractMilestone by id — a commercial milestone payment on a contract (title, amount, dateDue, status, description, billingCodeID, isInitialPayment).',
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'ContractMilestone id' } }, required: ['id'] },
@@ -4056,7 +4126,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',
@@ -4067,8 +4137,8 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
     tools: ['autotask_search_resources']
   },
   configuration_items: {
-    description: 'Search configuration items (assets/devices)',
-    tools: ['autotask_search_configuration_items']
+    description: 'Search and read configuration items (assets/devices), including contract/service entitlement links',
+    tools: ['autotask_search_configuration_items', 'autotask_get_configuration_item']
   },
   company_notes: {
     description: 'Get, search, and create company notes',

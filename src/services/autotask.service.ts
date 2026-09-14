@@ -1310,6 +1310,148 @@ export class AutotaskService {
   }
 
   /**
+   * Complete read-only project context for the Project Builder (§10): the
+   * project, its nested phase/task hierarchy, dependency graph, labor rollup,
+   * notes/attachments, owning company, and commercial linkage (contract +
+   * milestones, opportunity). Best-effort and fail-soft: each section is fetched
+   * independently and a section that errors is recorded under `errors` rather
+   * than failing the whole call — a wide read must degrade gracefully, never
+   * return a misleading whole-context failure. The one hard stop is the project
+   * itself: if it can't be read the context is meaningless, so that propagates
+   * (or reports notFound for a genuine 404).
+   *
+   * Heavy sections are opt-in to bound API fan-out (429 risk): configuration
+   * items (per-company, can be large) default off. Quotes/linked tickets/charges
+   * are deferred to a later slice.
+   */
+  async getCompleteProjectContext(
+    projectID: number,
+    options: { includeConfigurationItems?: boolean; includeCommercial?: boolean } = {}
+  ): Promise<Record<string, any>> {
+    const includeCommercial = options.includeCommercial !== false; // default on
+    const errors: Array<{ section: string; error: string }> = [];
+    const section = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
+      try {
+        return await fn();
+      } catch (e) {
+        errors.push({ section: name, error: e instanceof Error ? e.message : String(e) });
+        return undefined;
+      }
+    };
+
+    // Hierarchy first — it carries the project record (with linkage fields) and
+    // the task set the dependency graph is built from. A read failure here is a
+    // real failure and propagates (fail closed); a genuine not-found is reported.
+    const structure = await this.getProjectStructure(projectID);
+    const project = structure.project as Record<string, any> | null;
+    if (!project) {
+      return { projectID, found: false, message: `Project ${projectID} not found`, errors };
+    }
+
+    // Collect every task id across the nested hierarchy for the dependency graph.
+    const taskIds: number[] = [];
+    const walk = (phase: any) => {
+      for (const t of phase.tasks ?? []) if (t?.id != null) taskIds.push(t.id);
+      for (const c of phase.children ?? []) walk(c);
+    };
+    for (const p of structure.phases ?? []) walk(p);
+    for (const t of structure.unphasedTasks ?? []) if (t?.id != null) taskIds.push(t.id);
+
+    const companyID = project.companyID as number | undefined;
+    const contractID = project.contractID as number | undefined;
+    const opportunityID = project.opportunityID as number | undefined;
+
+    // Fan out the independent sections in parallel; queryByIds bounds its own
+    // per-chunk concurrency, so the section count (not the row count) is what
+    // fires at once here.
+    const [
+      laborSummary,
+      predecessors,
+      notes,
+      projectAttachments,
+      company,
+      contract,
+      contractMilestones,
+      opportunity,
+      configurationItems,
+    ] = await Promise.all([
+      section('laborSummary', () => this.getProjectLaborSummary(projectID)),
+      section('predecessors', () => this.getProjectTaskPredecessors(taskIds)),
+      section('notes', () => this.searchProjectNotes(projectID)),
+      section('attachments', () => this.searchProjectAttachments(projectID)),
+      section('company', () => (companyID != null ? this.getCompany(companyID) : Promise.resolve(null))),
+      section('contract', () =>
+        includeCommercial && contractID != null ? this.getContract(contractID) : Promise.resolve(null)),
+      section('contractMilestones', () =>
+        includeCommercial && contractID != null
+          ? this.searchContractMilestones({ contractID })
+          : Promise.resolve([])),
+      section('opportunity', () =>
+        includeCommercial && opportunityID != null
+          ? this.getOpportunity(opportunityID)
+          : Promise.resolve(null)),
+      section('configurationItems', () =>
+        options.includeConfigurationItems && companyID != null
+          ? this.searchConfigurationItems({ companyID } as AutotaskQueryOptions)
+          : Promise.resolve([])),
+    ]);
+
+    const predItems = (predecessors as any)?.items ?? [];
+    const predFailed = (predecessors as any)?.failedChunks ?? [];
+    for (const fc of predFailed) {
+      errors.push({ section: 'predecessors', error: `chunk ${JSON.stringify(fc.ids)}: ${fc.error}` });
+    }
+
+    return {
+      projectID,
+      found: true,
+      project,
+      structure: {
+        phases: structure.phases,
+        unphasedTasks: structure.unphasedTasks,
+        summary: structure.summary,
+      },
+      laborSummary: laborSummary ?? null,
+      dependencies: predItems,
+      notes: notes ?? [],
+      attachments: projectAttachments ?? [],
+      company: company ?? null,
+      commercial: includeCommercial
+        ? {
+            contractID: contractID ?? null,
+            contract: contract ?? null,
+            contractMilestones: contractMilestones ?? [],
+            opportunityID: opportunityID ?? null,
+            opportunity: opportunity ?? null,
+          }
+        : null,
+      configurationItems: configurationItems ?? [],
+      summary: {
+        phaseCount: structure.summary?.phaseCount ?? 0,
+        taskCount: structure.summary?.taskCount ?? 0,
+        dependencyCount: predItems.length,
+        noteCount: (notes ?? []).length,
+        attachmentCount: (projectAttachments ?? []).length,
+        milestoneCount: (contractMilestones ?? []).length,
+        hasContract: !!contract,
+        hasOpportunity: !!opportunity,
+      },
+      errors,
+    };
+  }
+
+  /** Batched dependency-graph fetch for a task set (successorTaskID IN taskIds). */
+  async getProjectTaskPredecessors(
+    taskIds: number[]
+  ): Promise<{ items: Array<Record<string, any>>; failedChunks: Array<{ ids: Array<number | string>; error: string }> }> {
+    const http = await this.ensureClient();
+    if (!taskIds.length) return { items: [], failedChunks: [] };
+    return http.queryByIds<Record<string, any>>('TaskPredecessors', 'successorTaskID', taskIds, {
+      includeFields: ['id', 'predecessorTaskID', 'successorTaskID', 'lagDays'],
+    });
+  }
+
+  /**
    * Read-after-write verification helper (§2): read a just-created entity back
    * by id, with a bounded retry that tolerates Autotask's brief post-create read
    * lag (a fresh entity can 404 for a moment). Returns the entity once visible,

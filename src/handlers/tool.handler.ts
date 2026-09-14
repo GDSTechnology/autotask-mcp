@@ -1201,6 +1201,15 @@ export class AutotaskToolHandler {
         const r = await s.getProjectStructure(a.projectID);
         return { result: r, message: `Project ${a.projectID}: ${r.summary.phaseCount} phase(s), ${r.summary.taskCount} task(s), depth ${r.summary.maxPhaseDepth}` };
       }],
+      ['autotask_get_complete_project_context', async (a) => {
+        const r = await s.getCompleteProjectContext(a.projectID, {
+          includeConfigurationItems: a.includeConfigurationItems,
+          includeCommercial: a.includeCommercial,
+        });
+        if (!r.found) return { result: r, message: r.message };
+        const errs = r.errors?.length ? `, ${r.errors.length} section error(s)` : '';
+        return { result: r, message: `Project ${a.projectID} context: ${r.summary.phaseCount} phase(s), ${r.summary.taskCount} task(s), ${r.summary.dependencyCount} dependency(ies), ${r.summary.milestoneCount} milestone(s)${errs}` };
+      }],
       ['autotask_get_project_labor_summary', async (a) => {
         const r = await s.getProjectLaborSummary(a.projectID);
         return { result: r, message: `Project ${a.projectID} labor: ${r.actualHours}h actual vs ${r.estimatedHours}h estimated (variance ${r.variance}h), ${r.billableHours}h billable` };

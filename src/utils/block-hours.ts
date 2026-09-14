@@ -21,6 +21,13 @@ export interface BlockHourEntry {
   /** ISO date the work was performed; attributes usage to this month. */
   dateWorked: string;
   hoursWorked?: number;
+  /**
+   * Autotask's billing-rounded hours (its 15-minute rounding / billing rules
+   * applied to the raw start/stop or total time). This — not raw hoursWorked —
+   * is what is actually drawn against the block, so consumption uses it when
+   * present, falling back to hoursWorked (#43).
+   */
+  hoursToBill?: number;
   isNonBillable?: boolean;
 }
 
@@ -74,7 +81,10 @@ export function computeBlockHourUsage(
   for (const te of entries ?? []) {
     if (te.isNonBillable) continue; // block hours are consumed by billable labor
     const m = monthKey(te.dateWorked);
-    if (m) bucket(m).used += Number(te.hoursWorked) || 0;
+    // Draw down by the billed (rounded) hours Autotask actually charges the
+    // block — hoursToBill — falling back to hoursWorked when it isn't set (#43).
+    const consumed = te.hoursToBill != null ? Number(te.hoursToBill) : Number(te.hoursWorked);
+    if (m) bucket(m).used += consumed || 0;
   }
 
   const currentMonth = `${asOf.getUTCFullYear()}-${String(asOf.getUTCMonth() + 1).padStart(2, '0')}`;

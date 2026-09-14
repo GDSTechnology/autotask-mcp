@@ -1954,7 +1954,7 @@ export class AutotaskService {
           maxRecords: 500,
         }),
         http.query<any>('TimeEntries', [{ op: 'eq', field: 'contractID', value: c.id }], {
-          includeFields: ['dateWorked', 'hoursWorked', 'isNonBillable'],
+          includeFields: ['dateWorked', 'hoursWorked', 'hoursToBill', 'isNonBillable'],
           maxRecords: 5000,
         }),
       ]);

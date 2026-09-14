@@ -1608,6 +1608,42 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['ticketId', 'itemId']
     }
   },
+  {
+    name: 'autotask_search_checklist_libraries',
+    description: 'Search reusable checklist libraries (standardized work-instruction checklists). Filter by isActive, entityType (which entity the library targets), or name searchTerm. Use to pick the right library (e.g. "Managed Network - Firmware Maintenance") before applying it to a ticket.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        searchTerm: { type: 'string', description: 'Match against the library name' },
+        isActive: { type: 'boolean', description: 'Filter by active state' },
+        entityType: { type: 'number', description: 'Filter by target entity type (picklist; libraries are scoped to an entity such as tickets)' },
+        pageSize: { type: 'number', description: 'Max rows to return (default 100, max 500)', minimum: 1, maximum: 500 }
+      }
+    },
+    annotations: { title: 'Search checklist libraries', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_get_checklist_library',
+    description: 'Get a checklist library by id, including its ordered items (from ChecklistLibraryChecklistItems: itemName, isImportant, position, knowledgebaseArticleID). Preview what applying it to a ticket will add.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'ChecklistLibrary id' } },
+      required: ['id']
+    },
+    annotations: { title: 'Get checklist library', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_apply_checklist_library_to_ticket',
+    description: 'Apply a checklist library to a ticket — expands the library\'s items into checklist items on the ticket (itemName / isImportant / position / knowledgebaseArticleID carried over). Autotask has no native apply endpoint, so this creates one TicketChecklistItem per library item. Each item is created independently; failures are reported per-item without aborting the rest.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'The ticket to add the checklist items to' },
+        checklistLibraryID: { type: 'number', description: 'The checklist library to apply' }
+      },
+      required: ['ticketID', 'checklistLibraryID']
+    }
+  },
 
   // Project Notes tools
   {
@@ -4202,7 +4238,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

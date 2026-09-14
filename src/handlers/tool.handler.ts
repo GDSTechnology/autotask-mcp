@@ -1482,6 +1482,22 @@ export class AutotaskToolHandler {
         return { result: a.itemId, message: `Successfully deleted ticket checklist item ${a.itemId}` };
       }],
 
+      // Checklist Libraries (§10)
+      ['autotask_search_checklist_libraries', async (a) => {
+        const r = await s.searchChecklistLibraries({ isActive: a.isActive, entityType: a.entityType, searchTerm: a.searchTerm, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} checklist librar${r.length === 1 ? 'y' : 'ies'}` };
+      }],
+      ['autotask_get_checklist_library', async (a) => {
+        const r = await s.getChecklistLibrary(a.id);
+        if (!r) return { result: null, message: `No checklist library found with ID ${a.id}` };
+        return { result: r, message: `Retrieved checklist library ${a.id} with ${(r.items as any[])?.length ?? 0} item(s)` };
+      }],
+      ['autotask_apply_checklist_library_to_ticket', async (a) => {
+        const r = await s.applyChecklistLibraryToTicket(a.ticketID, a.checklistLibraryID);
+        const failed = r.itemErrors.length;
+        return { result: r, message: `Applied checklist library ${a.checklistLibraryID} to ticket ${a.ticketID}: created ${r.created.length} item(s)` + (failed ? `, ${failed} failed` : '') };
+      }],
+
       ['autotask_get_project_note', async (a) => {
         const r = await s.getProjectNote(a.projectId, a.noteId); return { result: r, message: 'Project note retrieved successfully' };
       }],

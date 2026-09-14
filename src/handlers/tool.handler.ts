@@ -1278,6 +1278,24 @@ export class AutotaskToolHandler {
         }
         return { result: ci, message: `Retrieved configuration item ${a.configurationItemId}` };
       }],
+      ['autotask_get_configuration_item_entitlement', async (a) => {
+        const r = await s.getConfigurationItemEntitlement(a.configurationItemId);
+        const msg = !r.found ? `Configuration item ${a.configurationItemId} not found`
+          : `CI ${a.configurationItemId}: ${r.isEntitled ? 'entitled' : 'not entitled'} (${r.reason})`;
+        return { result: r, message: msg };
+      }],
+      ['autotask_search_configuration_item_coverage_gaps', async (a) => {
+        const r = await s.searchConfigurationItemCoverageGaps({ companyID: a.companyID, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} active uncovered configuration item(s)` };
+      }],
+      ['autotask_create_maintenance_ticket', async (a) => {
+        const r = await s.createMaintenanceTicket(a);
+        const msg = r.status === 'created' ? `Created maintenance ticket ${r.id}`
+          : r.status === 'duplicate' ? `Occurrence already exists (${(r.existingTickets as any[])?.length} ticket(s) with externalID "${a.externalID}") — no duplicate created`
+          : r.status === 'dry_run' ? `Dry run OK — validated ${(r.validation as any[])?.length} step(s); nothing written`
+          : `Validation failed at step "${r.step}": ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`;
+        return { result: r, message: msg };
+      }],
 
       // Contracts
       ['autotask_search_contracts', async (a) => {

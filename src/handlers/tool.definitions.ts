@@ -2741,6 +2741,54 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['configurationItemId']
     }
   },
+  {
+    name: 'autotask_get_configuration_item_entitlement',
+    description: 'Determine whether a configuration item is entitled to recurring service, and why. Returns { isEntitled, reason, evidence }. Normalized reasons: ACTIVE_CI_ACTIVE_CONTRACT_SERVICE (entitled), ACTIVE_CI_NO_CONTRACT, CONTRACT_EXPIRED, CONTRACT_TERMINATED, CONTRACT_SERVICE_MISMATCH, SERVICE_NOT_MAPPED, CI_INACTIVE. Contract active/expired is judged by the tenant status label + endDate, not a hardcoded value.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        configurationItemId: { type: 'number', description: 'The configuration item (asset) ID to evaluate' }
+      },
+      required: ['configurationItemId']
+    },
+    annotations: { title: 'Get configuration item entitlement', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_configuration_item_coverage_gaps',
+    description: 'List ACTIVE configuration items with no contract coverage (no contractID and no contractServiceID) — the uncovered assets for Sales / Account Management review. Scope to one company or the whole org. Coverage is computed in-memory because Autotask\'s null filters on CI foreign keys are unreliable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Limit to one company (omit for the whole org)' },
+        pageSize: { type: 'number', description: 'Max active CIs to scan (default 500, max 500)', minimum: 1, maximum: 500 }
+      }
+    },
+    annotations: { title: 'Search configuration item coverage gaps', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_maintenance_ticket',
+    description: 'High-level maintenance-ticket orchestrator. Validates company → contract (active/not-expired) → contract service → CI ownership/activity, checks externalID for an existing occurrence (idempotency — no duplicate), then creates the ticket, links additional CIs, applies a checklist library, and reads everything back. Set dryRun:true to validate and return the plan WITHOUT writing (recommended for pilot/manual-approval runs). The MCP does not own recurrence scheduling — the caller decides when an occurrence is due.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Company the ticket is for' },
+        title: { type: 'string', description: 'Ticket title' },
+        description: { type: 'string', description: 'Structured ticket description (whitespace preserved verbatim)' },
+        configurationItemID: { type: 'number', description: 'Primary configuration item (asset). Validated for company ownership + active state.' },
+        additionalConfigurationItemIDs: { type: 'array', items: { type: 'number' }, description: 'Additional CIs to link via TicketAdditionalConfigurationItems' },
+        contractID: { type: 'number', description: 'Contract to deliver/bill under. Validated active + not expired.' },
+        contractServiceID: { type: 'number', description: 'Contract service line. Validated to belong to contractID.' },
+        companyLocationID: { type: 'number', description: 'Site/location for the ticket' },
+        externalID: { type: 'string', description: 'Occurrence/idempotency key. If a ticket already exists with it, no duplicate is created (unless allowDuplicate).' },
+        checklistLibraryID: { type: 'number', description: 'Checklist library to apply to the created ticket' },
+        ticketFields: { type: 'object', description: 'Additional ticket fields to set (queueID, priority, status, ticketType, billingCodeID, dueDateTime, etc.)' },
+        dryRun: { type: 'boolean', description: 'Validate only and return the plan without creating anything (default false)' },
+        allowDuplicate: { type: 'boolean', description: 'Create even if a ticket with the externalID already exists (default false)' },
+        requireEntitlement: { type: 'boolean', description: 'Require the primary CI to be entitled (ACTIVE_CI_ACTIVE_CONTRACT_SERVICE) before creating (default false)' }
+      },
+      required: ['companyID', 'title', 'description']
+    }
+  },
 
   // Contract tools
   {
@@ -4238,7 +4286,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
@@ -4261,8 +4309,8 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
     tools: ['autotask_search_resources']
   },
   configuration_items: {
-    description: 'Search and read configuration items (assets/devices), including contract/service entitlement links',
-    tools: ['autotask_search_configuration_items', 'autotask_get_configuration_item']
+    description: 'Search and read configuration items (assets/devices), including contract/service entitlement links and coverage gaps',
+    tools: ['autotask_search_configuration_items', 'autotask_get_configuration_item', 'autotask_get_configuration_item_entitlement', 'autotask_search_configuration_item_coverage_gaps']
   },
   company_notes: {
     description: 'Get, search, and create company notes',

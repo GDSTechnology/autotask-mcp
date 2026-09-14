@@ -46,6 +46,23 @@ describe('computeBlockHourUsage', () => {
     expect(u.months[0]).toMatchObject({ used: 3, overage: 0, forfeited: 2 });
   });
 
+  test('consumption uses hoursToBill (billed/rounded) when present, else hoursWorked (#43)', () => {
+    const blocks = [{ hours: 10, startDate: '2026-01-01' }];
+    const entries = [
+      { dateWorked: '2026-01-05', hoursWorked: 3.9, hoursToBill: 4 }, // rounded up to 4 → drawn as 4
+      { dateWorked: '2026-01-06', hoursWorked: 2 },                    // no hoursToBill → falls back to 2
+    ];
+    const u = computeBlockHourUsage(blocks, entries, asOf);
+    expect(u.months[0]).toMatchObject({ used: 6, overage: 0, remaining: 4 });
+  });
+
+  test('hoursToBill of 0 on a billable entry consumes nothing (not fallback)', () => {
+    const blocks = [{ hours: 5, startDate: '2026-01-01' }];
+    const entries = [{ dateWorked: '2026-01-05', hoursWorked: 3, hoursToBill: 0 }];
+    const u = computeBlockHourUsage(blocks, entries, asOf);
+    expect(u.months[0]).toMatchObject({ used: 0 });
+  });
+
   test('usage in a month with no block is all overage', () => {
     const u = computeBlockHourUsage([], [{ dateWorked: '2026-01-09', hoursWorked: 8 }], asOf);
     expect(u.months[0]).toMatchObject({ month: '2026-01', allocated: 0, used: 8, overage: 8 });

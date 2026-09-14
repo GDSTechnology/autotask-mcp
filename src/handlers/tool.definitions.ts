@@ -1211,6 +1211,20 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Get project structure', readOnlyHint: true }
   },
   {
+    name: 'autotask_get_complete_project_context',
+    description: 'Assemble the complete read-only context for a project in one call (the Project Builder input): the project, its nested phase/task hierarchy, the task dependency graph, the labor rollup, project notes and attachments, the owning company, and commercial linkage (contract + milestones, opportunity). Best-effort — a section that fails to load is recorded under `errors` instead of failing the whole call. Configuration items are opt-in (can be large per company); set includeCommercial:false to skip contract/opportunity fetches.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectID: { type: 'number', description: 'Project ID' },
+        includeConfigurationItems: { type: 'boolean', description: 'Also fetch the company\'s configuration items (can be large; default false)' },
+        includeCommercial: { type: 'boolean', description: 'Fetch contract/milestones/opportunity linkage (default true)' }
+      },
+      required: ['projectID']
+    },
+    annotations: { title: 'Get complete project context', readOnlyHint: true }
+  },
+  {
     name: 'autotask_get_project_labor_summary',
     description: 'Project labor summary: estimated vs actual and billable hours, variance, first/last worked dates, and a per-phase rollup. Aggregated through the task hierarchy (project tasks → task time entries) because project-scoped time queries are unreliable.',
     inputSchema: {
@@ -4290,7 +4304,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

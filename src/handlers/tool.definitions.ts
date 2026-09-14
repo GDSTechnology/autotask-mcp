@@ -525,9 +525,13 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'Filter tickets with activity on or after this date (ISO format)'
         },
+        externalID: {
+          type: 'string',
+          description: 'Filter by external correlation id (occurrence/idempotency key). For a dedicated idempotency check use autotask_find_ticket_by_external_id.'
+        },
         page: {
           type: 'number',
-          
+
           minimum: 1
         },
         pageSize: {
@@ -669,10 +673,94 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         configurationItemID: {
           type: 'number',
-          description: 'Associated configuration item (asset) ID. Must belong to the same company.'
+          description: 'Primary associated configuration item (asset) ID. Must belong to the same company.'
+        },
+        contractID: {
+          type: 'number',
+          description: 'Contract this ticket bills against / is delivered under.'
+        },
+        contractServiceID: {
+          type: 'number',
+          description: 'Contract service line the ticket is delivered under. Must belong to contractID.'
+        },
+        contractServiceBundleID: {
+          type: 'number',
+          description: 'Contract service bundle the ticket is delivered under. Must belong to contractID.'
+        },
+        externalID: {
+          type: 'string',
+          description: 'External correlation id (idempotency / occurrence key, e.g. "CS-88321:LOC-231:FIRMWARE:2026-09"). Search with autotask_find_ticket_by_external_id BEFORE creating to avoid duplicate occurrences.'
+        },
+        problemTicketId: {
+          type: 'number',
+          description: 'Parent problem ticket ID — files this ticket as an incident under a problem ticket.'
+        },
+        additionalConfigurationItemIDs: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Convenience: extra configuration item IDs to link (beyond the primary configurationItemID). When provided, the ticket is created, each CI is linked via TicketAdditionalConfigurationItems, and the ticket + associations are read back and returned enriched.'
         }
       },
       required: ['companyID', 'title', 'description']
+    }
+  },
+  {
+    name: 'autotask_find_ticket_by_external_id',
+    description: 'Find ticket(s) by external correlation id (occurrence/idempotency key). Call this BEFORE creating a recurring/maintenance ticket: if a ticket already exists for the occurrence key, do NOT create a duplicate. Returns full matching ticket records (externalID preserved); externalID is not enforced-unique, so all matches are returned.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        externalID: { type: 'string', description: 'The external correlation id / occurrence key to look up' }
+      },
+      required: ['externalID']
+    },
+    annotations: { title: 'Find ticket by external ID', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_ticket_configuration_items',
+    description: 'List the additional configuration items linked to a ticket (TicketAdditionalConfigurationItems — the CIs beyond the ticket\'s primary configurationItemID). Optionally filter to a single CI to check whether it is already linked.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'The ticket whose additional CI links to list' },
+        configurationItemID: { type: 'number', description: 'Optional: only the association for this CI (existence check)' }
+      },
+      required: ['ticketID']
+    },
+    annotations: { title: 'List ticket additional configuration items', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_add_ticket_configuration_item',
+    description: 'Link an additional configuration item to a ticket (creates a TicketAdditionalConfigurationItems association). Returns the new association id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'The ticket to link the CI to' },
+        configurationItemID: { type: 'number', description: 'The configuration item (asset) to link' }
+      },
+      required: ['ticketID', 'configurationItemID']
+    }
+  },
+  {
+    name: 'autotask_remove_ticket_configuration_item',
+    description:
+      '⚠ DESTRUCTIVE — IRREVERSIBLE. Removes an additional configuration item link from a ticket ' +
+      '(deletes the TicketAdditionalConfigurationItems association by its association id — NOT the CI itself). ' +
+      'Find the association id first with autotask_search_ticket_configuration_items. Confirm with the user before invoking.',
+    annotations: {
+      title: 'Remove ticket additional configuration item (irreversible)',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'The parent ticket ID (for context/safety)' },
+        associationID: { type: 'number', description: 'The TicketAdditionalConfigurationItems association id to remove (from autotask_search_ticket_configuration_items)' }
+      },
+      required: ['associationID']
     }
   },
   {
@@ -4114,7 +4202,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

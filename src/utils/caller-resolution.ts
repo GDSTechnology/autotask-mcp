@@ -99,14 +99,28 @@ export function identificationRequired(
 
 /**
  * Tools where `currentUser: true` means "act as me" — the field the resolved
- * caller resource id is written into (proxy data input, §4.1/§9). Only tools
- * where a lone resource id is a valid payload are listed; tools that also need a
- * role (ticket assignment) or owner semantics are wired separately.
+ * caller resource id is written into (proxy data input, §4.1/§9). Ticket
+ * assignment (#42) also needs a role; the role field is auto-filled separately
+ * via ACTING_ROLE_FIELDS.
  */
 export const ACTING_RESOURCE_TOOLS: Record<string, string> = {
   autotask_create_time_entry: 'resourceID',
   autotask_create_company_todo: 'assignedToResourceID',
   autotask_update_company_todo: 'assignedToResourceID',
+  autotask_create_ticket: 'assignedResourceID',
+  autotask_update_ticket: 'assignedResourceID',
+};
+
+/**
+ * Tools where setting the resource field also requires a role (#42). When the
+ * resource field is populated (via currentUser or explicitly) and the role field
+ * is empty, the role is auto-filled from the resource's default role
+ * (Resources.defaultServiceDeskRoleID); an explicitly-passed role always wins.
+ */
+export const ACTING_ROLE_FIELDS: Record<string, { resourceField: string; roleField: string }> = {
+  autotask_create_ticket: { resourceField: 'assignedResourceID', roleField: 'assignedResourceRoleID' },
+  autotask_update_ticket: { resourceField: 'assignedResourceID', roleField: 'assignedResourceRoleID' },
+  autotask_create_time_entry: { resourceField: 'resourceID', roleField: 'roleID' },
 };
 
 /** Classify the outcome of an exact-email Resources search. */

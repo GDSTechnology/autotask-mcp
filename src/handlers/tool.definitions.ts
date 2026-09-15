@@ -1060,11 +1060,11 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         taskID: {
           type: 'number',
-          description: 'Task ID for the time entry (for project work, omit for Regular Time)'
+          description: 'Task ID for the time entry. Project work is logged against a project TASK — use this (not projectID) for project time.'
         },
         projectID: {
           type: 'number',
-          description: 'Project ID for the time entry (omit for Regular Time)'
+          description: 'Deprecated: Autotask time entries have no projectID field. Project time attaches to a project task — pass that task as taskID. A project-only entry is rejected.'
         },
         resourceID: {
           type: 'number',

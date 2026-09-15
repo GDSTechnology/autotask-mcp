@@ -996,28 +996,22 @@ export class AutotaskService {
     try {
       this.logger.debug('Creating time entry:', timeEntry);
 
-      // Ticket-scoped
-      if (timeEntry.ticketID) {
-        const id = await http.childCreate('Tickets', timeEntry.ticketID, 'TimeEntries', timeEntry);
-        this.logger.info(`Time entry created with ID: ${id}`);
-        return id;
+      // Autotask TimeEntries are a TOP-LEVEL entity: POST /TimeEntries with the
+      // parent id in the body. The child routes /Tickets|Tasks/{id}/TimeEntries
+      // return HTTP 404 (verified live against the tenant — the old child-route
+      // path was broken; issue #72). TimeEntries carries `ticketID` and `taskID`
+      // but has NO `projectID` field — project work is logged against a project
+      // TASK (taskID), not the project directly — so projectID is dropped and a
+      // project-only request is rejected with a clear message.
+      const { projectID, ...body } = timeEntry as Record<string, any>;
+      if (projectID != null && body.ticketID == null && body.taskID == null) {
+        throw new Error(
+          'Autotask time entries attach to a ticket or a project TASK, not a project directly — ' +
+          'pass taskID (a task on the project) or ticketID instead of projectID.'
+        );
       }
-      // Task-scoped
-      if (timeEntry.taskID) {
-        const id = await http.childCreate('Tasks', timeEntry.taskID, 'TimeEntries', timeEntry);
-        this.logger.info(`Time entry created with ID: ${id}`);
-        return id;
-      }
-      // Project-scoped
-      if (timeEntry.projectID) {
-        const id = await http.childCreate('Projects', timeEntry.projectID, 'TimeEntries', timeEntry);
-        this.logger.info(`Time entry created with ID: ${id}`);
-        return id;
-      }
-      // Regular (no parent — meetings, admin, etc.)
-      // Autotask accepts a POST /TimeEntries with no parent for regular entries.
-      const id = await http.create('TimeEntries', timeEntry);
-      this.logger.info(`Regular time entry created with ID: ${id}`);
+      const id = await http.create('TimeEntries', body);
+      this.logger.info(`Time entry created with ID: ${id}`);
       return id;
     } catch (error) {
       this.logger.error('Failed to create time entry:', error);

@@ -50,14 +50,32 @@ describe('time-entry get/update (§4.8)', () => {
     expect(bodyAt(mock, 0)).toEqual({ id: 500, hoursWorked: 0.1 });
   });
 
-  test('create passes fractional hours + showOnInvoice through to the ticket child route', async () => {
-    const mock = mockRoutes([{ method: 'POST', path: /\/Tickets\/204722\/TimeEntries$/, response: { status: 200, body: { itemId: 700 } } }]);
+  test('create posts a ticket time entry to top-level /TimeEntries with ticketID in the body (#72)', async () => {
+    const mock = mockRoutes([{ method: 'POST', path: /\/TimeEntries$/, response: { status: 200, body: { itemId: 700 } } }]);
     const id = await new AutotaskService(config, logger).createTimeEntry({
       ticketID: 204722, hoursWorked: 0.1, showOnInvoice: false, summaryNotes: 'Sales', billingCodeID: 42,
     } as any);
     expect(id).toBe(700);
+    expect(new URL(mock.mock.calls[0][0] as string).pathname).toBe('/ATServicesRest/v1.0/TimeEntries');
     const body = bodyAt(mock, 0);
-    expect(body).toMatchObject({ hoursWorked: 0.1, showOnInvoice: false, billingCodeID: 42 });
+    expect(body).toMatchObject({ ticketID: 204722, hoursWorked: 0.1, showOnInvoice: false, billingCodeID: 42 });
+  });
+
+  test('create drops projectID and rejects a project-only time entry (#72)', async () => {
+    await expect(
+      new AutotaskService(config, logger).createTimeEntry({ projectID: 9, hoursWorked: 1, summaryNotes: 'x' } as any)
+    ).rejects.toThrow(/project TASK/i);
+  });
+
+  test('create posts a task time entry to top-level /TimeEntries with taskID (projectID dropped) (#72)', async () => {
+    const mock = mockRoutes([{ method: 'POST', path: /\/TimeEntries$/, response: { status: 200, body: { itemId: 701 } } }]);
+    const id = await new AutotaskService(config, logger).createTimeEntry({
+      taskID: 55, projectID: 9, hoursWorked: 2, summaryNotes: 'work',
+    } as any);
+    expect(id).toBe(701);
+    const body = bodyAt(mock, 0);
+    expect(body).toMatchObject({ taskID: 55, hoursWorked: 2 });
+    expect(body).not.toHaveProperty('projectID');
   });
 
   test('update tool dispatches through the handler', async () => {

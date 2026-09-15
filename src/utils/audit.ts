@@ -40,6 +40,10 @@ export function emitAudit(logger: Logger, ctx: CallerContext, entry: AuditEntry)
     correlationId: ctx.correlationId,
     ...(ctx.requestingUserEmail ? { requestingUserEmail: ctx.requestingUserEmail } : {}),
     ...(ctx.autotaskResourceId !== undefined ? { autotaskResourceId: ctx.autotaskResourceId } : {}),
+    // Impersonation trail (#42): record when a trusted gateway header set the
+    // acting identity, so every impersonated write is attributable.
+    ...(ctx.trustedActingResourceId !== undefined ? { impersonatedResourceId: ctx.trustedActingResourceId } : {}),
+    ...(ctx.trustedActingUserEmail ? { impersonatedUserEmail: ctx.trustedActingUserEmail } : {}),
     ...(ctx.idempotencyKey ? { idempotencyKey: ctx.idempotencyKey } : {}),
     ...(ctx.intent ? { intent: ctx.intent } : {}),
     ...(ctx.conversationId ? { conversationId: ctx.conversationId } : {}),

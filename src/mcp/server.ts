@@ -27,6 +27,7 @@ import { AutotaskResourceHandler } from '../handlers/resource.handler.js';
 import { AutotaskToolHandler } from '../handlers/tool.handler.js';
 import { registerPromptHandlers } from './prompts.js';
 import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
+import { parseActingHeaders, TrustedActing } from '../utils/impersonation.js';
 
 export class AutotaskMcpServer {
   private config: McpServerConfig;
@@ -69,12 +70,15 @@ export class AutotaskMcpServer {
     const isGatewayMode = this.envConfig?.auth?.mode === 'gateway';
     return (ctx) => {
       let credentials: GatewayCredentials | undefined;
+      let acting: TrustedActing | undefined;
       if (isGatewayMode && ctx.requestInfo) {
-        credentials = parseCredentialsFromHeaders(
-          Object.fromEntries(ctx.requestInfo.headers) as Record<string, string | undefined>
-        );
+        const headers = Object.fromEntries(ctx.requestInfo.headers) as Record<string, string | undefined>;
+        credentials = parseCredentialsFromHeaders(headers);
+        // Trusted acting identity (#42): only in gateway mode, only after the
+        // /mcp S2S gate has verified the request came from the gateway.
+        acting = parseActingHeaders(headers);
       }
-      return this.createRequestServer(credentials);
+      return this.createRequestServer(credentials, acting);
     };
   }
 
@@ -165,7 +169,7 @@ export class AutotaskMcpServer {
    * triple, an isolated per-request service + handlers are created; otherwise
    * the default (env-configured) handlers are used.
    */
-  public createRequestServer(credentials?: GatewayCredentials): Server {
+  public createRequestServer(credentials?: GatewayCredentials, acting?: TrustedActing): Server {
     if (
       credentials &&
       credentials.username &&
@@ -174,6 +178,9 @@ export class AutotaskMcpServer {
     ) {
       const { toolHandler, resourceHandler } =
         this.buildPerRequestHandlers(credentials);
+      // Trusted acting identity is bound to this per-request, tenant-isolated
+      // handler only (#42) — never the shared env-mode handler.
+      if (acting) toolHandler.setTrustedActingContext(acting);
       return this.createFreshServer(toolHandler, resourceHandler);
     }
     return this.createFreshServer();

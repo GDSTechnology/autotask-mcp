@@ -41,6 +41,7 @@ import {
   ACTING_RESOURCE_TOOLS,
   ACTING_ROLE_FIELDS,
 } from '../utils/caller-resolution.js';
+import { TrustedActing } from '../utils/impersonation.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
 
@@ -242,6 +243,16 @@ export class AutotaskToolHandler {
    */
   setServer(server: Server): void {
     this.mcpServer = server;
+  }
+
+  /**
+   * Trusted acting identity from a gateway header (#42). Set ONLY on a
+   * per-request, gateway-mode handler after the S2S gate — never on the shared
+   * env-mode handler — so it can't leak across requests.
+   */
+  private trustedActing: TrustedActing | undefined;
+  setTrustedActingContext(acting: TrustedActing | undefined): void {
+    this.trustedActing = acting;
   }
 
   /**
@@ -2024,6 +2035,21 @@ export class AutotaskToolHandler {
       cacheAll(res);
       return { status: 'resolved', via: 'explicit-name', resource: res };
     }
+    // 3.5 Trusted gateway impersonation (#42): a verified gateway header (behind
+    // S2S) said "act as this user". Trusted — outranks the payload email and the
+    // static map, but not an explicit in-call resource (1-3). A resource id is
+    // authoritative; an email is matched live against Autotask Resources.
+    if (ctx.trustedActingResourceId != null) {
+      const res: ResolvedResource = { id: ctx.trustedActingResourceId, name: `Resource ${ctx.trustedActingResourceId}` };
+      cacheAll(res);
+      return { status: 'resolved', via: 'gateway-impersonation', resource: res };
+    }
+    if (ctx.trustedActingUserEmail) {
+      const r = classifyEmailMatch(ctx.trustedActingUserEmail, toCandidates(await this.autotaskService.searchResourcesByEmail(ctx.trustedActingUserEmail)));
+      if (r.status === 'resolved') { cacheAll(r.resource); return { ...r, via: 'gateway-impersonation' }; }
+      return r;
+    }
+
     // 4. Static override map (Telegram handles / non-email identities).
     for (const k of keys) {
       const id = this.userMap.get(k);
@@ -2098,6 +2124,13 @@ export class AutotaskToolHandler {
     // Caller context (who/where/correlation) for audit + future permissions
     // (§3.5/§23). Strip the reserved `_context` key so it never reaches tool logic.
     const ctx = extractCallerContext(meta, args);
+    // Overlay the trusted gateway acting identity (#42) — this comes from a
+    // verified gateway header (behind S2S), NOT from the client payload, so it
+    // outranks `requestingUserEmail` when resolving the caller (see resolveCaller).
+    if (this.trustedActing) {
+      if (this.trustedActing.resourceId != null) ctx.trustedActingResourceId = this.trustedActing.resourceId;
+      if (this.trustedActing.email) ctx.trustedActingUserEmail = this.trustedActing.email;
+    }
     args = stripCallerContext(args);
     const startedAt = Date.now();
     this.logger.debug(`Calling tool: ${name}`, args);

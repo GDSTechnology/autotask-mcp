@@ -168,7 +168,11 @@ The gateway injects credentials via headers:
 - `X-API-Secret`: Autotask secret
 - `X-Integration-Code`: Autotask integration code
 
-See [Gateway Mode](#gateway-mode) for details.
+Optionally, the gateway may inject the **acting user** (Teams handoff) so `currentUser`/act-as resolves to that person:
+- `X-Acting-Resource-Id`: acting Autotask resource id, or
+- `X-Acting-User-Email`: acting user's email (matched live)
+
+These are trusted only in gateway mode, only behind the S2S gate, and never override an explicit in-call resource. See [Gateway Mode](#gateway-mode) for details.
 
 ### Option 3: From Source (Development)
 

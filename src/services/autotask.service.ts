@@ -1478,6 +1478,64 @@ export class AutotaskService {
     }
   }
 
+  // =====================================================
+  // Roles (#42) — Autotask role model. A Resource has a
+  // `defaultServiceDeskRoleID` (its default role) and a set of ResourceRoles
+  // (the roles it MAY act in). Ticket assignment needs assignedResourceRoleID
+  // and time entries need roleID; both default to the resource's default role.
+  // =====================================================
+
+  /** Search Autotask Roles (id, name, hourlyRate, isActive, roleType). */
+  async searchRoles(
+    options: { searchTerm?: string; isActive?: boolean; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'isActive', options.isActive);
+    if (options.searchTerm) filters.push({ op: 'contains', field: 'name', value: options.searchTerm });
+    const pageSize = Math.min(options.pageSize || 100, 500);
+    return http.query<Record<string, any>>('Roles', filters.length > 0 ? filters : MATCH_ALL, { maxRecords: pageSize });
+  }
+
+  /**
+   * The roles a resource may act in (from ResourceRoles), enriched best-effort
+   * with the role name and marking the resource's default role.
+   */
+  async getResourceRoles(resourceID: number): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const [links, resource] = await Promise.all([
+      http.query<Record<string, any>>('ResourceRoles', [{ op: 'eq', field: 'resourceID', value: resourceID }], { maxRecords: 500 }),
+      this.getResource(resourceID).catch(() => null),
+    ]);
+    const defaultRoleID = (resource as Record<string, any> | null)?.defaultServiceDeskRoleID ?? null;
+    // Resolve role names best-effort (single Roles page, mapped by id).
+    let nameById = new Map<number, string>();
+    try {
+      const roles = await this.searchRoles({ pageSize: 500 });
+      nameById = new Map(roles.map((r) => [Number(r.id), String(r.name)]));
+    } catch { /* names are a nicety */ }
+    return links.map((l) => ({
+      ...l,
+      roleName: nameById.get(Number(l.roleID)),
+      isDefaultServiceDeskRole: defaultRoleID != null && Number(l.roleID) === Number(defaultRoleID),
+    }));
+  }
+
+  /**
+   * Resolve a resource's default role id for assignment / time entries
+   * (`Resources.defaultServiceDeskRoleID`). Best-effort: returns null if the
+   * resource can't be read or has no default role.
+   */
+  async resolveResourceDefaultRole(resourceID: number): Promise<number | null> {
+    try {
+      const resource = await this.getResource(resourceID) as Record<string, any> | null;
+      const roleID = resource?.defaultServiceDeskRoleID;
+      return typeof roleID === 'number' ? roleID : null;
+    } catch {
+      return null;
+    }
+  }
+
   async searchResources(options: AutotaskQueryOptions = {}): Promise<AutotaskResource[]> {
     const http = await this.ensureClient();
     try {

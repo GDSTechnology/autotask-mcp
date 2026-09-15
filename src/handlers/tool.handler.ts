@@ -39,6 +39,7 @@ import {
   classifyEmailMatch,
   identificationRequired,
   ACTING_RESOURCE_TOOLS,
+  ACTING_ROLE_FIELDS,
 } from '../utils/caller-resolution.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
@@ -1273,6 +1274,14 @@ export class AutotaskToolHandler {
       ['autotask_search_resources', async (a) => {
         const r = await s.searchResources(a); return { result: r, message: `Found ${r.length} resources` };
       }],
+      ['autotask_search_roles', async (a) => {
+        const r = await s.searchRoles({ searchTerm: a.searchTerm, isActive: a.isActive, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} role(s)` };
+      }],
+      ['autotask_get_resource_roles', async (a) => {
+        const r = await s.getResourceRoles(a.resourceID);
+        return { result: r, message: `Resource ${a.resourceID} has ${r.length} role(s)` };
+      }],
 
       // Configuration Items
       ['autotask_search_configuration_items', async (a) => {
@@ -2156,6 +2165,17 @@ export class AutotaskToolHandler {
           const { currentUser: _drop, ...rest } = args;
           args = rest;
         }
+      }
+
+      // Role auto-fill (#42): when a tool's resource field is set (via currentUser
+      // above or explicitly) but its paired role field is empty, fill the role
+      // from the resource's default (Resources.defaultServiceDeskRoleID). An
+      // explicit role always wins. Best-effort — a resource with no default role
+      // leaves the field unset (Autotask then reports its own requirement error).
+      const roleMap = ACTING_ROLE_FIELDS[name];
+      if (roleMap && args[roleMap.resourceField] != null && args[roleMap.roleField] == null) {
+        const roleId = await this.autotaskService.resolveResourceDefaultRole(args[roleMap.resourceField]);
+        if (roleId != null) args = { ...args, [roleMap.roleField]: roleId };
       }
 
       // Idempotency (§4.4): for mutating tools, replay the prior result for a

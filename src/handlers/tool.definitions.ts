@@ -592,11 +592,15 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         assignedResourceID: {
           type: 'number',
-          description: 'Assigned resource ID. If set, assignedResourceRoleID is also required by Autotask.'
+          description: 'Assigned resource ID. If set, assignedResourceRoleID is also required by Autotask (auto-filled from the resource\'s default role when omitted). Use currentUser:true to assign to the calling user.'
         },
         assignedResourceRoleID: {
           type: 'number',
-          description: 'Role ID for the assigned resource. Required by Autotask when assignedResourceID is set.'
+          description: 'Role ID for the assigned resource. Required by Autotask when assignedResourceID is set; auto-filled from the resource\'s defaultServiceDeskRoleID when omitted. Pass explicitly to override. Discover roles with autotask_search_roles / autotask_get_resource_roles.'
+        },
+        currentUser: {
+          type: 'boolean',
+          description: 'Assign to the calling user — resolves the caller to their Autotask resource (assignedResourceID) and auto-fills their default role. Alternative to assignedResourceID.'
         },
         contactID: {
           type: 'number',
@@ -791,11 +795,15 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         assignedResourceID: {
           type: 'number',
-          description: 'Assigned resource ID. If set, assignedResourceRoleID is also required by Autotask.'
+          description: 'Assigned resource ID. If set, assignedResourceRoleID is also required by Autotask (auto-filled from the resource\'s default role when omitted). Use currentUser:true to assign to the calling user.'
         },
         assignedResourceRoleID: {
           type: 'number',
-          description: 'Role ID for the assigned resource. Required by Autotask when assignedResourceID is set.'
+          description: 'Role ID for the assigned resource. Required by Autotask when assignedResourceID is set; auto-filled from the resource\'s defaultServiceDeskRoleID when omitted. Pass explicitly to override. Discover roles with autotask_search_roles / autotask_get_resource_roles.'
+        },
+        currentUser: {
+          type: 'boolean',
+          description: 'Assign to the calling user — resolves the caller to their Autotask resource (assignedResourceID) and auto-fills their default role. Alternative to assignedResourceID.'
         },
         dueDateTime: {
           type: 'string',
@@ -1077,6 +1085,10 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         currentUser: {
           type: 'boolean',
           description: 'Log the time as the calling user — resolves the caller to their Autotask resource. Alternative to resourceID/resourceName.'
+        },
+        roleID: {
+          type: 'number',
+          description: 'Role ID for the time entry. Auto-filled from the resource\'s defaultServiceDeskRoleID when omitted; pass explicitly to override. Discover roles with autotask_search_roles / autotask_get_resource_roles.'
         },
         category: {
           type: 'string',
@@ -1450,6 +1462,31 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       },
       required: []
     }
+  },
+  {
+    name: 'autotask_search_roles',
+    description: 'Search Autotask Roles (the roles used for ticket assignment and time entries). Returns id, name, hourlyRate, roleType, isActive. Use to discover a roleID for assignedResourceRoleID or a time-entry roleID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        searchTerm: { type: 'string', description: 'Match against the role name (e.g. "Technician", "Engineer")' },
+        isActive: { type: 'boolean', description: 'Filter by active state' },
+        pageSize: { type: 'number', description: 'Max rows (default 100, max 500)', minimum: 1, maximum: 500 }
+      }
+    },
+    annotations: { title: 'Search roles', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_get_resource_roles',
+    description: 'List the roles a resource (user) may act in (from ResourceRoles), enriched with each role name and flagging the resource\'s default service-desk role. Use to pick a valid roleID when assigning that user or logging their time.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceID: { type: 'number', description: 'The resource (user) whose roles to list' }
+      },
+      required: ['resourceID']
+    },
+    annotations: { title: 'Get resource roles', readOnlyHint: true }
   },
 
   // Ticket Notes tools
@@ -4319,8 +4356,8 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
     tools: ['autotask_get_product', 'autotask_search_products', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
   },
   resources: {
-    description: 'Search for Autotask resources (technicians/staff)',
-    tools: ['autotask_search_resources']
+    description: 'Search Autotask resources (technicians/staff) and roles (for assignment / time entries)',
+    tools: ['autotask_search_resources', 'autotask_search_roles', 'autotask_get_resource_roles']
   },
   configuration_items: {
     description: 'Search and read configuration items (assets/devices), including contract/service entitlement links and coverage gaps',

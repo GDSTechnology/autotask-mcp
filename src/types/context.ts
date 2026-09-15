@@ -21,6 +21,15 @@ export interface CallerContext {
   idempotencyKey?: string;
   intent?: string;
   timestamp: string;
+  /**
+   * Acting identity injected by a TRUSTED gateway header (behind S2S), used for
+   * "act as this user" (Teams handoff, #42). Set ONLY server-side from the
+   * request headers in gateway mode — never populated by `extractCallerContext`
+   * from client-supplied `_meta`/`_context` (which are spoofable). Takes
+   * precedence over the payload `requestingUserEmail` when resolving the caller.
+   */
+  trustedActingResourceId?: number;
+  trustedActingUserEmail?: string;
 }
 
 const VALID_SOURCES: readonly CallerSource[] = ['chatgpt', 'hermes-teams', 'telegram'];

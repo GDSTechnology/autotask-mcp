@@ -228,6 +228,14 @@ MCP_SERVER_NAME=autotask-mcp
 # Authentication mode
 AUTH_MODE=env               # env (local), gateway (hosted)
 
+# Native Autotask impersonation (off by default). When enabled, writes are
+# recorded as the requesting user (ImpersonationResourceId) when the caller can
+# be identified — from the gateway X-Acting-* header, the request _meta
+# requestingUserEmail, or a previously-bound identity. Unidentified callers run
+# as the integration user. Requires the API user's Autotask security level to
+# permit impersonation.
+AUTOTASK_IMPERSONATION=off  # off (default), on
+
 # Transport (stdio for local/desktop, http for remote/Docker)
 MCP_TRANSPORT=stdio          # stdio, http
 MCP_HTTP_PORT=8080           # HTTP transport port (only used when MCP_TRANSPORT=http)

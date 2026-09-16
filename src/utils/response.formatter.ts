@@ -63,16 +63,30 @@ function pickSummaryFields(item: Record<string, any>, entityType: EntityType): R
 }
 
 /**
+ * Honest pagination state for one page of search results, resolved by the
+ * service layer rather than inferred from the returned page's length.
+ */
+export interface PageMeta {
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+/**
  * Format a list of items into a compact response with pagination metadata.
  */
 export function formatCompactResponse(
   items: Record<string, any>[],
   entityType: EntityType,
-  options: { page?: number; pageSize?: number; totalFetched?: number }
+  options: { page?: number; pageSize?: number; totalFetched?: number; pagination?: PageMeta }
 ): CompactResponse {
-  const page = options.page || 1;
-  const pageSize = options.pageSize || 25;
-  const hasMore = items.length >= pageSize;
+  // Prefer the real pagination state resolved by the service layer. The
+  // `items.length >= pageSize` fallback only applies to search tools that do not
+  // yet return a PagedResult; it reports a full final page as "there is more",
+  // costing the caller one wasted empty request.
+  const page = options.pagination?.page ?? options.page ?? 1;
+  const pageSize = options.pagination?.pageSize ?? options.pageSize ?? 25;
+  const hasMore = options.pagination?.hasMore ?? items.length >= pageSize;
 
   const compactItems = items.map(item => pickSummaryFields(item, entityType));
 

@@ -39,6 +39,7 @@ import {
   AutotaskInvoice,
   AutotaskTask,
   AutotaskQueryOptions,
+  PagedResult,
   AutotaskTicketNote,
   AutotaskProjectNote,
   AutotaskCompanyNote,
@@ -189,8 +190,56 @@ export class AutotaskService {
     }
   }
 
-  async searchCompanies(options: AutotaskQueryOptions = {}): Promise<AutotaskCompany[]> {
+  /**
+   * Fetch one offset-style page on top of Autotask's cursor-only pagination.
+   *
+   * Autotask's REST API paginates by following `pageDetails.nextPageUrl`; there
+   * is no offset/skip parameter. To honor a caller's `page` we therefore fetch
+   * up to `page * pageSize` records and slice out the requested window. That is
+   * wasteful at high page numbers, but it is the only way to give offset-style
+   * semantics on top of a cursor API.
+   *
+   * One extra record beyond the window is requested so `hasMore` reflects
+   * whether another page actually exists, rather than the
+   * `items.length >= pageSize` guess that reports a full final page as "more".
+   */
+  private async paginate<T>(
+    label: string,
+    fetch: (limit: number) => Promise<T[]>,
+    options: AutotaskQueryOptions,
+    limits: { defaultPageSize?: number; maxPageSize: number }
+  ): Promise<PagedResult<T>> {
+    const page = Math.max(1, options.page || 1);
+    const pageSize = Math.min(options.pageSize || limits.defaultPageSize || 25, limits.maxPageSize);
+    const targetEnd = page * pageSize;
+
+    const fetched = await fetch(targetEnd + 1);
+    const items = fetched.slice((page - 1) * pageSize, targetEnd);
+    const hasMore = fetched.length > targetEnd;
+
+    this.logger.info(
+      `Retrieved ${items.length} ${label} (page ${page}, pageSize ${pageSize}, hasMore ${hasMore})`
+    );
+    return { items, page, pageSize, hasMore };
+  }
+
+  /** `paginate` over a top-level `POST /{Entity}/query`. */
+  private async queryPaged<T>(
+    entity: string,
+    filters: QueryFilter[],
+    options: AutotaskQueryOptions,
+    limits: { defaultPageSize?: number; maxPageSize: number }
+  ): Promise<PagedResult<T>> {
     const http = await this.ensureClient();
+    return this.paginate<T>(
+      entity,
+      (limit) => http.query<T>(entity, filters.length > 0 ? filters : MATCH_ALL, { maxRecords: limit }),
+      options,
+      limits
+    );
+  }
+
+  async searchCompanies(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskCompany>> {
     try {
       this.logger.debug('Searching companies with options:', options);
 
@@ -202,26 +251,7 @@ export class AutotaskService {
         filters.push({ op: 'eq', field: 'isActive', value: options.isActive });
       }
 
-      const page = Math.max(1, options.page || 1);
-      const pageSize = Math.min(options.pageSize || 25, 200);
-      // Autotask's REST API paginates by cursor (nextPageUrl), not offset, and
-      // http.query walks cursors transparently until it hits maxRecords. To
-      // honor a caller's `page` argument we have to fetch up to (page*pageSize)
-      // records and slice. Wasteful at high page numbers but the only way to
-      // give offset-style semantics on top of a cursor API.
-      const targetEnd = page * pageSize;
-      const fetched = await http.query<AutotaskCompany>(
-        'Companies',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: targetEnd }
-      );
-      const start = (page - 1) * pageSize;
-      const companies = fetched.slice(start, targetEnd);
-
-      this.logger.info(
-        `Retrieved ${companies.length} companies (page ${page}, pageSize ${pageSize}, fetched ${fetched.length} to slice)`
-      );
-      return companies;
+      return await this.queryPaged<AutotaskCompany>('Companies', filters, options, { maxPageSize: 200 });
     } catch (error) {
       this.logger.error('Failed to search companies:', error);
       throw error;
@@ -309,8 +339,7 @@ export class AutotaskService {
     }
   }
 
-  async searchContacts(options: AutotaskQueryOptions = {}): Promise<AutotaskContact[]> {
-    const http = await this.ensureClient();
+  async searchContacts(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskContact>> {
     try {
       this.logger.debug('Searching contacts with options:', options);
 
@@ -327,15 +356,7 @@ export class AutotaskService {
         filters.push({ op: 'eq', field: 'isActive', value: options.isActive });
       }
 
-      const pageSize = Math.min(options.pageSize || 25, 200);
-      const contacts = await http.query<AutotaskContact>(
-        'Contacts',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
-      );
-
-      this.logger.info(`Retrieved ${contacts.length} contacts (pageSize ${pageSize})`);
-      return contacts;
+      return await this.queryPaged<AutotaskContact>('Contacts', filters, options, { maxPageSize: 200 });
     } catch (error) {
       this.logger.error('Failed to search contacts:', error);
       throw error;
@@ -474,8 +495,7 @@ export class AutotaskService {
     }
   }
 
-  async searchTickets(options: AutotaskQueryOptionsExtended = {}): Promise<AutotaskTicket[]> {
-    const http = await this.ensureClient();
+  async searchTickets(options: AutotaskQueryOptionsExtended = {}): Promise<PagedResult<AutotaskTicket>> {
     try {
       this.logger.debug('Searching tickets with options:', options);
 
@@ -528,12 +548,8 @@ export class AutotaskService {
         filters.push({ op: 'eq', field: 'externalID', value: options.externalID });
       }
 
-      const pageSize = Math.min(options.pageSize || 25, 500);
-      const tickets = await http.query<AutotaskTicket>('Tickets', filters, { maxRecords: pageSize });
-      const optimized = tickets.map(t => this.optimizeTicketDataAggressive(t));
-
-      this.logger.info(`Retrieved ${optimized.length} tickets (pageSize ${pageSize})`);
-      return optimized;
+      const paged = await this.queryPaged<AutotaskTicket>('Tickets', filters, options, { maxPageSize: 500 });
+      return { ...paged, items: paged.items.map(t => this.optimizeTicketDataAggressive(t)) };
     } catch (error) {
       this.logger.error('Failed to search tickets:', error);
       throw error;
@@ -1094,12 +1110,12 @@ export class AutotaskService {
     const http = await this.ensureClient();
 
     const [assignedTickets, timeEntries, tasks] = await Promise.all([
-      section('assignedTickets', () => this.searchTickets({ assignedResourceID: resourceID, pageSize: 100 } as any)),
+      section('assignedTickets', async () => (await this.searchTickets({ assignedResourceID: resourceID, pageSize: 100 } as any)).items),
       section('timeEntries', () => http.query<Record<string, any>>('TimeEntries', [
         { op: 'eq', field: 'resourceID', value: resourceID },
         { op: 'eq', field: 'dateWorked', value: day },
       ], { maxRecords: 500 })),
-      section('tasks', () => this.searchTasks({ assignedResourceID: resourceID, pageSize: 100 } as any)),
+      section('tasks', async () => (await this.searchTasks({ assignedResourceID: resourceID, pageSize: 100 } as any)).items),
     ]);
 
     const entries = timeEntries ?? [];
@@ -1271,8 +1287,7 @@ export class AutotaskService {
     }
   }
 
-  async searchProjects(options: AutotaskQueryOptions = {}): Promise<AutotaskProject[]> {
-    const http = await this.ensureClient();
+  async searchProjects(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskProject>> {
     try {
       this.logger.debug('Searching projects with options:', options);
       const filters: QueryFilter[] = [];
@@ -1286,15 +1301,8 @@ export class AutotaskService {
       }
       mergeFilterEscapeHatch(filters, options.filter);
 
-      const pageSize = Math.min(options.pageSize || 25, 100);
-      const projects = await http.query<AutotaskProject>(
-        'Projects',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
-      );
-      const optimized = projects.map(p => this.optimizeProjectData(p));
-      this.logger.info(`Retrieved ${optimized.length} projects`);
-      return optimized;
+      const paged = await this.queryPaged<AutotaskProject>('Projects', filters, options, { maxPageSize: 100 });
+      return { ...paged, items: paged.items.map(p => this.optimizeProjectData(p)) };
     } catch (error) {
       this.logger.error('Failed to search projects:', error);
       throw error;
@@ -1625,8 +1633,7 @@ export class AutotaskService {
     }
   }
 
-  async searchResources(options: AutotaskQueryOptions = {}): Promise<AutotaskResource[]> {
-    const http = await this.ensureClient();
+  async searchResources(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskResource>> {
     try {
       this.logger.debug('Searching resources with options:', options);
       const filters: QueryFilter[] = [];
@@ -1640,14 +1647,15 @@ export class AutotaskService {
           ]
         });
       }
-      const pageSize = Math.min(options.pageSize || 25, 500);
-      const resources = await http.query<AutotaskResource>(
-        'Resources',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
-      );
-      this.logger.info(`Retrieved ${resources.length} resources`);
-      return resources;
+      // `isActive` and `resourceType` are advertised by the tool schema but were
+      // never translated into filters, so both were silently ignored.
+      if (options.isActive !== undefined) {
+        filters.push({ op: 'eq', field: 'isActive', value: options.isActive });
+      }
+      if ((options as any).resourceType !== undefined) {
+        filters.push({ op: 'eq', field: 'resourceType', value: (options as any).resourceType });
+      }
+      return await this.queryPaged<AutotaskResource>('Resources', filters, options, { maxPageSize: 500 });
     } catch (error) {
       this.logger.error('Failed to search resources:', error);
       throw error;
@@ -2202,8 +2210,7 @@ export class AutotaskService {
     }
   }
 
-  async searchTasks(options: AutotaskQueryOptions = {}): Promise<AutotaskTask[]> {
-    const http = await this.ensureClient();
+  async searchTasks(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskTask>> {
     try {
       this.logger.debug('Searching tasks with options:', options);
       // Schema-shaped filter args were previously dropped — issues #104, #105.
@@ -2218,24 +2225,8 @@ export class AutotaskService {
       }
       mergeFilterEscapeHatch(filters, options.filter);
 
-      // Honor `page` via fetch-and-slice over http.query's cursor pagination —
-      // same pattern as searchCompanies (#101). Autotask's REST API has no
-      // native offset, so we fetch up to page*pageSize and slice.
-      const page = Math.max(1, o.page || 1);
-      const pageSize = Math.min(options.pageSize || 25, 100);
-      const targetEnd = page * pageSize;
-      const fetched = await http.query<AutotaskTask>(
-        'Tasks',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: targetEnd }
-      );
-      const start = (page - 1) * pageSize;
-      const tasks = fetched.slice(start, targetEnd);
-      const optimized = tasks.map(t => this.optimizeTaskData(t));
-      this.logger.info(
-        `Retrieved ${optimized.length} tasks (page ${page}, pageSize ${pageSize}, fetched ${fetched.length} to slice)`
-      );
-      return optimized;
+      const paged = await this.queryPaged<AutotaskTask>('Tasks', filters, options, { maxPageSize: 100 });
+      return { ...paged, items: paged.items.map(t => this.optimizeTaskData(t)) };
     } catch (error) {
       this.logger.error('Failed to search tasks:', error);
       throw error;
@@ -2488,19 +2479,19 @@ export class AutotaskService {
     }
   }
 
-  async searchPhases(projectID: number, options: AutotaskQueryOptions = {}): Promise<AutotaskPhase[]> {
+  async searchPhases(projectID: number, options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskPhase>> {
     const http = await this.ensureClient();
     try {
       this.logger.debug(`Searching phases for project ${projectID}:`, options);
-      const phases = await http.childQuery<AutotaskPhase>(
-        'Projects',
-        projectID,
-        'Phases',
-        MATCH_ALL,
-        { maxRecords: options.pageSize || 25 }
+      // childQuery does not walk nextPageUrl, so paging here is bounded by the
+      // single 500-record page Autotask returns. Ample for phases on a project;
+      // a project that ever exceeded it would need the cursor walk.
+      return await this.paginate<AutotaskPhase>(
+        `phases for project ${projectID}`,
+        (limit) => http.childQuery<AutotaskPhase>('Projects', projectID, 'Phases', MATCH_ALL, { maxRecords: limit }),
+        options,
+        { maxPageSize: 100 }
       );
-      this.logger.info(`Retrieved ${phases.length} phases for project ${projectID}`);
-      return phases;
     } catch (error) {
       this.logger.error(`Failed to search phases for project ${projectID}:`, error);
       throw error;
@@ -3925,8 +3916,7 @@ export class AutotaskService {
     }
   }
 
-  async searchBillingItems(options: AutotaskQueryOptionsExtended = {}): Promise<AutotaskBillingItem[]> {
-    const http = await this.ensureClient();
+  async searchBillingItems(options: AutotaskQueryOptionsExtended = {}): Promise<PagedResult<AutotaskBillingItem>> {
     try {
       this.logger.debug('Searching billing items with options:', options);
       const filters: QueryFilter[] = [];
@@ -3962,14 +3952,7 @@ export class AutotaskService {
         filters.push({ op: 'lte', field: 'postedDate', value: (options as any).postedBefore });
       }
 
-      const pageSize = Math.min(options.pageSize || 25, 500);
-      const items = await http.query<AutotaskBillingItem>(
-        'BillingItems',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
-      );
-      this.logger.info(`Retrieved ${items.length} billing items`);
-      return items;
+      return await this.queryPaged<AutotaskBillingItem>('BillingItems', filters, options, { maxPageSize: 500 });
     } catch (error) {
       this.logger.error('Failed to search billing items:', error);
       throw error;
@@ -3978,8 +3961,7 @@ export class AutotaskService {
 
   async searchBillingItemApprovalLevels(
     options: AutotaskQueryOptionsExtended = {}
-  ): Promise<AutotaskBillingItemApprovalLevel[]> {
-    const http = await this.ensureClient();
+  ): Promise<PagedResult<AutotaskBillingItemApprovalLevel>> {
     try {
       this.logger.debug('Searching billing item approval levels with options:', options);
       const filters: QueryFilter[] = [];
@@ -3999,22 +3981,16 @@ export class AutotaskService {
         filters.push({ op: 'lte', field: 'approvalDateTime', value: (options as any).approvedBefore });
       }
 
-      const pageSize = Math.min(options.pageSize || 25, 500);
-      const items = await http.query<AutotaskBillingItemApprovalLevel>(
-        'BillingItemApprovalLevels',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
+      return await this.queryPaged<AutotaskBillingItemApprovalLevel>(
+        'BillingItemApprovalLevels', filters, options, { maxPageSize: 500 }
       );
-      this.logger.info(`Retrieved ${items.length} billing item approval levels`);
-      return items;
     } catch (error) {
       this.logger.error('Failed to search billing item approval levels:', error);
       throw error;
     }
   }
 
-  async searchTimeEntries(options: AutotaskQueryOptionsExtended = {}): Promise<AutotaskTimeEntry[]> {
-    const http = await this.ensureClient();
+  async searchTimeEntries(options: AutotaskQueryOptionsExtended = {}): Promise<PagedResult<AutotaskTimeEntry>> {
     try {
       this.logger.debug('Searching time entries with options:', options);
       const filters: QueryFilter[] = [];
@@ -4049,14 +4025,7 @@ export class AutotaskService {
         filters.push({ op: 'eq', field: 'isNonBillable', value: !(options as any).billable });
       }
 
-      const pageSize = Math.min(options.pageSize || 25, 500);
-      const items = await http.query<AutotaskTimeEntry>(
-        'TimeEntries',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
-      );
-      this.logger.info(`Retrieved ${items.length} time entries`);
-      return items;
+      return await this.queryPaged<AutotaskTimeEntry>('TimeEntries', filters, options, { maxPageSize: 500 });
     } catch (error) {
       this.logger.error('Failed to search time entries:', error);
       throw error;
@@ -4078,28 +4047,36 @@ export class AutotaskService {
     }
   }
 
-  async searchServiceCalls(options: AutotaskQueryOptionsExtended = {}): Promise<AutotaskServiceCall[]> {
-    const http = await this.ensureClient();
+  async searchServiceCalls(options: AutotaskQueryOptionsExtended = {}): Promise<PagedResult<AutotaskServiceCall>> {
     try {
       this.logger.debug('Searching service calls with options:', options);
+      const o = options as any;
       const filters: QueryFilter[] = [];
-      if (options.status !== undefined) {
-        filters.push({ op: 'eq', field: 'status', value: options.status });
+
+      // The tool schema advertises `companyId`, `startAfter` and `startBefore`,
+      // but this method only ever read `startDate`/`endDate`. Every filter was
+      // therefore dropped and the query fell through to MATCH_ALL, which is why
+      // a request scoped to 2026 came back with records from 2007. `startDate`/
+      // `endDate` stay accepted as aliases for existing internal callers.
+      if (o.companyId !== undefined || o.companyID !== undefined) {
+        filters.push({ op: 'eq', field: 'companyID', value: o.companyId ?? o.companyID });
       }
-      if (options.startDate) {
-        filters.push({ op: 'gte', field: 'startDateTime', value: options.startDate });
+      if (o.status !== undefined) {
+        filters.push({ op: 'eq', field: 'status', value: o.status });
       }
-      if (options.endDate) {
-        filters.push({ op: 'lte', field: 'endDateTime', value: options.endDate });
+      const startAfter = o.startAfter ?? o.startDate;
+      const startBefore = o.startBefore ?? o.endDate;
+      // Both bounds constrain startDateTime: a call is "in the window" by when
+      // it starts. Filtering the upper bound on endDateTime (as this did) drops
+      // any call that starts inside the range but runs past its end.
+      if (startAfter) {
+        filters.push({ op: 'gte', field: 'startDateTime', value: startAfter });
       }
-      const pageSize = Math.min(options.pageSize || 25, 200);
-      const items = await http.query<AutotaskServiceCall>(
-        'ServiceCalls',
-        filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
-      );
-      this.logger.info(`Retrieved ${items.length} service calls`);
-      return items;
+      if (startBefore) {
+        filters.push({ op: 'lte', field: 'startDateTime', value: startBefore });
+      }
+
+      return await this.queryPaged<AutotaskServiceCall>('ServiceCalls', filters, options, { maxPageSize: 200 });
     } catch (error) {
       this.logger.error('Failed to search service calls:', error);
       throw error;

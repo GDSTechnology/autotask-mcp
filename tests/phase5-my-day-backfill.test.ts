@@ -22,12 +22,15 @@ function withHttp(fake: any) {
 const findTool = (name: string) => TOOL_DEFINITIONS.find((t) => t.name === name);
 afterEach(() => jest.restoreAllMocks());
 
+/** Wrap fixture rows in the PagedResult envelope the search methods now return. */
+const pagedOf = <T>(items: T[]) => ({ items, page: 1, pageSize: 25, hasMore: false });
+
 describe('getMyDay (#42)', () => {
   test('aggregates assigned tickets, the day\'s time entries, and open tasks', async () => {
     const query = jest.fn().mockResolvedValue([{ id: 1, hoursWorked: 1.5 }, { id: 2, hoursWorked: 2 }]); // TimeEntries
     const svc = withHttp({ query });
-    jest.spyOn(svc, 'searchTickets').mockResolvedValue([{ id: 10 } as any, { id: 11 } as any]);
-    jest.spyOn(svc, 'searchTasks').mockResolvedValue([{ id: 20 } as any]);
+    jest.spyOn(svc, 'searchTickets').mockResolvedValue(pagedOf([{ id: 10 } as any, { id: 11 } as any]));
+    jest.spyOn(svc, 'searchTasks').mockResolvedValue(pagedOf([{ id: 20 } as any]));
     const r = await svc.getMyDay(5, '2026-09-15');
     expect(r.date).toBe('2026-09-15');
     expect(r.totals).toMatchObject({ assignedTickets: 2, timeEntries: 2, hoursLogged: 3.5 });
@@ -42,8 +45,8 @@ describe('getMyDay (#42)', () => {
   test('fail-soft: a failing section is recorded, not thrown', async () => {
     const query = jest.fn().mockRejectedValue(new Error('boom')); // TimeEntries fails
     const svc = withHttp({ query });
-    jest.spyOn(svc, 'searchTickets').mockResolvedValue([]);
-    jest.spyOn(svc, 'searchTasks').mockResolvedValue([]);
+    jest.spyOn(svc, 'searchTickets').mockResolvedValue(pagedOf([]));
+    jest.spyOn(svc, 'searchTasks').mockResolvedValue(pagedOf([]));
     const r = await svc.getMyDay(5, '2026-09-15');
     expect(r.errors).toEqual([expect.objectContaining({ section: 'timeEntries' })]);
     expect(r.timeEntries).toEqual([]);

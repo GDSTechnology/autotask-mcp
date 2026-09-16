@@ -43,6 +43,7 @@ import {
   CURRENT_USER_DEFAULT_TOOLS,
 } from '../utils/caller-resolution.js';
 import { TrustedActing } from '../utils/impersonation.js';
+import { runWithRequestContext, isImpersonationEnabled } from '../utils/request-context.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
 
@@ -419,6 +420,45 @@ export class AutotaskToolHandler {
       return selected ? Number(selected) : null;
     } catch (error) {
       this.logger.debug(`Company elicitation not available: ${error instanceof Error ? error.message : 'unknown'}`);
+      return null;
+    }
+  }
+
+  /**
+   * Ask the caller for their Autotask username/email and resolve it to a
+   * resource, binding it to this connection (#42). Used when the connecting app
+   * didn't identify the user. Returns the resolution, or null if the client
+   * can't be prompted or the caller declines (caller then falls back to the
+   * identification_required response). Resolving via `resolveCaller` with an
+   * explicit email/name caches the result under the caller's connection keys,
+   * so subsequent calls skip the prompt.
+   */
+  protected async elicitAutotaskIdentity(ctx: CallerContext): Promise<CallerResolution | null> {
+    if (!this.mcpServer) return null;
+    try {
+      const res = await this.mcpServer.elicitInput({
+        message: 'To act on your behalf in Autotask, what is your Autotask username (login email)?',
+        requestedSchema: {
+          type: 'object' as const,
+          properties: {
+            autotaskUsername: {
+              type: 'string' as const,
+              title: 'Autotask username / email',
+              description: 'Your Autotask login email (e.g. jane.doe@example.com)',
+            },
+          },
+          required: ['autotaskUsername'],
+        },
+      });
+      if (res.action !== 'accept' || !res.content?.autotaskUsername) return null;
+      const value = String(res.content.autotaskUsername).trim();
+      if (!value) return null;
+      // An "@" means an email (matched against Resources); otherwise treat as a name.
+      return value.includes('@')
+        ? await this.resolveCaller(ctx, { resourceEmail: value })
+        : await this.resolveCaller(ctx, { resourceName: value });
+    } catch (error) {
+      this.logger.debug(`Identity elicitation not available: ${error instanceof Error ? error.message : 'unknown'}`);
       return null;
     }
   }
@@ -2229,7 +2269,15 @@ export class AutotaskToolHandler {
       const actingField = ACTING_RESOURCE_TOOLS[name];
       if (actingField) {
         if (args.currentUser === true && args[actingField] == null) {
-          const resolution = await this.resolveCaller(ctx);
+          let resolution = await this.resolveCaller(ctx);
+          // Prompt-and-bind: when the app didn't identify the caller, ask them
+          // for their Autotask username and bind it to this connection (#42).
+          // Graceful — if the client can't be prompted, fall through to the
+          // identification_required response for the assistant to relay.
+          if (resolution.status !== 'resolved') {
+            const elicited = await this.elicitAutotaskIdentity(ctx);
+            if (elicited && elicited.status === 'resolved') resolution = elicited;
+          }
           if (resolution.status !== 'resolved') {
             this.recordAudit(ctx, { tool: name, outcome: 'identification-required', durationMs: Date.now() - startedAt });
             return { content: [{ type: 'text', text: JSON.stringify({ message: resolution.message, data: resolution }) }] };
@@ -2266,7 +2314,27 @@ export class AutotaskToolHandler {
         }
       }
 
-      const { result: rawResult, message } = await handler(args, ctx);
+      // Native Autotask impersonation (#42): for a mutating call, resolve the
+      // CALLER (who is acting — distinct from a ticket's assignee) best-effort
+      // and tunnel the write on their behalf via ImpersonationResourceId. Only
+      // when AUTOTASK_IMPERSONATION is enabled; never prompts here (best-effort,
+      // so an unidentified caller — e.g. the n8n integration flow — simply runs
+      // as the integration user). Resolution hits the bound cache first, so a
+      // caller already resolved above (currentUser) costs nothing.
+      let impersonationResourceId: number | undefined;
+      if (isImpersonationEnabled() && isMutatingTool(name)) {
+        if (ctx.trustedActingResourceId != null) {
+          impersonationResourceId = ctx.trustedActingResourceId;
+        } else {
+          const callerRes = await this.resolveCaller(ctx);
+          if (callerRes.status === 'resolved') impersonationResourceId = callerRes.resource.id;
+        }
+      }
+
+      const { result: rawResult, message } = await runWithRequestContext(
+        { ...(impersonationResourceId != null ? { impersonationResourceId } : {}) },
+        () => handler(args, ctx)
+      );
 
       // Check for empty/not-found results and return explicit error to prevent hallucination
       const notFoundMsg = this.buildNotFoundMessage(name, args, rawResult);

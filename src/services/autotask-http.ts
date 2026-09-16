@@ -8,6 +8,7 @@
 
 import { resolveAutotaskApiUrl, invalidateZoneUrlCache } from '../utils/config';
 import { mapWithConcurrency } from '../utils/concurrency';
+import { getImpersonationResourceId } from '../utils/request-context';
 import { Logger } from '../utils/logger';
 
 export interface QueryFilter {
@@ -247,13 +248,23 @@ export class AutotaskHttpClient {
   }
 
   private headers(): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
       ApiIntegrationcode: this.integrationCode,
       UserName: this.username,
       Secret: this.secret,
     };
+    // Native Autotask impersonation (#42): when the current tool dispatch has a
+    // resolved acting resource, tunnel the write on their behalf. Autotask
+    // honors this on create/update and ignores it on reads. The id is only ever
+    // present when AUTOTASK_IMPERSONATION is enabled and a caller was resolved,
+    // and it is scoped per-request via AsyncLocalStorage (no cross-request leak).
+    const impersonationResourceId = getImpersonationResourceId();
+    if (impersonationResourceId != null) {
+      headers.ImpersonationResourceId = String(impersonationResourceId);
+    }
+    return headers;
   }
 
   /**

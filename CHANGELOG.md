@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Added
+
+- **Native Autotask impersonation + prompt-and-bind identity** ([#42](https://github.com/GDSTechnology/autotask-mcp/issues/42)). Actions can now be recorded in Autotask *as the requesting person* (not the integration user): the resolved caller's resource id is sent as the `ImpersonationResourceId` header on the outbound write, tunneling it through the API user so `createdByResourceID` / last-modified / audit show the real user (standard users need no API access).
+  - **Best-effort and per-caller**, gated by `AUTOTASK_IMPERSONATION` (off by default). On a mutating call it resolves the **caller** (distinct from a ticket's assignee) from the app's identity — gateway `X-Acting-*` header, `_meta.requestingUserEmail`, or the bound cache — and impersonates when found; an unidentified caller (e.g. the n8n integration flow) simply runs as the integration user, never blocked. Reads never impersonate. Scoped per-request via `AsyncLocalStorage`, so it's safe on the shared env-mode client.
+  - **Prompt-and-bind**: on the `currentUser` path, when the app didn't identify the user, the MCP now elicits their Autotask username/email (if the client supports elicitation), resolves it, and **binds it to the connection** (cached under the caller's keys) so later calls skip the prompt; if the client can't be prompted it falls back to the `identification_required` response for the assistant to relay.
+  - Impersonated actions are attributable in the audit log. Prerequisite: the API user's Autotask security level must permit impersonation.
+
 ## [3.0.0] - 2026-09-16
 
 Major release consolidating the revenue-first service-automation suite, the act-as / Teams-handoff identity work, and two behavior-changing fixes. **Breaking:** block-hour usage now counts `hoursToBill` (was `hoursWorked`); `autotask_create_time_entry` no longer accepts `projectID` and posts to top-level `/TimeEntries`; assigning a resource now auto-fills its default role.

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-16
+
+Major release consolidating the revenue-first service-automation suite, the act-as / Teams-handoff identity work, and two behavior-changing fixes. **Breaking:** block-hour usage now counts `hoursToBill` (was `hoursWorked`); `autotask_create_time_entry` no longer accepts `projectID` and posts to top-level `/TimeEntries`; assigning a resource now auto-fills its default role.
+
 ### Changed
 
 - **Migrated from `@modelcontextprotocol/sdk` v1 to the v2 SDK (`@modelcontextprotocol/server` + `@modelcontextprotocol/node` 2.0.0-beta.5) with dual-era serving.** All three entrypoints now consume one shared per-request server factory (`AutotaskMcpServer.requestFactory()`), so the tool/resource/prompt surface can never drift between protocol eras:

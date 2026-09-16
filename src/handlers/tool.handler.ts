@@ -40,6 +40,7 @@ import {
   identificationRequired,
   ACTING_RESOURCE_TOOLS,
   ACTING_ROLE_FIELDS,
+  CURRENT_USER_DEFAULT_TOOLS,
 } from '../utils/caller-resolution.js';
 import { TrustedActing } from '../utils/impersonation.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
@@ -1201,6 +1202,40 @@ export class AutotaskToolHandler {
         }
         const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
       }],
+      ['autotask_get_my_day', async (a) => {
+        if (a.resourceID == null) {
+          return { result: null, message: 'Could not determine the acting user. Provide resourceID, or call as an identified user (currentUser / gateway impersonation).' };
+        }
+        const r = await s.getMyDay(a.resourceID, a.date);
+        return { result: r, message: `${r.date}: ${r.totals.assignedTickets} assigned ticket(s), ${r.totals.timeEntries} time entr(ies) (${r.totals.hoursLogged}h logged), ${r.openTasks.length} open task(s)` };
+      }],
+      ['autotask_log_my_time', async (a) => {
+        if (a.resourceID == null) {
+          return { result: null, message: 'Could not determine who to log time as. Provide resourceID, or call as an identified user (currentUser / gateway impersonation).' };
+        }
+        // Regular Time (no ticket/task): resolve a category to its internal billing code (mirrors create_time_entry).
+        const isRegular = !a.ticketID && !a.taskID;
+        if (isRegular) {
+          if (a.category && !a.internalBillingCodeID) {
+            const bc = await s.resolveInternalBillingCodeByName(a.category);
+            if (!bc) {
+              const cats = await s.getInternalBillingCodeNames();
+              throw new Error(`No category found matching "${a.category}". Available categories: ${cats.join(', ')}`);
+            }
+            a.internalBillingCodeID = bc.id;
+          }
+          if (!a.internalBillingCodeID) {
+            const cats = await s.getInternalBillingCodeNames();
+            return { result: null, message: `Regular Time (no ticket/task) needs a category. Available categories: ${cats.join(', ')}` };
+          }
+        }
+        delete a.category;
+        const dateWorked = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked)
+          ? a.dateWorked.slice(0, 10)
+          : new Date().toISOString().slice(0, 10);
+        const r = await s.logTimeIdempotent({ ...a, dateWorked });
+        return { result: r, message: r.created ? `Logged time entry ${r.id}` : `Skipped — duplicate of existing time entry ${r.duplicateOf}` };
+      }],
 
       // Projects
       ['autotask_search_projects', async (a) => {
@@ -2179,6 +2214,13 @@ export class AutotaskToolHandler {
       if ('confirm' in args) {
         const { confirm: _confirm, ...rest } = args;
         args = rest;
+      }
+
+      // "My" tools (#42 slice 3) default to acting as the caller: if neither the
+      // resource field nor an explicit currentUser was provided, assume currentUser.
+      const defaultField = CURRENT_USER_DEFAULT_TOOLS[name];
+      if (defaultField && args[defaultField] == null && args.currentUser == null && args.resourceName == null) {
+        args = { ...args, currentUser: true };
       }
 
       // Proxy data input (§4.1): `currentUser: true` acts as the caller — resolve

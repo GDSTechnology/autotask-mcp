@@ -6,7 +6,7 @@
 
 **Give your AI assistant direct access to Autotask.** Search tickets, create time entries, look up companies, manage projects — all through natural language. No more copy-pasting between browser tabs and chat windows.
 
-This is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that connects Claude (or any MCP-compatible AI) to your Autotask PSA environment. Your AI assistant gets 169 tools covering the operations MSP teams use daily: ticket triage, time logging, company lookups, project management, billing review, and more.
+This is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that connects Claude (or any MCP-compatible AI) to your Autotask PSA environment. Your AI assistant gets 171 tools covering the operations MSP teams use daily: ticket triage, time logging, company lookups, project management, billing review, and more.
 
 If you run an MSP on Autotask and you're tired of the context-switching tax, this is for you.
 
@@ -57,7 +57,7 @@ See [Installation](#installation) for Docker and from-source methods.
 
 - **🔌 MCP Protocol Compliance**: Full support for MCP resources and tools
 - **🎴 Interactive Ticket Card (MCP Apps)**: `autotask_get_ticket_details` renders as an interactive card in MCP Apps hosts (Claude Desktop/web) with an in-card "Add note" round-trip; neutral theme by default, brandable via `MCP_BRAND_*` env vars; plain-JSON behavior is unchanged in other hosts
-- **🛠️ Comprehensive API Coverage**: 169 tools spanning companies, contacts, tickets, projects, billing items, time entries, notes, attachments, and more
+- **🛠️ Comprehensive API Coverage**: 171 tools spanning companies, contacts, tickets, projects, billing items, time entries, notes, attachments, and more
 - **📈 Operational Reports**: block-hour usage & overage, ticket charges + to-bill queue, **unbilled-work / revenue-leakage** (aged uninvoiced billables), and inventory (reorder control, close-outs, stale/dead-stock)
 - **🔍 Advanced Search**: Powerful search capabilities with filters across all entities
 - **📝 CRUD Operations**: Create, read, update operations for core Autotask entities
@@ -323,7 +323,7 @@ Resources provide read-only access to Autotask data:
 
 ### Tools
 
-The server provides 169 tools for interacting with Autotask:
+The server provides 171 tools for interacting with Autotask:
 
 #### Company Operations
 - `autotask_search_companies` - Search companies with filters
@@ -349,6 +349,8 @@ The server provides 169 tools for interacting with Autotask:
 
 #### Time Entry Operations
 - `autotask_create_time_entry` - Log time entry
+- `autotask_log_my_time` - Log time as the calling user, idempotently (safe for scheduled/backfill re-runs)
+- `autotask_get_my_day` - The caller's day: assigned tickets, time already logged, open tasks
 - `autotask_search_time_entries` - Search time entries with filters (resource, ticket, project, date range)
 
 #### Billing Items (Approve and Post Workflow)

@@ -1131,6 +1131,42 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_my_day',
+    description: 'The acting user\'s working picture for a date (default today): tickets assigned to them, the time they have already logged that day, and their open tasks. Built for a scheduled assistant to see what already exists and backfill only the gaps. Acts as the caller by default (currentUser) — or pass resourceID. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceID: { type: 'number', description: 'Whose day to read. Omit to use the calling user (currentUser).' },
+        currentUser: { type: 'boolean', description: 'Read the calling user\'s day (default when resourceID is omitted).' },
+        date: { type: 'string', description: 'Day to report (YYYY-MM-DD). Defaults to today (UTC).' }
+      },
+      required: []
+    },
+    annotations: { title: 'Get my day', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_log_my_time',
+    description: 'Log a time entry as the acting user, idempotently. Before creating, it checks for an existing entry on the same day against the same ticket/task with the same summaryNotes and skips if found — so a scheduled end-of-day backfill (and retries) never double-posts. Acts as the caller by default (currentUser); role auto-fills from the user\'s default. Provide ticketID or taskID (or neither for Regular Time).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'Ticket to log against (omit for a task or Regular Time)' },
+        taskID: { type: 'number', description: 'Project task to log against (project time logs against a task)' },
+        dateWorked: { type: 'string', description: 'Date worked (YYYY-MM-DD). Defaults to today (UTC).' },
+        hoursWorked: { type: 'number', description: 'Hours worked (or provide startDateTime/endDateTime)' },
+        startDateTime: { type: 'string', description: 'Start time (ISO 8601); alternative to hoursWorked' },
+        endDateTime: { type: 'string', description: 'End time (ISO 8601); alternative to hoursWorked' },
+        summaryNotes: { type: 'string', description: 'What was done — also the idempotency signal (same summary on the same day/ticket = duplicate)' },
+        resourceID: { type: 'number', description: 'Log as this resource. Omit to log as the calling user (currentUser).' },
+        currentUser: { type: 'boolean', description: 'Log as the calling user (default when resourceID is omitted).' },
+        roleID: { type: 'number', description: 'Role for the entry. Auto-filled from the user\'s default role when omitted.' },
+        billingCodeID: { type: 'number', description: 'Work type / billing code' },
+        category: { type: 'string', description: 'Category for Regular Time (no ticket/task), e.g. "Internal Meeting"' }
+      },
+      required: ['summaryNotes']
+    }
+  },
+  {
     name: 'autotask_get_time_entry',
     description:
       'READ-ONLY. Get a time entry by ID. The record distinguishes actual worked ' +
@@ -4345,7 +4381,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

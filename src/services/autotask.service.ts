@@ -1063,6 +1063,95 @@ export class AutotaskService {
     }
   }
 
+  // =====================================================
+  // Staff day / backfill (#42 slice 3). Primitives for a scheduled personal
+  // assistant (ChatGPT) that reviews the day (calendar/meetings/emails elsewhere)
+  // and backfills Autotask. The MCP owns HOW to read "what's mine / already
+  // logged" and to write time idempotently — not the agenda-matching reasoning.
+  // =====================================================
+
+  /** Local YYYY-MM-DD for a date (UTC), used to attribute the day. */
+  private static ymd(d: Date): string {
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+
+  /**
+   * A resource's working picture for a date (default today): the tickets
+   * assigned to them, the time they've already logged that day, and their open
+   * tasks. Fail-soft — each section is independent; a failed section is recorded
+   * under `errors` rather than failing the whole read. Lets the assistant
+   * backfill only the gaps instead of re-logging.
+   */
+  async getMyDay(
+    resourceID: number,
+    date?: string
+  ): Promise<Record<string, any>> {
+    const day = date && /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : AutotaskService.ymd(new Date());
+    const errors: Array<{ section: string; error: string }> = [];
+    const section = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
+      try { return await fn(); } catch (e) { errors.push({ section: name, error: e instanceof Error ? e.message : String(e) }); return undefined; }
+    };
+    const http = await this.ensureClient();
+
+    const [assignedTickets, timeEntries, tasks] = await Promise.all([
+      section('assignedTickets', () => this.searchTickets({ assignedResourceID: resourceID, pageSize: 100 } as any)),
+      section('timeEntries', () => http.query<Record<string, any>>('TimeEntries', [
+        { op: 'eq', field: 'resourceID', value: resourceID },
+        { op: 'eq', field: 'dateWorked', value: day },
+      ], { maxRecords: 500 })),
+      section('tasks', () => this.searchTasks({ assignedResourceID: resourceID, pageSize: 100 } as any)),
+    ]);
+
+    const entries = timeEntries ?? [];
+    const hoursLogged = entries.reduce((s, e: any) => s + (Number(e.hoursWorked) || 0), 0);
+    return {
+      resourceID,
+      date: day,
+      assignedTickets: assignedTickets ?? [],
+      timeEntries: entries,
+      openTasks: tasks ?? [],
+      totals: {
+        assignedTickets: (assignedTickets ?? []).length,
+        timeEntries: entries.length,
+        hoursLogged: Math.round(hoursLogged * 100) / 100,
+      },
+      ...(errors.length ? { errors } : {}),
+    };
+  }
+
+  /**
+   * Create a time entry idempotently (#42 slice 3): if the resource already has
+   * an entry on the same day against the same ticket/task with the same summary,
+   * skip and report the existing one instead of double-posting. This is the
+   * content-match guard that makes a scheduled end-of-day backfill (and retries)
+   * safe. `resourceID`, `dateWorked`, and `summaryNotes` are required for the
+   * guard to be meaningful; without a ticket/task it guards regular time by
+   * summary alone for the day.
+   */
+  async logTimeIdempotent(
+    entry: Partial<AutotaskTimeEntry> & { resourceID: number; dateWorked: string; summaryNotes: string }
+  ): Promise<{ created: boolean; id: number; duplicateOf?: number }> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [
+      { op: 'eq', field: 'resourceID', value: entry.resourceID },
+      { op: 'eq', field: 'dateWorked', value: entry.dateWorked },
+    ];
+    if (entry.ticketID != null) filters.push({ op: 'eq', field: 'ticketID', value: entry.ticketID });
+    if (entry.taskID != null) filters.push({ op: 'eq', field: 'taskID', value: entry.taskID });
+    let existing: Array<Record<string, any>> = [];
+    try {
+      existing = await http.query<Record<string, any>>('TimeEntries', filters, { maxRecords: 200 });
+    } catch { /* if the guard read fails, fall through to create rather than block logging */ }
+    const want = String(entry.summaryNotes).trim().toLowerCase();
+    const dup = existing.find((e) => String(e.summaryNotes ?? '').trim().toLowerCase() === want);
+    if (dup?.id != null) {
+      this.logger.info(`Skipping duplicate time entry (matches ${dup.id})`);
+      return { created: false, id: dup.id, duplicateOf: dup.id };
+    }
+    const id = await this.createTimeEntry(entry);
+    return { created: true, id };
+  }
+
   /**
    * Resolve a resource by full/partial name via POST /Resources/query.
    * Returns the first match, or null.

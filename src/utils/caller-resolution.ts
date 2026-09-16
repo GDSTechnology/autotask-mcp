@@ -109,6 +109,18 @@ export const ACTING_RESOURCE_TOOLS: Record<string, string> = {
   autotask_update_company_todo: 'assignedToResourceID',
   autotask_create_ticket: 'assignedResourceID',
   autotask_update_ticket: 'assignedResourceID',
+  autotask_log_my_time: 'resourceID',
+  autotask_get_my_day: 'resourceID',
+};
+
+/**
+ * Tools that default to "act as the calling user" when no resource is named —
+ * `currentUser` is set to true if the caller passed neither the resource field
+ * nor an explicit currentUser (#42 slice 3). These are the "my" ergonomics.
+ */
+export const CURRENT_USER_DEFAULT_TOOLS: Record<string, string> = {
+  autotask_log_my_time: 'resourceID',
+  autotask_get_my_day: 'resourceID',
 };
 
 /**
@@ -121,6 +133,7 @@ export const ACTING_ROLE_FIELDS: Record<string, { resourceField: string; roleFie
   autotask_create_ticket: { resourceField: 'assignedResourceID', roleField: 'assignedResourceRoleID' },
   autotask_update_ticket: { resourceField: 'assignedResourceID', roleField: 'assignedResourceRoleID' },
   autotask_create_time_entry: { resourceField: 'resourceID', roleField: 'roleID' },
+  autotask_log_my_time: { resourceField: 'resourceID', roleField: 'roleID' },
 };
 
 /** Classify the outcome of an exact-email Resources search. */

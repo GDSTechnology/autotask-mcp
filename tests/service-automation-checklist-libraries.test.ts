@@ -44,7 +44,7 @@ describe('searchChecklistLibraries (§10)', () => {
 
 describe('getChecklistLibrary (§10)', () => {
   test('returns the library with its items sorted by position', async () => {
-    const get = jest.fn().mockResolvedValue({ id: 4, name: 'RPO Onboarding' });
+    const get = jest.fn().mockResolvedValue({ id: 4, name: 'Sample Onboarding Checklist' });
     const query = jest.fn().mockResolvedValue([
       { id: 2, itemName: 'B', position: 2 },
       { id: 1, itemName: 'A', position: 1 },

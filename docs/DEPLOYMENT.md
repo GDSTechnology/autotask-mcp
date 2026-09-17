@@ -45,6 +45,35 @@ comma-separated allowlist of declared sources permitted to impersonate on a
 shared instance (e.g. `chatgpt,hermes-teams`). Unset = all sources allowed.
 Belt-and-suspenders on top of instance isolation.
 
+## Environment flag reference (exact accepted values)
+
+Do not assume a flag accepts `on` / `1` / `yes` — the accepted truthy value
+**differs per flag**. Each flag's exact "on" value, default, and effect:
+
+| Env var | Turn ON with (exact) | Default (unset) | Effect |
+|---------|----------------------|-----------------|--------|
+| `AUTOTASK_IMPERSONATION_MODE` | `caller` or `gateway` | `off` | Impersonation posture (see table above). `off` disables it. |
+| `AUTOTASK_IMPERSONATION` (legacy) | `on`, `true`, `1`, or `yes` | off | Back-compat only; maps to `caller`. Prefer `_MODE`. Ignored when `_MODE` is set. |
+| `AUTOTASK_IMPERSONATION_SOURCES` | comma list, e.g. `chatgpt,hermes-teams` | empty = **all** sources may impersonate | `caller` mode only: allowlist of declared sources permitted to impersonate. Valid sources: `chatgpt`, `hermes-teams`, `telegram`, `n8n`, `cron`. |
+| `MCP_INSTANCE_LABEL` | any non-empty string, e.g. `gpt-teams` | empty = field omitted from audit | Stamps `instanceLabel` on every audit record. Observability only. |
+| `AUTH_MODE` | `gateway` | `env` | `gateway` reads per-request credentials + acting identity from headers (behind S2S). `env` uses the container's Autotask creds. |
+| `CONDUIT_S2S_SECRET` | any non-empty secret | empty = S2S check **disabled** (dark-by-default) | Required to enforce the gateway S2S gate on `/mcp`. |
+| `MCP_TRANSPORT` | `http` | `stdio` | Serve over HTTP vs stdio. |
+| `LAZY_LOADING` | `true` or `1` **only** (not `on`/`yes`) | off | Expose only the 3 discovery meta-tools initially. |
+| `MCP_PERMISSIONS_ENABLED` | `true` **only** | off | Enforce role→risk permission intersection on mutating tools. Needs `AUTOTASK_ROLE_MAP`. |
+| `MCP_PG_ENABLED` | `true` **only** | off | Master switch for the PostgreSQL layer. Every `MCP_PG_*` capability flag below is inert unless this is on. |
+| `MCP_PG_AUDIT_ENABLED` | `true` **only** (and `MCP_PG_ENABLED=true`) | off | Persist audit records to Postgres in addition to the log. |
+
+Note the inconsistency deliberately called out above: impersonation accepts
+several truthy spellings, but `LAZY_LOADING`, `MCP_PERMISSIONS_ENABLED`, and all
+`MCP_PG_*` flags accept **only** the literal string `true` (or `1` for
+`LAZY_LOADING`). Anything else — including `on`, `yes`, `True` in the strict
+ones — reads as **off**. When in doubt, use the exact value in this table.
+
+To turn a feature OFF, set it to `off`/`false` **or remove the line** — every
+flag defaults to off/inert when unset. There is no separate "disable" value to
+remember.
+
 ## Recommended topology: one instance per consumer class
 
 Rather than sniff the network to tell consumers apart, isolate them by instance.

@@ -66,12 +66,19 @@ Commands below run **on the KVM host**, in the compose project directory.
    (model it on `deploy/docker-compose.prod.yml`), keeping the existing
    `autotask-mcp` service but adding `MCP_INSTANCE_LABEL` and
    `AUTOTASK_IMPERSONATION_MODE=off` to it.
-2. Pull the release that carries per-instance mode (>= 3.2.0) and start:
+2. Both services track `image: ghcr.io/gdstechnology/autotask-mcp:latest`, so
+   every deploy — first cutover and each subsequent release — is the same two
+   commands, with no version to edit in the YAML (semantic-release publishes
+   `:latest` alongside each version tag). The first release carrying per-instance
+   mode is >= 3.2.0.
 
    ```bash
-   docker compose pull
-   docker compose up -d
+   docker compose pull      # fetch the newest :latest image
+   docker compose up -d     # recreate only the services whose image changed
    ```
+
+   To pin a known-good build or roll back, replace `:latest` with a specific tag
+   (`:3.2.0`) or a digest and re-run `up -d`.
 3. Point the ChatGPT connector / Teams relay at `:18081`; leave n8n and cron on
    `:18080`.
 4. Verify attribution — each instance stamps its label:

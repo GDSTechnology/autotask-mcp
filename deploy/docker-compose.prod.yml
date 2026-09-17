@@ -1,0 +1,101 @@
+# Production reference: one MCP instance PER consumer class.
+#
+# Why two instances instead of one shared server: on a single shared instance
+# every consumer (ChatGPT via the tunnel, n8n on the compose network, cron on
+# the host) hits the same port, so the only "who is calling" signal is the
+# client-declared `source` — spoofable, and absent on plain calls. Splitting by
+# instance makes the calling container unambiguous (which port received it) AND
+# gives a hard security boundary: impersonation is enabled ONLY where it should
+# be, by config, so an internal automation can never tunnel a write as an
+# arbitrary user.
+#
+#   autotask-mcp        (:18080)  n8n + cron + internal automations
+#                                 AUTOTASK_IMPERSONATION_MODE=off  → runs as the
+#                                 integration user, cannot impersonate anyone.
+#   autotask-mcp-gpt    (:18081)  ChatGPT connector + Hermes-in-Teams
+#                                 AUTOTASK_IMPERSONATION_MODE=caller → resolves
+#                                 the calling user and attributes writes to them.
+#
+# Both stamp MCP_INSTANCE_LABEL into every audit record, so logs show which
+# container served each call regardless of what the client declared. The
+# transport origin (peer address / X-Forwarded-For / User-Agent) is captured
+# automatically and logged next to it — no config needed.
+#
+# Pin the image to a release that carries per-instance impersonation mode
+# (>= 3.2.0). Both services share the same Autotask API credentials in
+# autotask-mcp.env (never commit real secrets — keep that file server-side).
+
+services:
+  # ── Internal automations: n8n workflows + cron scheduler ──────────────────
+  autotask-mcp:
+    image: ghcr.io/gdstechnology/autotask-mcp:3.2.0
+    container_name: autotask-mcp-server
+    restart: unless-stopped
+    env_file:
+      - ./autotask-mcp.env            # AUTOTASK_USERNAME / _SECRET / _INTEGRATION_CODE (+ _API_URL)
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "8080"
+      AUTH_MODE: env
+      # No impersonation on this instance — n8n/cron act as the integration user.
+      AUTOTASK_IMPERSONATION_MODE: "off"
+      MCP_INSTANCE_LABEL: n8n-cron
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:18080:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 256M }
+        reservations: { cpus: '0.1', memory: 128M }
+
+  # ── User-facing assistants: ChatGPT connector + Hermes-in-Teams ───────────
+  autotask-mcp-gpt:
+    image: ghcr.io/gdstechnology/autotask-mcp:3.2.0
+    container_name: autotask-mcp-gpt
+    restart: unless-stopped
+    env_file:
+      - ./autotask-mcp.env            # same Autotask API credentials
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "8080"
+      AUTH_MODE: env
+      # Resolve the calling user and tunnel writes as them (ImpersonationResourceId).
+      # Requires the API user's Autotask security level to permit impersonation.
+      AUTOTASK_IMPERSONATION_MODE: caller
+      # Optional defense-in-depth: only these declared sources may impersonate.
+      AUTOTASK_IMPERSONATION_SOURCES: "chatgpt,hermes-teams"
+      MCP_INSTANCE_LABEL: gpt-teams
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:18081:8080"        # point the Cloudflare tunnel / Teams relay here
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: '0.5', memory: 256M }
+        reservations: { cpus: '0.1', memory: 128M }
+
+# NOTE: if this file lives in its own compose project, attach both services to
+# the same external network your n8n stack uses so n8n can reach
+# http://autotask-mcp:8080/mcp by service name, e.g.:
+#
+# networks:
+#   default:
+#     external: true
+#     name: <your-n8n-compose-network>

@@ -8,8 +8,13 @@
 // intersection (§4.2) and idempotency (§4.4).
 
 import { randomUUID } from 'node:crypto';
+import type { RequestOrigin } from '../utils/origin.js';
 
-export type CallerSource = 'chatgpt' | 'hermes-teams' | 'telegram' | 'unknown';
+// Declared client applications. 'chatgpt' / 'hermes-teams' / 'telegram' are
+// user-facing assistants; 'n8n' / 'cron' are unattended automations that run as
+// the integration user (and, under a source allowlist, may be barred from
+// impersonation). Anything else declared, or absent, is 'unknown'.
+export type CallerSource = 'chatgpt' | 'hermes-teams' | 'telegram' | 'n8n' | 'cron' | 'unknown';
 
 export interface CallerContext {
   source: CallerSource;
@@ -30,9 +35,15 @@ export interface CallerContext {
    */
   trustedActingResourceId?: number;
   trustedActingUserEmail?: string;
+  /**
+   * Transport-derived origin of the request (peer address / X-Forwarded-For /
+   * User-Agent), captured server-side at the HTTP entry — NEVER from client
+   * `_meta`/`_context`. Used for audit attribution of the calling container.
+   */
+  origin?: RequestOrigin;
 }
 
-const VALID_SOURCES: readonly CallerSource[] = ['chatgpt', 'hermes-teams', 'telegram'];
+const VALID_SOURCES: readonly CallerSource[] = ['chatgpt', 'hermes-teams', 'telegram', 'n8n', 'cron'];
 
 /** Reserved argument key callers may use to pass context when `_meta` isn't available. */
 export const CALLER_CONTEXT_ARG = '_context';

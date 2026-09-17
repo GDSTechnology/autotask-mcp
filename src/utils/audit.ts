@@ -6,6 +6,7 @@
 
 import { Logger } from './logger';
 import { CallerContext } from '../types/context';
+import { getImpersonationMode, getInstanceLabel } from './request-context';
 
 export type AuditOutcome =
   | 'ok'
@@ -31,6 +32,11 @@ export interface AuditEntry {
  * bodies (§23).
  */
 export function emitAudit(logger: Logger, ctx: CallerContext, entry: AuditEntry): void {
+  // Container attribution (caller-container tracking): three independent
+  // signals, most-trusted first — the operator-set instance label, the
+  // transport origin captured server-side, and the client-declared source.
+  const instanceLabel = getInstanceLabel();
+  const origin = ctx.origin;
   logger.info('audit', {
     audit: true,
     tool: entry.tool,
@@ -38,6 +44,14 @@ export function emitAudit(logger: Logger, ctx: CallerContext, entry: AuditEntry)
     durationMs: entry.durationMs,
     source: ctx.source,
     correlationId: ctx.correlationId,
+    // Which of the operator's containers served this (env, operator truth).
+    ...(instanceLabel ? { instanceLabel } : {}),
+    // This instance's impersonation posture (off / caller / gateway).
+    impersonationMode: getImpersonationMode(),
+    // Where the request actually came from (transport, server-derived).
+    ...(origin?.remoteAddr ? { originRemoteAddr: origin.remoteAddr } : {}),
+    ...(origin?.forwardedFor ? { originForwardedFor: origin.forwardedFor } : {}),
+    ...(origin?.userAgent ? { originUserAgent: origin.userAgent } : {}),
     ...(ctx.requestingUserEmail ? { requestingUserEmail: ctx.requestingUserEmail } : {}),
     ...(ctx.autotaskResourceId !== undefined ? { autotaskResourceId: ctx.autotaskResourceId } : {}),
     // Impersonation trail (#42): record when a trusted gateway header set the

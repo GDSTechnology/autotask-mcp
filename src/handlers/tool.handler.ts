@@ -44,7 +44,12 @@ import {
   CURRENT_USER_DEFAULT_TOOLS,
 } from '../utils/caller-resolution.js';
 import { TrustedActing } from '../utils/impersonation.js';
-import { runWithRequestContext, isImpersonationEnabled } from '../utils/request-context.js';
+import {
+  runWithRequestContext,
+  getImpersonationMode,
+  getRequestOrigin,
+  isImpersonationAllowedForSource,
+} from '../utils/request-context.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { buildTicketCard } from './card.builder.js';
 
@@ -2213,6 +2218,11 @@ export class AutotaskToolHandler {
       if (this.trustedActing.resourceId != null) ctx.trustedActingResourceId = this.trustedActing.resourceId;
       if (this.trustedActing.email) ctx.trustedActingUserEmail = this.trustedActing.email;
     }
+    // Attach the transport-derived origin captured at the HTTP entry (server-
+    // side, via AsyncLocalStorage) so the audit trail records where the request
+    // actually came from — not just the client-declared `source`.
+    const origin = getRequestOrigin();
+    if (origin) ctx.origin = origin;
     args = stripCallerContext(args);
     const startedAt = Date.now();
     this.logger.debug(`Calling tool: ${name}`, args);
@@ -2321,25 +2331,38 @@ export class AutotaskToolHandler {
         }
       }
 
-      // Native Autotask impersonation (#42): for a mutating call, resolve the
-      // CALLER (who is acting — distinct from a ticket's assignee) best-effort
-      // and tunnel the write on their behalf via ImpersonationResourceId. Only
-      // when AUTOTASK_IMPERSONATION is enabled; never prompts here (best-effort,
-      // so an unidentified caller — e.g. the n8n integration flow — simply runs
-      // as the integration user). Resolution hits the bound cache first, so a
-      // caller already resolved above (currentUser) costs nothing.
+      // Native Autotask impersonation (#42): for a mutating call, tunnel the
+      // write on the acting user's behalf via ImpersonationResourceId. The
+      // deployment's posture is set per-instance by AUTOTASK_IMPERSONATION_MODE:
+      //
+      //   off      no impersonation (integration user; e.g. n8n/cron instance)
+      //   gateway  ONLY the trusted, S2S-verified gateway header may impersonate;
+      //            the client payload never picks the acting user
+      //   caller   resolve the CALLER (distinct from a ticket's assignee)
+      //            best-effort and impersonate them, degrading to the integration
+      //            user when unidentified (never prompts here)
+      //
+      // In `caller` mode an optional source allowlist
+      // (AUTOTASK_IMPERSONATION_SOURCES) can bar impersonation for specific
+      // declared sources (e.g. n8n) even on a shared instance.
       let impersonationResourceId: number | undefined;
-      if (isImpersonationEnabled() && isMutatingTool(name)) {
+      const impersonationMode = getImpersonationMode();
+      if (impersonationMode !== 'off' && isMutatingTool(name)) {
         if (ctx.trustedActingResourceId != null) {
           impersonationResourceId = ctx.trustedActingResourceId;
-        } else {
+        } else if (impersonationMode === 'caller' && isImpersonationAllowedForSource(ctx.source)) {
           const callerRes = await this.resolveCaller(ctx);
           if (callerRes.status === 'resolved') impersonationResourceId = callerRes.resource.id;
         }
       }
 
       const { result: rawResult, message, pagination } = await runWithRequestContext(
-        { ...(impersonationResourceId != null ? { impersonationResourceId } : {}) },
+        {
+          ...(impersonationResourceId != null ? { impersonationResourceId } : {}),
+          // Preserve the origin captured at the HTTP entry across this nested
+          // context so audit inside the dispatch still sees the calling container.
+          ...(ctx.origin ? { origin: ctx.origin } : {}),
+        },
         () => handler(args, ctx)
       );
 

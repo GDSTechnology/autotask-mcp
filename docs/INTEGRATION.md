@@ -54,7 +54,7 @@ argument on any tool call:
 ```json
 {
   "_context": {
-    "source": "hermes-teams",          // chatgpt | hermes-teams | telegram
+    "source": "hermes-teams",          // chatgpt | hermes-teams | telegram | n8n | cron
     "requestingUserEmail": "jane@corp.com",
     "conversationId": "conv-42",         // enables safe idempotent retries
     "idempotencyKey": "optional-explicit-key",

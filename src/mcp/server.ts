@@ -28,6 +28,8 @@ import { AutotaskToolHandler } from '../handlers/tool.handler.js';
 import { registerPromptHandlers } from './prompts.js';
 import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
 import { parseActingHeaders, TrustedActing } from '../utils/impersonation.js';
+import { extractRequestOrigin } from '../utils/origin.js';
+import { runWithRequestContext } from '../utils/request-context.js';
 
 export class AutotaskMcpServer {
   private config: McpServerConfig;
@@ -407,22 +409,32 @@ export class AutotaskMcpServer {
           }
         }
 
+        // Capture the transport-derived origin (peer address / X-Forwarded-For
+        // / User-Agent) once, at the entry, and run the whole request dispatch
+        // inside a per-request context carrying it. AsyncLocalStorage keeps it
+        // available to callTool/audit for calling-container attribution without
+        // threading `req` through the stack — and without leaking between
+        // concurrent requests on the shared (env-mode) handler.
+        const origin = extractRequestOrigin(req);
+
         // Delegate to the dual-era handler. Legacy (2025) traffic is served
         // per-request statelessly; modern (2026-07-28) traffic natively.
         // Legacy-era GET/DELETE answer 405 inside the handler, as before.
         // Cast: the adapter's duck-typed NodeIncomingMessageLike declares
         // `method?: string`, which node:http's IncomingMessage doesn't satisfy
         // under exactOptionalPropertyTypes (v2.0.0-beta.5 typings papercut).
-        nodeMcpHandler(req as unknown as Parameters<typeof nodeMcpHandler>[0], res).catch((err) => {
-          this.logger.error('MCP transport error:', err);
-          if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              jsonrpc: '2.0',
-              error: { code: -32603, message: 'Internal error' },
-              id: null,
-            }));
-          }
+        runWithRequestContext(origin ? { origin } : {}, () => {
+          nodeMcpHandler(req as unknown as Parameters<typeof nodeMcpHandler>[0], res).catch((err) => {
+            this.logger.error('MCP transport error:', err);
+            if (!res.headersSent) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                error: { code: -32603, message: 'Internal error' },
+                id: null,
+              }));
+            }
+          });
         });
 
         return;

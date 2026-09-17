@@ -6,7 +6,8 @@ import { AutotaskService } from '../services/autotask.service.js';
 import { AutotaskRateLimitError } from '../services/autotask-http.js';
 import { PicklistCache, PicklistValue } from '../services/picklist.cache.js';
 import { Logger } from '../utils/logger.js';
-import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '../utils/response.formatter.js';
+import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS, PageMeta } from '../utils/response.formatter.js';
+import { PagedResult } from '../types/autotask.js';
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
@@ -392,7 +393,7 @@ export class AutotaskToolHandler {
       }
 
       const searchTerm = nameResult.content.companyName as string;
-      const companies = await this.autotaskService.searchCompanies({ searchTerm });
+      const { items: companies } = await this.autotaskService.searchCompanies({ searchTerm });
 
       if (companies.length === 0) {
         this.logger.debug(`No companies found matching "${searchTerm}"`);
@@ -953,9 +954,17 @@ export class AutotaskToolHandler {
   /**
    * Dispatch table: maps tool names to handler functions
    */
-  private getDispatchTable(): Map<string, (args: any, ctx: CallerContext) => Promise<{ result: any; message: string }>> {
+  private getDispatchTable(): Map<string, (args: any, ctx: CallerContext) => Promise<{ result: any; message: string; pagination?: PageMeta }>> {
     const s = this.autotaskService;
-    type H = (args: any, ctx: CallerContext) => Promise<{ result: any; message: string }>;
+    type H = (args: any, ctx: CallerContext) => Promise<{ result: any; message: string; pagination?: PageMeta }>;
+    // Search tools return a PagedResult; unwrap it into the array callers expect
+    // and carry the honest `hasMore` alongside, so the response formatter reports
+    // real pagination state instead of guessing from `items.length >= pageSize`.
+    const paged = <T>(p: PagedResult<T>, noun: string) => ({
+      result: p.items,
+      message: `Found ${p.items.length} ${noun}`,
+      pagination: { page: p.page, pageSize: p.pageSize, hasMore: p.hasMore },
+    });
     return new Map<string, H>([
       // Connection
       ['autotask_test_connection', async () => {
@@ -982,7 +991,7 @@ export class AutotaskToolHandler {
 
       // Companies
       ['autotask_search_companies', async (a) => {
-        const r = await s.searchCompanies(a); return { result: r, message: `Found ${r.length} companies` };
+        return paged(await s.searchCompanies(a), 'companies');
       }],
       ['autotask_create_company', async (a) => {
         const id = await s.createCompany(a); return { result: id, message: `Successfully created company with ID: ${id}` };
@@ -1001,7 +1010,7 @@ export class AutotaskToolHandler {
 
       // Contacts
       ['autotask_search_contacts', async (a) => {
-        const r = await s.searchContacts(a); return { result: r, message: `Found ${r.length} contacts` };
+        return paged(await s.searchContacts(a), 'contacts');
       }],
       ['autotask_create_contact', async (a) => {
         const id = await s.createContact(a); return { result: id, message: `Successfully created contact with ID: ${id}` };
@@ -1028,8 +1037,7 @@ export class AutotaskToolHandler {
         }
         const { companyID, ...rest } = a;
         const opts = { ...rest, ...(companyID !== undefined && { companyId: companyID }) };
-        const r = await s.searchTickets(opts);
-        return { result: r, message: `Found ${r.length} tickets` };
+        return paged(await s.searchTickets(opts), 'tickets');
       }],
       ['autotask_get_ticket_details', async (a) => {
         const r = await s.getTicket(a.ticketID, a.fullDetails); return { result: r, message: 'Ticket details retrieved successfully' };
@@ -1133,8 +1141,7 @@ export class AutotaskToolHandler {
         return { result: r, message: 'Service call retrieved successfully' };
       }],
       ['autotask_search_service_calls', async (a) => {
-        const r = await s.searchServiceCalls(a);
-        return { result: r, message: `Found ${r.length} service calls` };
+        return paged(await s.searchServiceCalls(a), 'service calls');
       }],
       ['autotask_create_service_call', async (a) => {
         const id = await s.createServiceCall(a);
@@ -1279,7 +1286,7 @@ export class AutotaskToolHandler {
 
       // Projects
       ['autotask_search_projects', async (a) => {
-        const r = await s.searchProjects(a); return { result: r, message: `Found ${r.length} projects` };
+        return paged(await s.searchProjects(a), 'projects');
       }],
       ['autotask_get_project', async (a) => {
         const r = await s.getProject(a.id); return { result: r, message: r ? `Project ${a.id}` : `Project ${a.id} not found` };
@@ -1358,7 +1365,7 @@ export class AutotaskToolHandler {
 
       // Resources
       ['autotask_search_resources', async (a) => {
-        const r = await s.searchResources(a); return { result: r, message: `Found ${r.length} resources` };
+        return paged(await s.searchResources(a), 'resources');
       }],
       ['autotask_search_roles', async (a) => {
         const r = await s.searchRoles({ searchTerm: a.searchTerm, isActive: a.isActive, pageSize: a.pageSize });
@@ -1497,7 +1504,7 @@ export class AutotaskToolHandler {
 
       // Tasks
       ['autotask_search_tasks', async (a) => {
-        const r = await s.searchTasks(a); return { result: r, message: `Found ${r.length} tasks` };
+        return paged(await s.searchTasks(a), 'tasks');
       }],
       ['autotask_create_task', async (a) => {
         const taskData = { ...a, taskType: a.taskType ?? 1 };
@@ -1544,7 +1551,7 @@ export class AutotaskToolHandler {
 
       // Phases
       ['autotask_list_phases', async (a) => {
-        const r = await s.searchPhases(a.projectID, { pageSize: a.pageSize }); return { result: r, message: `Found ${r.length} phases` };
+        return paged(await s.searchPhases(a.projectID, { page: a.page, pageSize: a.pageSize }), 'phases');
       }],
       ['autotask_create_phase', async (a) => {
         const id = await s.createPhase(a); return { result: id, message: `Successfully created phase with ID: ${id}` };
@@ -1946,7 +1953,7 @@ export class AutotaskToolHandler {
           page: a.page,
           pageSize: a.pageSize
         } as any);
-        return { result: r, message: `Found ${r.length} billing items` };
+        return paged(r, 'billing items');
       }],
       ['autotask_get_billing_item', async (a) => {
         const r = await s.getBillingItem(a.billingItemId);
@@ -1964,7 +1971,7 @@ export class AutotaskToolHandler {
           page: a.page,
           pageSize: a.pageSize
         } as any);
-        return { result: r, message: `Found ${r.length} billing item approval levels` };
+        return paged(r, 'billing item approval levels');
       }],
 
       // Time Entries
@@ -1981,7 +1988,7 @@ export class AutotaskToolHandler {
           page: a.page,
           pageSize: a.pageSize
         } as any);
-        return { result: r, message: `Found ${r.length} time entries` };
+        return paged(r, 'time entries');
       }],
       ['autotask_get_time_entry', async (a) => {
         const r = await s.getTimeEntry(a.id);
@@ -2331,7 +2338,7 @@ export class AutotaskToolHandler {
         }
       }
 
-      const { result: rawResult, message } = await runWithRequestContext(
+      const { result: rawResult, message, pagination } = await runWithRequestContext(
         { ...(impersonationResourceId != null ? { impersonationResourceId } : {}) },
         () => handler(args, ctx)
       );
@@ -2370,6 +2377,7 @@ export class AutotaskToolHandler {
           const compact = formatCompactResponse(result, entityType, {
             page: args.page,
             pageSize: args.pageSize,
+            ...(pagination ? { pagination } : {}),
           });
           compact.items = await this.enhanceItems(compact.items);
           responseText = JSON.stringify(compact);

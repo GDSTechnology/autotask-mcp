@@ -22,10 +22,13 @@ function createMockAutotaskService(): jest.Mocked<AutotaskService> {
       { id: 2, companyName: 'Widget Inc' },
     ]),
     searchCompanies: jest.fn(),
-    searchResources: jest.fn().mockResolvedValue([
-      { id: 10, firstName: 'John', lastName: 'Doe' },
-      { id: 20, firstName: 'Jane', lastName: 'Smith' },
-    ]),
+    searchResources: jest.fn().mockResolvedValue({
+      items: [
+        { id: 10, firstName: 'John', lastName: 'Doe' },
+        { id: 20, firstName: 'Jane', lastName: 'Smith' },
+      ],
+      page: 1, pageSize: 25, hasMore: false,
+    }),
     getResource: jest.fn().mockResolvedValue(
       { id: 10, firstName: 'John', lastName: 'Doe' }
     ),
@@ -122,7 +125,7 @@ describe('MappingService', () => {
     });
 
     it('should return null when resource endpoint is unavailable', async () => {
-      mockService.searchResources.mockResolvedValueOnce([]);
+      mockService.searchResources.mockResolvedValueOnce({ items: [], page: 1, pageSize: 25, hasMore: false });
       const instance = await MappingService.create(mockService, mockLogger);
       // Empty cache means endpoint is unavailable - should return null without direct lookup
       const name = await instance.getResourceName(99);
@@ -252,9 +255,10 @@ describe('MappingService', () => {
           { id: 2, companyName: `${prefix}-Company-2` },
         ]),
         searchCompanies: jest.fn(),
-        searchResources: jest.fn().mockResolvedValue([
-          { id: 10, firstName: prefix, lastName: 'Engineer' },
-        ]),
+        searchResources: jest.fn().mockResolvedValue({
+          items: [{ id: 10, firstName: prefix, lastName: 'Engineer' }],
+          page: 1, pageSize: 25, hasMore: false,
+        }),
         getResource: jest.fn(),
         getCompany: jest.fn(),
       } as unknown as jest.Mocked<AutotaskService>;

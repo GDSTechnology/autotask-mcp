@@ -388,8 +388,8 @@ export class MappingService {
         
         // Note: Some Autotask instances don't support resource listing via REST API
         // This is a known limitation - see Autotask documentation
-        const resources = await this.autotaskService.searchResources({ pageSize: 0 });
-        
+        const resources = (await this.autotaskService.searchResources({ pageSize: 0 })).items;
+
         this.cache.resources.clear();
         for (const resource of resources) {
           if (resource.id && resource.firstName && resource.lastName) {

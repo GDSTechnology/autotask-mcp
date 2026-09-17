@@ -29,7 +29,7 @@ describe('externalID idempotency (§9)', () => {
   test('searchTickets adds an externalID eq filter and preserves externalID in output', async () => {
     const query = jest.fn().mockResolvedValue([{ id: 1, ticketNumber: 'T1', externalID: 'CS-1:LOC-2:FW:2026-09' }]);
     const svc = withHttp({ query });
-    const rows = await svc.searchTickets({ externalID: 'CS-1:LOC-2:FW:2026-09' } as any);
+    const { items: rows } = await svc.searchTickets({ externalID: 'CS-1:LOC-2:FW:2026-09' } as any);
     const filters = query.mock.calls[0][1] as any[];
     expect(filters).toContainEqual({ op: 'eq', field: 'externalID', value: 'CS-1:LOC-2:FW:2026-09' });
     expect(rows[0].externalID).toBe('CS-1:LOC-2:FW:2026-09'); // survives the aggressive optimizer

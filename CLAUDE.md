@@ -4,6 +4,29 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-09-16
+
+- Search-tool params drift from their schemas in two directions, and **nothing
+  caught either**: (a) `page` was advertised by 9 tools and honored by 2 —
+  the rest read `pageSize` into `maxRecords` and dropped `page`, so page 2 returned
+  page 1; (b) `search_service_calls` advertised `startAfter`/`startBefore`/`companyId`
+  while the service read `startDate`/`endDate`, so every filter fell through to the
+  MATCH_ALL sentinel and a 2026 query returned 2007 records. When adding a search
+  tool, assert on the **filter payload sent upstream**, not on the returned rows —
+  a dropped filter looks like a successful broad search.
+- Autotask has **no offset parameter**; `page` is emulated by fetching `page*pageSize`
+  and slicing (`AutotaskService.paginate`/`queryPaged`). Cost is O(page), so deep
+  paging is expensive by construction — scope by date range first.
+- `hasMore` must come from over-fetching one record past the window. The old
+  `items.length >= pageSize` heuristic reported every exactly-full final page as
+  "there is more".
+- `childQuery` does NOT walk `nextPageUrl` — child reads (e.g. project Phases) are
+  capped at one 500-record page, so paging over a child collection has a ceiling.
+- `return somePromise` inside `try/catch` does not catch the rejection. The search
+  methods need `return await` to keep their `catch` logging.
+- `TOOL_CATEGORIES` drift is now enforced by `tests/phase2-tool-catalog-parity.test.ts`
+  (registered == category union minus a meta-tool allowlist). It had silently hidden
+  8 business tools from discovery, `update_contact` among them.
 <!-- Record non-obvious discoveries as dated entries: "## Learnings - YYYY-MM-DD" -->
 
 ## Learnings - 2026-09-11

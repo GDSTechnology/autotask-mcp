@@ -677,3 +677,19 @@ export enum CompanyType {
   Vendor = 5,
   Partner = 6
 } 
+/**
+ * One offset-style page of search results, plus pagination metadata the caller
+ * can trust.
+ *
+ * Autotask's REST API paginates by cursor (`pageDetails.nextPageUrl`) and has
+ * no offset parameter, so a caller-supplied `page` is emulated by fetching
+ * `page * pageSize` records and slicing. `hasMore` is derived by over-fetching
+ * a single extra record rather than from `items.length >= pageSize`, which
+ * false-positives whenever the final page happens to be exactly full.
+ */
+export interface PagedResult<T> {
+  items: T[];
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}

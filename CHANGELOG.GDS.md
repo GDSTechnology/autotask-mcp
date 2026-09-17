@@ -10,6 +10,61 @@ Each entry lists the merge commit and the PR number. Brief section references
 
 ---
 
+## Unreleased — Phase 2 P0 repair & foundation
+
+Addresses the P0 "Repair & Foundation" block of the Phase 2 Development &
+Testing punch list (2026-09-16). Two defects were reported; both turned out to
+be instances of a wider class, and the audit is what this entry mostly records.
+
+### Pagination — MCP-DEF-001 / MCP-CORE-001
+- **`page` was accepted and discarded by 7 of the 9 search tools that advertised it.**
+  Only `searchCompanies` and `searchTasks` honored it; every other search read
+  `pageSize` into `maxRecords` and ignored `page`, so page 2 re-issued the same
+  first-N query and returned page 1's records while reporting itself as page 2.
+  Reported against `autotask_search_time_entries`; also affected tickets,
+  contacts, projects, resources, billing items and approval levels. `page` is now
+  also exposed on `search_service_calls` and `list_phases`, whose services gained
+  paging here.
+- Added `AutotaskService.paginate()` / `queryPaged()` — one implementation of the
+  fetch-and-slice pattern Autotask's cursor-only API forces (no offset parameter),
+  replacing the copy that existed in two methods and was missing from eight.
+- Search methods now return `PagedResult<T>` (`items`, `page`, `pageSize`,
+  `hasMore`) instead of a bare array, and the handler carries that metadata into
+  the compact response. **`hasMore` is now honest:** it comes from over-fetching a
+  single record past the window, not from `items.length >= pageSize`, which
+  reported every exactly-full final page as "there is more".
+
+### Service call date filtering — MCP-DEF-002 / MCP-CORE-002
+- `autotask_search_service_calls` advertised `startAfter`/`startBefore`/`companyId`
+  while the service only read `startDate`/`endDate`. Every filter was dropped and
+  the query fell through to the MATCH_ALL sentinel — a request scoped to 2026
+  returned service calls from 2007. Both bounds now constrain `startDateTime`
+  (the old upper bound filtered `endDateTime`, dropping any call that started
+  inside the window but ran past it); `startDate`/`endDate` remain as aliases.
+- `searchResources` likewise dropped the advertised `isActive` and `resourceType`.
+
+### Tool catalog parity — MCP-CORE-003
+- 8 registered business tools were unreachable through category discovery:
+  `update_contact`, `find_or_create_contact`, `update_project`,
+  `get_invoice_details` and the four `ticket_checklist_item` tools. All are now
+  categorized; the 5 remaining uncategorized tools are meta-tools (discovery,
+  router, raw escape hatch) and are allowlisted as deliberate.
+
+### Tests
+- `tests/phase2-pagination-contract.test.ts` — table-driven across all 10
+  paginated searches: page advances, no duplicate ids across pages, the walk
+  terminates, `pageSize` is respected, a full final page reports `hasMore: false`,
+  and a page past the end is empty rather than a repeat of page 1. Plus an
+  end-to-end check that the metadata survives into the tool response.
+- `tests/phase2-date-filter-contract.test.ts` — asserts on the filter payload sent
+  upstream, so a rename on either side of the schema/service boundary fails here
+  instead of silently returning the whole table.
+- `tests/phase2-tool-catalog-parity.test.ts` — registered tools == category union
+  (minus the meta-tool allowlist), no phantom or duplicated entries. Closes the
+  drift class that had gone unenforced for months.
+
+---
+
 ## 2.19.0-gds — 2026-08-26 — First GDS production release
 
 Cut over live on **the production host** (docker-compose, local build from this fork,

@@ -584,12 +584,14 @@ describe('AutotaskService', () => {
       });
 
       const service = new AutotaskService(configWithUrl, mockLogger);
-      const result = await service.searchCompanies();
+      const { items: result } = await service.searchCompanies();
 
       // page=1, pageSize=25 (defaults) → targetEnd=25, slice(0, 25)
       expect(result).toHaveLength(25);
       expect(result[0].id).toBe(1);
-      expect(capturedMaxRecords).toBe(25);
+      // One record beyond the window is requested so `hasMore` reflects whether
+      // another page exists rather than guessing from the page being full.
+      expect(capturedMaxRecords).toBe(26);
     });
 
     test('searchCompanies applies searchTerm and isActive filters', async () => {
@@ -651,7 +653,7 @@ describe('AutotaskService', () => {
       const service = new AutotaskService(configWithUrl, mockLogger);
 
       // page 2, pageSize 200 → callers expect IDs 201..400.
-      const result = await service.searchCompanies({ page: 2, pageSize: 200 });
+      const { items: result } = await service.searchCompanies({ page: 2, pageSize: 200 });
       expect(result).toHaveLength(200);
       expect(result[0].id).toBe(201);
       expect(result[result.length - 1].id).toBe(400);
@@ -819,10 +821,11 @@ describe('AutotaskService', () => {
       });
 
       const service = new AutotaskService(configWithUrl, mockLogger);
-      const result = await service.searchCompanies({ page: 1, pageSize: 25 } as any);
+      const { items: result } = await service.searchCompanies({ page: 1, pageSize: 25 } as any);
 
       expect(result).toHaveLength(25);
-      expect(capturedMaxRecords).toBe(25);
+      // 25 requested + the single hasMore probe record; still far below the 500 clamp.
+      expect(capturedMaxRecords).toBe(26);
     });
 
     // ---- search* filter translation (regression: issues #104, #105) ----
@@ -1034,7 +1037,7 @@ describe('AutotaskService', () => {
       });
 
       const service = new AutotaskService(configWithUrl, mockLogger);
-      const result = await service.searchTasks({ page: 2, pageSize: 25 } as any);
+      const { items: result } = await service.searchTasks({ page: 2, pageSize: 25 } as any);
 
       // page=2 with pageSize=25 → targetEnd=50, slice(25, 50) → tasks 26-50
       expect(result).toHaveLength(25);

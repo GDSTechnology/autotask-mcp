@@ -21,14 +21,18 @@
 # transport origin (peer address / X-Forwarded-For / User-Agent) is captured
 # automatically and logged next to it — no config needed.
 #
-# Pin the image to a release that carries per-instance impersonation mode
-# (>= 3.2.0). Both services share the same Autotask API credentials in
-# autotask-mcp.env (never commit real secrets — keep that file server-side).
+# Both services track `:latest` so a deploy is just `docker compose pull &&
+# docker compose up -d` — no YAML edit per release (semantic-release publishes
+# `:latest` alongside each version tag). Needs a release >= 3.2.0 for
+# per-instance impersonation mode. To pin/roll back, replace `:latest` with a
+# specific tag (e.g. `:3.2.0`) or a digest. Both services share the same
+# Autotask API credentials in autotask-mcp.env (never commit real secrets —
+# keep that file server-side).
 
 services:
   # ── Internal automations: n8n workflows + cron scheduler ──────────────────
   autotask-mcp:
-    image: ghcr.io/gdstechnology/autotask-mcp:3.2.0
+    image: ghcr.io/gdstechnology/autotask-mcp:latest
     container_name: autotask-mcp-server
     restart: unless-stopped
     env_file:
@@ -59,7 +63,7 @@ services:
 
   # ── User-facing assistants: ChatGPT connector + Hermes-in-Teams ───────────
   autotask-mcp-gpt:
-    image: ghcr.io/gdstechnology/autotask-mcp:3.2.0
+    image: ghcr.io/gdstechnology/autotask-mcp:latest
     container_name: autotask-mcp-gpt
     restart: unless-stopped
     env_file:

@@ -12,10 +12,71 @@ Each entry lists the merge commit and the PR number. Brief section references
 
 ## Unreleased — Phase 2 P0 repair & foundation
 
-Addresses the P0 "Repair & Foundation" block of the Phase 2 Development &
-Testing punch list (2026-09-16). Two defects were reported; both turned out to
-be instances of a wider class, and the audit is what this entry mostly records.
+Completes the P0 "Repair & Foundation" block of the Phase 2 Development &
+Testing punch list (2026-09-16) — items 1-5 (the reported defects and the
+contract tests around them) and items 6-8 (the write foundation).
 
+Two defects were reported; both turned out to be instances of wider classes, and
+two of the three remaining items turned out to be partly built already. The audit
+is what this entry mostly records. Field names and mutability below were read from
+this tenant's live `entityInformation/fields`, not assumed.
+
+### Safe orchestration — MCP-CORE-004 / MCP-CORE-005
+- `dryRun` existed on exactly one tool (`create_maintenance_ticket`), written inline.
+  Extracted to `utils/write-plan.ts` as the shared envelope every orchestrating
+  write now returns: `{ status, validation, ... }` where status is
+  `validation_failed` | `duplicate` | `dry_run` | a tool-specific success label,
+  and anything but the success label means **nothing was written**. `validation`
+  is the ordered trail of every precondition checked, including the ones that
+  passed — that is what makes a dry run reviewable. The orchestrator was
+  refactored onto it with its 16 existing tests unchanged, which is the evidence
+  the abstraction did not bend its contract.
+- Read-after-write coverage extended: `create_configuration_item` is registered
+  in `CREATE_TOOL_META` with `verifyRead`, and `link_project_commercial` confirms
+  field-by-field that the write actually landed.
+
+### Configuration item lifecycle writes — MCP-CI-001
+- CI reads (search, entitlement, coverage gaps) were strong; there were **no CI
+  write tools**. Adds `autotask_create_configuration_item` and
+  `autotask_update_configuration_item`.
+- The service had `createConfigurationItem`/`updateConfigurationItem` already, but
+  they were unguarded passthroughs over the top-level `POST /ConfigurationItems`
+  route with **no callers anywhere** — dead code. Replaced.
+- Live schema (`ConfigurationItems/entityInformation/fields`) drove the design:
+  `companyID` is REQUIRED but READ-ONLY, so creation goes through the
+  `Companies/{id}/ConfigurationItems` child route (§4.2 precedent) and a CI can
+  **never be moved between companies** — the update path refuses it with that
+  explanation. There is no lifecycle/status picklist on the entity either, so
+  retire is `isActive: false`.
+- Writes are filtered to the 33 fields Autotask actually accepts; the read-only
+  `rmm*`/`ssl*` audit surface it populates from the RMM integration is dropped
+  with a warning instead of failing the write.
+- Guards Autotask does not enforce: a referenced contract or parent CI must
+  belong to the same company as the CI. A CI covered by another company's
+  contract reports false entitlement.
+
+### Project commercial linkage — MCP-PROJ-001
+- Neither `create_project` nor `update_project` exposed `contractID` or
+  `opportunityID`, so a project could not be attached to the commercial record it
+  bills against. Both are writable on Projects (verified live).
+- Adds `autotask_link_project_commercial`: validates that contract and
+  opportunity belong to the **same company as the project** (Autotask will
+  happily point a project at another company's contract, silently misrouting its
+  billing), that the contract is active and unexpired, skips a no-op re-link as
+  `duplicate`, supports `dryRun`, and reads the link back field-by-field.
+- Three fields `update_project` advertised are not writable Projects fields at
+  all and were being forwarded to no effect: `estimatedTime` (read-only, rolled
+  up from tasks) and `assignedResourceID`/`assignedResourceRoleID` (Task fields).
+  They remain accepted as arguments so nothing breaks, are marked IGNORED in
+  their descriptions, and are no longer sent upstream.
+- The department field is `department`, not the advertised `departmentID`, so
+  that value was silently dropped on every update. Both spellings now work.
+
+### Tests (items 6-8)
+- `tests/phase2-write-foundation.test.ts` — the envelope's no-write invariant, CI
+  child-route creation, the read-only `companyID` refusal, unwritable-field
+  stripping, both cross-company ownership guards, dry-run, duplicate detection,
+  and `verified: false` when a write is accepted but not applied.
 ### Pagination — MCP-DEF-001 / MCP-CORE-001
 - **`page` was accepted and discarded by 7 of the 9 search tools that advertised it.**
   Only `searchCompanies` and `searchTasks` honored it; every other search read
@@ -50,7 +111,7 @@ be instances of a wider class, and the audit is what this entry mostly records.
   categorized; the 5 remaining uncategorized tools are meta-tools (discovery,
   router, raw escape hatch) and are allowlisted as deliberate.
 
-### Tests
+### Tests (items 1-5)
 - `tests/phase2-pagination-contract.test.ts` — table-driven across all 10
   paginated searches: page advances, no duplicate ids across pages, the walk
   terminates, `pageSize` is respected, a full final page reports `hasMore: false`,

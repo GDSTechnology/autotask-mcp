@@ -1399,6 +1399,32 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_link_project_commercial',
+    description: 'Link a project to its commercial records — contract and/or opportunity. Validates that each reference belongs to the SAME company as the project (Autotask will otherwise let a project bill against a contract owned by a different company) and that the contract is active and not expired, then writes and reads the link back to confirm it took. Returns the safe-orchestration envelope: status is validation_failed | duplicate | dry_run | linked; anything other than "linked" means nothing was written. Set dryRun:true to validate and see the planned change without writing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectID: {
+          type: 'number',
+          description: 'The project to link'
+        },
+        contractID: {
+          type: 'number',
+          description: 'Contract the project bills against. Must belong to the same company as the project, be active, and not be expired.'
+        },
+        opportunityID: {
+          type: 'number',
+          description: 'Opportunity the project was won from. Must belong to the same company as the project.'
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'Validate and return the planned change without writing (default false)'
+        }
+      },
+      required: ['projectID']
+    }
+  },
+  {
     name: 'autotask_update_project',
     description: 'Update an existing project in Autotask. Only the fields you provide will be updated. Common use case: set status=5 to mark a project Complete.',
     inputSchema: {
@@ -1420,17 +1446,37 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'number',
           description: 'Project status (1=New, 2=In Progress, 5=Complete). Set to 5 to mark the project complete.'
         },
+        department: {
+          type: 'number',
+          description: 'Department picklist ID owning the project. (The Projects field is "department"; "departmentID" is accepted as a legacy alias.)'
+        },
         departmentID: {
           type: 'number',
-          description: 'Department ID owning the project'
+          description: 'Legacy alias for "department". Prefer "department".'
+        },
+        contractID: {
+          type: 'number',
+          description: 'Contract this project bills against. Must belong to the same company as the project. Prefer autotask_link_project_commercial, which validates ownership and reads the link back.'
+        },
+        opportunityID: {
+          type: 'number',
+          description: 'Opportunity this project was won from. Must belong to the same company as the project. Prefer autotask_link_project_commercial, which validates ownership and reads the link back.'
+        },
+        statusDetail: {
+          type: 'string',
+          description: 'Free-text status detail shown alongside the status picklist'
+        },
+        purchaseOrderNumber: {
+          type: 'string',
+          description: 'Customer purchase order number for this project'
         },
         assignedResourceID: {
           type: 'number',
-          description: 'Primary assigned resource (project manager) ID. Note: Autotask may also require assignedResourceRoleID to be set alongside this field.'
+          description: 'IGNORED — not a Projects field in Autotask (it belongs to Tasks). Accepted for backward compatibility but never sent. Use projectLeadResourceID.'
         },
         assignedResourceRoleID: {
           type: 'number',
-          description: 'Role ID for the assigned resource. Required by Autotask when assignedResourceID is provided.'
+          description: 'IGNORED — not a Projects field in Autotask (it belongs to Tasks). Accepted for backward compatibility but never sent.'
         },
         projectLeadResourceID: {
           type: 'number',
@@ -1446,7 +1492,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         estimatedTime: {
           type: 'number',
-          description: 'Estimated time for the project, in hours'
+          description: 'IGNORED — read-only on Projects in Autotask (it is rolled up from tasks). Accepted for backward compatibility but never sent.'
         },
         userDefinedFields: {
           type: 'array',
@@ -2808,6 +2854,82 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         }
       },
       required: []
+    }
+  },
+  {
+    name: 'autotask_create_configuration_item',
+    description: 'Create a configuration item (managed asset) for a company. Created through the Companies/{companyID}/ConfigurationItems child route because companyID is read-only on the entity: it is fixed at creation and a CI can never be moved between companies afterwards. productID is required by Autotask. Validates that a referenced contract or parent CI belongs to the same company, since Autotask does not, and a CI covered by another company contract reports false entitlement. Fields Autotask does not accept (the rmm*/ssl* audit surface it populates itself) are dropped with a warning rather than failing the write.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Company that owns this CI. Required, and permanent: companyID is read-only after creation.' },
+        isActive: { type: 'boolean', description: 'Active state (default true). There is no separate lifecycle/status field on ConfigurationItems: isActive:false is how a CI is retired.' },
+        productID: { type: 'number', description: 'Product this CI is an instance of' },
+        companyLocationID: { type: 'number', description: 'Site/location the CI is installed at' },
+        contactID: { type: 'number', description: 'Contact who owns or is custodian of this CI' },
+        parentConfigurationItemID: { type: 'number', description: 'Parent CI, for child/component relationships. Must belong to the same company.' },
+        vendorID: { type: 'number', description: 'Vendor company the CI was supplied by' },
+        contractID: { type: 'number', description: 'Contract covering this CI. Must belong to the same company as the CI.' },
+        contractServiceID: { type: 'number', description: 'Specific contract service line covering this CI' },
+        contractServiceBundleID: { type: 'number', description: 'Contract service bundle covering this CI' },
+        serviceID: { type: 'number', description: 'Service this CI is an instance of' },
+        serviceBundleID: { type: 'number', description: 'Service bundle this CI belongs to' },
+        serviceLevelAgreementID: { type: 'number', description: 'SLA picklist ID. Use autotask_get_field_info (ConfigurationItems, serviceLevelAgreementID) for valid values.' },
+        configurationItemCategoryID: { type: 'number', description: 'CI category ID' },
+        configurationItemType: { type: 'number', description: 'CI type picklist ID. Use autotask_get_field_info (ConfigurationItems, configurationItemType) for valid values.' },
+        referenceNumber: { type: 'string', description: 'Reference number (asset tag)' },
+        referenceTitle: { type: 'string', description: 'Reference title / friendly name' },
+        serialNumber: { type: 'string', description: 'Serial number' },
+        location: { type: 'string', description: 'Free-text location within the site (e.g. MDF rack 3)' },
+        notes: { type: 'string', description: 'Notes' },
+        installDate: { type: 'string', description: 'Install date (ISO 8601)' },
+        warrantyExpirationDate: { type: 'string', description: 'Warranty expiration date (ISO 8601)' },
+        numberOfUsers: { type: 'number', description: 'Number of users this CI serves' },
+        dailyCost: { type: 'number', description: 'Daily cost' },
+        hourlyCost: { type: 'number', description: 'Hourly cost' },
+        monthlyCost: { type: 'number', description: 'Monthly cost' },
+        perUseCost: { type: 'number', description: 'Per-use cost' },
+        setupFee: { type: 'number', description: 'Setup fee' },
+      },
+      required: ['companyID', 'productID']
+    }
+  },
+  {
+    name: 'autotask_update_configuration_item',
+    description: 'Update a configuration item: the same lifecycle surface as create, minus companyID, which Autotask will not let you change (a CI cannot be moved between companies; retire it with isActive:false and create a new one under the correct company). Use isActive:false to retire/deactivate and isActive:true to reactivate; there is no separate lifecycle/status field on ConfigurationItems. Use companyLocationID to move a CI between sites, parentConfigurationItemID to re-parent it, and the contract/service fields to change its coverage. Fields Autotask does not accept are dropped with a warning.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'The configuration item to update' },
+        isActive: { type: 'boolean', description: 'Set false to retire/deactivate the CI, true to reactivate it' },
+        productID: { type: 'number', description: 'Product this CI is an instance of' },
+        companyLocationID: { type: 'number', description: 'Site/location the CI is installed at' },
+        contactID: { type: 'number', description: 'Contact who owns or is custodian of this CI' },
+        parentConfigurationItemID: { type: 'number', description: 'Parent CI, for child/component relationships. Must belong to the same company.' },
+        vendorID: { type: 'number', description: 'Vendor company the CI was supplied by' },
+        contractID: { type: 'number', description: 'Contract covering this CI. Must belong to the same company as the CI.' },
+        contractServiceID: { type: 'number', description: 'Specific contract service line covering this CI' },
+        contractServiceBundleID: { type: 'number', description: 'Contract service bundle covering this CI' },
+        serviceID: { type: 'number', description: 'Service this CI is an instance of' },
+        serviceBundleID: { type: 'number', description: 'Service bundle this CI belongs to' },
+        serviceLevelAgreementID: { type: 'number', description: 'SLA picklist ID. Use autotask_get_field_info (ConfigurationItems, serviceLevelAgreementID) for valid values.' },
+        configurationItemCategoryID: { type: 'number', description: 'CI category ID' },
+        configurationItemType: { type: 'number', description: 'CI type picklist ID. Use autotask_get_field_info (ConfigurationItems, configurationItemType) for valid values.' },
+        referenceNumber: { type: 'string', description: 'Reference number (asset tag)' },
+        referenceTitle: { type: 'string', description: 'Reference title / friendly name' },
+        serialNumber: { type: 'string', description: 'Serial number' },
+        location: { type: 'string', description: 'Free-text location within the site (e.g. MDF rack 3)' },
+        notes: { type: 'string', description: 'Notes' },
+        installDate: { type: 'string', description: 'Install date (ISO 8601)' },
+        warrantyExpirationDate: { type: 'string', description: 'Warranty expiration date (ISO 8601)' },
+        numberOfUsers: { type: 'number', description: 'Number of users this CI serves' },
+        dailyCost: { type: 'number', description: 'Daily cost' },
+        hourlyCost: { type: 'number', description: 'Hourly cost' },
+        monthlyCost: { type: 'number', description: 'Monthly cost' },
+        perUseCost: { type: 'number', description: 'Per-use cost' },
+        setupFee: { type: 'number', description: 'Setup fee' },
+      },
+      required: ['id']
     }
   },
   {
@@ -4387,7 +4509,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
@@ -4407,7 +4529,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   configuration_items: {
     description: 'Search and read configuration items (assets/devices), including contract/service entitlement links and coverage gaps',
-    tools: ['autotask_search_configuration_items', 'autotask_get_configuration_item', 'autotask_get_configuration_item_entitlement', 'autotask_search_configuration_item_coverage_gaps']
+    tools: ['autotask_search_configuration_items', 'autotask_get_configuration_item', 'autotask_create_configuration_item', 'autotask_update_configuration_item', 'autotask_get_configuration_item_entitlement', 'autotask_search_configuration_item_coverage_gaps']
   },
   company_notes: {
     description: 'Get, search, and create company notes',

@@ -1349,23 +1349,46 @@ export class AutotaskToolHandler {
       ['autotask_update_project', async (a) => {
         const { projectId, ...rest } = a;
         const updates: Record<string, any> = {};
+        // Only fields Autotask actually accepts on Projects reach the API
+        // (verified against entityInformation). `estimatedTime` is read-only
+        // there, and assignedResourceID/assignedResourceRoleID are Task fields,
+        // not Project ones — all three were being forwarded and doing nothing.
+        // They stay accepted as arguments so existing callers do not break, but
+        // are no longer sent upstream.
         for (const key of [
           'projectName',
           'description',
           'status',
-          'departmentID',
-          'assignedResourceID',
-          'assignedResourceRoleID',
+          'statusDetail',
           'projectLeadResourceID',
           'startDateTime',
           'endDateTime',
-          'estimatedTime',
+          'contractID',
+          'opportunityID',
+          'purchaseOrderNumber',
           'userDefinedFields'
         ]) {
           if (rest[key] !== undefined) updates[key] = rest[key];
         }
+        // The Projects field is `department`, not `departmentID`; the advertised
+        // spelling was silently dropped. Accept either.
+        const department = rest.department ?? rest.departmentID;
+        if (department !== undefined) updates.department = department;
         await s.updateProject(projectId, updates);
         return { result: undefined, message: `Successfully updated project ID: ${projectId}` };
+      }],
+      ['autotask_create_configuration_item', async (a) => {
+        const id = await s.createConfigurationItem(a);
+        return { result: id, message: `Successfully created configuration item with ID: ${id}` };
+      }],
+      ['autotask_update_configuration_item', async (a) => {
+        const { id, ...updates } = a;
+        await s.updateConfigurationItem(id, updates);
+        return { result: id, message: `Successfully updated configuration item ${id}` };
+      }],
+      ['autotask_link_project_commercial', async (a) => {
+        const r = await s.linkProjectCommercial(a);
+        return { result: r, message: `Project commercial linkage: ${r.status}` };
       }],
 
       // Resources

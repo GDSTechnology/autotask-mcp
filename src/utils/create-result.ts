@@ -78,6 +78,13 @@ export const CREATE_TOOL_META: Record<string, CreateToolMeta> = {
   autotask_create_service_call_ticket_resource: { entityType: 'ServiceCallTicketResources', parentType: 'ServiceCallTickets', parentIdArgs: ['serviceCallTicketID', 'serviceCallTicketId'] },
   autotask_create_time_entry: { entityType: 'TimeEntries' },
   autotask_create_project: { entityType: 'Projects', verifyRead: true },
+  // Child-route create (Companies/{id}/ConfigurationItems). GET /ConfigurationItems/{id}
+  // works, so the caller gets the stored CI back and can confirm the contract,
+  // location and parent links actually landed.
+  autotask_create_configuration_item: {
+    entityType: 'ConfigurationItems', parentType: 'Companies',
+    parentIdArgs: ['companyID', 'companyId'], verifyRead: true,
+  },
   autotask_create_contract: { entityType: 'Contracts' },
   autotask_create_contract_service: { entityType: 'ContractServices' },
   autotask_create_contract_milestone: { entityType: 'ContractMilestones', parentType: 'Contracts', parentIdArgs: ['contractID', 'contractId'], verifyRead: true },

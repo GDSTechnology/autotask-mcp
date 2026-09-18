@@ -27,6 +27,7 @@ import { summarizeUnbilled, UnbilledItem } from '../utils/unbilled-report';
 import { buildProjectHierarchy } from '../utils/project-structure';
 import { summarizeProjectLabor } from '../utils/project-labor';
 import { toProjectBlueprint } from '../utils/project-blueprint';
+import { WritePlan, WritePlanResult } from '../utils/write-plan';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1332,6 +1333,117 @@ export class AutotaskService {
     }
   }
 
+  /**
+   * Link a project to its commercial records — contract and/or opportunity
+   * (MCP-PROJ-001). Project reads already surface contract/milestone/opportunity
+   * context; this is the typed WRITE path, which did not exist: neither
+   * `autotask_create_project` nor `autotask_update_project` exposed `contractID`
+   * or `opportunityID`, so a project could not be attached to the commercial
+   * record it bills against.
+   *
+   * Both fields are writable on Projects (verified against this tenant's
+   * entityInformation). The guard that matters is ownership: Autotask will
+   * happily point a project at another company's contract, which silently
+   * misroutes that project's billing. So both references are checked to belong
+   * to the project's own company before anything is written.
+   *
+   * Follows the safe-orchestration contract (§MCP-CORE-004/005): validate →
+   * idempotency probe → optional dry run → write → read back and confirm the
+   * fields actually took.
+   */
+  async linkProjectCommercial(params: {
+    projectID: number;
+    contractID?: number;
+    opportunityID?: number;
+    dryRun?: boolean;
+  }): Promise<WritePlanResult> {
+    const plan = new WritePlan();
+
+    if (params.contractID == null && params.opportunityID == null) {
+      return plan.fail('input', 'Supply contractID, opportunityID, or both — nothing to link otherwise');
+    }
+
+    // 1. Project
+    const project = (await this.getProject(params.projectID).catch(() => null)) as Record<string, any> | null;
+    if (!project) return plan.fail('project', `Project ${params.projectID} not found`);
+    const projectCompanyID = project.companyID;
+    plan.ok('project', { companyID: projectCompanyID });
+
+    // 2. Contract: exists, owned by the same company, and commercially usable.
+    if (params.contractID != null) {
+      const contract = (await this.getContract(params.contractID)) as Record<string, any> | null;
+      if (!contract) return plan.fail('contract', `Contract ${params.contractID} not found`);
+      if (contract.companyID != null && projectCompanyID != null && contract.companyID !== projectCompanyID) {
+        return plan.fail('contract', `Contract ${params.contractID} belongs to company ${contract.companyID}, but project ${params.projectID} belongs to company ${projectCompanyID} — linking it would bill this project against another company's contract`);
+      }
+      const label = await this.contractStatusLabel(contract.status);
+      const endDate = contract.endDate ? new Date(contract.endDate) : null;
+      const expired = endDate != null && !Number.isNaN(endDate.getTime()) && endDate.getTime() < Date.now();
+      if (expired) return plan.fail('contract', `Contract ${params.contractID} is expired (endDate ${contract.endDate})`);
+      if (label != null && !/\bactive\b|\bin effect\b/i.test(label)) {
+        return plan.fail('contract', `Contract ${params.contractID} is not active (status "${label}")`);
+      }
+      plan.ok('contract', { statusLabel: label, endDate: contract.endDate });
+    }
+
+    // 3. Opportunity: exists and is owned by the same company.
+    if (params.opportunityID != null) {
+      const opp = (await this.getOpportunity(params.opportunityID)) as Record<string, any> | null;
+      if (!opp) return plan.fail('opportunity', `Opportunity ${params.opportunityID} not found`);
+      if (opp.companyID != null && projectCompanyID != null && opp.companyID !== projectCompanyID) {
+        return plan.fail('opportunity', `Opportunity ${params.opportunityID} belongs to company ${opp.companyID}, but project ${params.projectID} belongs to company ${projectCompanyID}`);
+      }
+      plan.ok('opportunity');
+    }
+
+    // 4. Idempotency: a re-link to the values already stored is a no-op, so say
+    //    so with evidence instead of issuing a pointless write.
+    const updates: Record<string, any> = {};
+    if (params.contractID != null && project.contractID !== params.contractID) updates.contractID = params.contractID;
+    if (params.opportunityID != null && project.opportunityID !== params.opportunityID) updates.opportunityID = params.opportunityID;
+    if (Object.keys(updates).length === 0) {
+      return plan.duplicate({
+        id: params.projectID,
+        entityType: 'Projects',
+        alreadyLinked: {
+          ...(params.contractID != null && { contractID: project.contractID }),
+          ...(params.opportunityID != null && { opportunityID: project.opportunityID }),
+        },
+      });
+    }
+    plan.ok('idempotency', { changing: Object.keys(updates) });
+
+    // 5. Dry run stops here.
+    if (params.dryRun) {
+      return plan.dryRun({
+        id: params.projectID,
+        entityType: 'Projects',
+        plannedUpdate: updates,
+        currentValues: { contractID: project.contractID ?? null, opportunityID: project.opportunityID ?? null },
+      });
+    }
+
+    // 6. Write, then read back and confirm each field actually took. A write
+    //    Autotask accepts but does not apply is the failure mode worth catching
+    //    here — `verified: false` says the link is NOT in place, unlike the
+    //    create-path `verified` flag, where the id stays authoritative.
+    await this.updateProject(params.projectID, updates as Partial<AutotaskProject>);
+    const after = (await this.getProject(params.projectID).catch(() => null)) as Record<string, any> | null;
+    const applied = Object.fromEntries(
+      Object.keys(updates).map((k) => [k, after ? after[k] === updates[k] : null])
+    );
+    const verified = after != null && Object.values(applied).every((v) => v === true);
+
+    return plan.done('linked', {
+      id: params.projectID,
+      entityType: 'Projects',
+      applied: updates,
+      verified,
+      fieldsConfirmed: applied,
+      item: after,
+    });
+  }
+
   async updateProject(id: number, updates: Partial<AutotaskProject>): Promise<void> {
     const http = await this.ensureClient();
     try {
@@ -1678,6 +1790,156 @@ export class AutotaskService {
   }
 
   /**
+   * Fields Autotask accepts when writing a ConfigurationItem, verified against
+   * this tenant's `ConfigurationItems/entityInformation/fields`. Anything else
+   * is either read-only (the whole `rmm*` / `ssl*` audit surface, which Autotask
+   * populates from the RMM integration) or not a field at all, and sending it
+   * risks the write being rejected outright.
+   *
+   * Deliberately absent: `companyID`. It is REQUIRED but READ-ONLY — set once,
+   * through the company child route at create time, and never changeable after.
+   * There is no "move this CI to another company" operation in the API.
+   */
+  private static readonly CI_WRITABLE_FIELDS = [
+    'productID', 'isActive',
+    // Placement and ownership
+    'companyLocationID', 'contactID', 'parentConfigurationItemID', 'vendorID',
+    // Commercial / entitlement
+    'contractID', 'contractServiceID', 'contractServiceBundleID',
+    'serviceID', 'serviceBundleID', 'serviceLevelAgreementID',
+    // Classification
+    'configurationItemCategoryID', 'configurationItemType',
+    // Identity and descriptive
+    'referenceNumber', 'referenceTitle', 'serialNumber', 'location', 'notes',
+    'installDate', 'warrantyExpirationDate', 'numberOfUsers',
+    // Costs
+    'dailyCost', 'hourlyCost', 'monthlyCost', 'perUseCost', 'setupFee',
+    // Domain records
+    'domain', 'domainRegistrarID', 'domainExpirationDateTime',
+    'domainRegistrationDateTime', 'domainLastUpdatedDateTime',
+  ] as const;
+
+  /** Keep only fields Autotask will accept, and report what was dropped. */
+  private pickCIWritableFields(input: Record<string, any>): { payload: Record<string, any>; ignored: string[] } {
+    const allowed = new Set<string>(AutotaskService.CI_WRITABLE_FIELDS as readonly string[]);
+    const payload: Record<string, any> = {};
+    const ignored: string[] = [];
+    for (const [k, v] of Object.entries(input)) {
+      if (v === undefined) continue;
+      if (allowed.has(k)) payload[k] = v;
+      else ignored.push(k);
+    }
+    return { payload, ignored };
+  }
+
+  /**
+   * Create a configuration item (MCP-CI-001). CI reads — search, entitlement,
+   * coverage gaps — already existed; the lifecycle WRITE path did not.
+   *
+   * Created through the company child route, because `companyID` is read-only on
+   * the entity: it is fixed by the route at creation and cannot be changed
+   * later. Same shape as `createContact` (§4.2).
+   *
+   * Guards before writing, since Autotask enforces none of these and each one
+   * silently produces a CI that misreports entitlement:
+   *   - the product exists (Autotask requires productID),
+   *   - a referenced contract belongs to the SAME company as the CI,
+   *   - a referenced parent CI belongs to the same company too.
+   */
+  async createConfigurationItem(data: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    const companyID = data.companyID ?? data.companyId;
+    if (companyID === undefined || companyID === null) {
+      throw new Error(
+        'Cannot create configuration item: companyID is required (configuration items are ' +
+        'created via the Companies/{companyID}/ConfigurationItems child route, and companyID ' +
+        'is read-only afterwards).'
+      );
+    }
+    if (data.productID === undefined || data.productID === null) {
+      throw new Error('Cannot create configuration item: productID is required by Autotask.');
+    }
+
+    if (data.contractID != null) {
+      const contract = (await this.getContract(data.contractID)) as Record<string, any> | null;
+      if (!contract) throw new Error(`Cannot create configuration item: contract ${data.contractID} not found.`);
+      if (contract.companyID != null && contract.companyID !== companyID) {
+        throw new Error(
+          `Cannot create configuration item: contract ${data.contractID} belongs to company ` +
+          `${contract.companyID}, not ${companyID}. A CI covered by another company's contract ` +
+          'reports false entitlement.'
+        );
+      }
+    }
+    if (data.parentConfigurationItemID != null) {
+      const parent = (await this.getConfigurationItem(data.parentConfigurationItemID)) as Record<string, any> | null;
+      if (!parent) throw new Error(`Cannot create configuration item: parent CI ${data.parentConfigurationItemID} not found.`);
+      if (parent.companyID != null && parent.companyID !== companyID) {
+        throw new Error(
+          `Cannot create configuration item: parent CI ${data.parentConfigurationItemID} belongs to ` +
+          `company ${parent.companyID}, not ${companyID}.`
+        );
+      }
+    }
+
+    const { payload, ignored } = this.pickCIWritableFields(data);
+    if (payload.isActive === undefined) payload.isActive = true;
+    if (ignored.length > 0) {
+      this.logger.warn(
+        `createConfigurationItem: ignoring field(s) Autotask does not accept on ConfigurationItems: ${ignored.join(', ')}`
+      );
+    }
+
+    try {
+      const id = await http.childCreate('Companies', companyID, 'ConfigurationItems', payload);
+      this.logger.info(`Configuration item created with ID: ${id} (company ${companyID})`);
+      return id;
+    } catch (error) {
+      this.logger.error('Failed to create configuration item:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update a configuration item (MCP-CI-001) — the same lifecycle surface as
+   * create, minus `companyID`, which Autotask will not let you change.
+   *
+   * There is no lifecycle/status picklist on ConfigurationItems in this tenant:
+   * `isActive` is the only state field, so "retire" is `isActive: false`.
+   */
+  async updateConfigurationItem(id: number, updates: Record<string, any>): Promise<void> {
+    const http = await this.ensureClient();
+    if (updates.companyID !== undefined || updates.companyId !== undefined) {
+      throw new Error(
+        `Cannot update configuration item ${id}: companyID is read-only in Autotask. ` +
+        'A CI cannot be moved between companies — retire it (isActive: false) and create ' +
+        'a new one under the correct company.'
+      );
+    }
+
+    const { payload, ignored } = this.pickCIWritableFields(updates);
+    if (Object.keys(payload).length === 0) {
+      throw new Error(
+        `Cannot update configuration item ${id}: no writable fields supplied` +
+        (ignored.length > 0 ? ` (ignored: ${ignored.join(', ')})` : '') + '.'
+      );
+    }
+    if (ignored.length > 0) {
+      this.logger.warn(
+        `updateConfigurationItem: ignoring field(s) Autotask does not accept on ConfigurationItems: ${ignored.join(', ')}`
+      );
+    }
+
+    try {
+      await http.update('ConfigurationItems', id, payload);
+      this.logger.info(`Configuration item ${id} updated successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to update configuration item ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Resolve human-readable names for a configuration item's reference fields
    * (§5 enrichReferences). Best-effort: every lookup is independent and a
    * failed/absent reference is simply omitted — enrichment never throws or
@@ -1778,30 +2040,10 @@ export class AutotaskService {
     }
   }
 
-  async createConfigurationItem(configItem: Partial<AutotaskConfigurationItem>): Promise<number> {
-    const http = await this.ensureClient();
-    try {
-      this.logger.debug('Creating configuration item:', configItem);
-      const id = await http.create('ConfigurationItems', configItem);
-      this.logger.info(`Configuration item created with ID: ${id}`);
-      return id;
-    } catch (error) {
-      this.logger.error('Failed to create configuration item:', error);
-      throw error;
-    }
-  }
-
-  async updateConfigurationItem(id: number, updates: Partial<AutotaskConfigurationItem>): Promise<void> {
-    const http = await this.ensureClient();
-    try {
-      this.logger.debug(`Updating configuration item ${id}:`, updates);
-      await http.update('ConfigurationItems', id, updates as Record<string, any>);
-      this.logger.info(`Configuration item ${id} updated successfully`);
-    } catch (error) {
-      this.logger.error(`Failed to update configuration item ${id}:`, error);
-      throw error;
-    }
-  }
+  // Note: createConfigurationItem/updateConfigurationItem live above, next to
+  // getConfigurationItem. The unguarded passthroughs that used to sit here wrote
+  // through the top-level POST /ConfigurationItems route and were never exposed
+  // as tools (no callers anywhere) — they are replaced, not moved.
 
   // =====================================================
   // Contracts (read-only)
@@ -2918,16 +3160,15 @@ export class AutotaskService {
     allowDuplicate?: boolean;
     requireEntitlement?: boolean;
   }): Promise<Record<string, any>> {
-    const validation: Array<{ step: string; ok: boolean; detail?: any }> = [];
-    const fail = (step: string, detail: any) => {
-      validation.push({ step, ok: false, detail });
-      return { status: 'validation_failed', step, detail, validation };
-    };
+    // Standard safe-orchestration envelope (MCP-CORE-004): every early return
+    // below is a no-write outcome carrying the audit trail of what was checked.
+    const plan = new WritePlan();
+    const fail = (step: string, detail: any) => plan.fail(step, detail);
 
     // 1. Company
     const company = await this.getCompany(params.companyID).catch(() => null);
     if (!company) return fail('company', `Company ${params.companyID} not found`);
-    validation.push({ step: 'company', ok: true });
+    plan.ok('company');
 
     // 2. Contract (if supplied)
     if (params.contractID != null) {
@@ -2939,7 +3180,7 @@ export class AutotaskService {
       const active = label != null && /\bactive\b|\bin effect\b/i.test(label);
       if (expired) return fail('contract', `Contract ${params.contractID} is expired (endDate ${contract.endDate})`);
       if (label != null && !active) return fail('contract', `Contract ${params.contractID} is not active (status "${label}")`);
-      validation.push({ step: 'contract', ok: true, detail: { statusLabel: label, endDate: contract.endDate } });
+      plan.ok('contract', { statusLabel: label, endDate: contract.endDate });
     }
 
     // 3. Contract service (if supplied)
@@ -2949,7 +3190,7 @@ export class AutotaskService {
       if (params.contractID != null && cs.contractID !== params.contractID) {
         return fail('contractService', `ContractService ${params.contractServiceID} belongs to contract ${cs.contractID}, not ${params.contractID}`);
       }
-      validation.push({ step: 'contractService', ok: true });
+      plan.ok('contractService');
     }
 
     // 4. Primary CI ownership + activity (if supplied)
@@ -2963,9 +3204,9 @@ export class AutotaskService {
       if (params.requireEntitlement) {
         const ent = await this.getConfigurationItemEntitlement(params.configurationItemID);
         if (!ent.isEntitled) return fail('entitlement', { reason: ent.reason, evidence: ent.evidence });
-        validation.push({ step: 'entitlement', ok: true, detail: { reason: ent.reason } });
+        plan.ok('entitlement', { reason: ent.reason });
       }
-      validation.push({ step: 'configurationItem', ok: true });
+      plan.ok('configurationItem');
     }
 
     // 5. Idempotency: existing occurrence?
@@ -2973,9 +3214,9 @@ export class AutotaskService {
     if (params.externalID) {
       existing = await this.findTicketByExternalId(params.externalID);
       if (existing.length > 0 && !params.allowDuplicate) {
-        return { status: 'duplicate', existingTickets: existing, validation };
+        return plan.duplicate({ existingTickets: existing });
       }
-      validation.push({ step: 'idempotency', ok: true, detail: { existing: existing.length } });
+      plan.ok('idempotency', { existing: existing.length });
     }
 
     const ticketPayload: Record<string, any> = {
@@ -2992,14 +3233,12 @@ export class AutotaskService {
 
     // 6. Dry run stops here — return the plan without writing.
     if (params.dryRun) {
-      return {
-        status: 'dry_run',
-        validation,
+      return plan.dryRun({
         plannedTicket: ticketPayload,
         wouldLinkConfigurationItems: params.additionalConfigurationItemIDs ?? [],
         wouldApplyChecklistLibraryID: params.checklistLibraryID ?? null,
         existingTickets: existing,
-      };
+      });
     }
 
     // 7-9. Create → link CIs → apply checklist → read back.
@@ -3017,16 +3256,14 @@ export class AutotaskService {
     let item = createResult.item;
     if (!item) { try { item = await this.getTicket(createResult.id, true); } catch { /* id authoritative */ } }
 
-    return {
-      status: 'created',
+    return plan.done('created', {
       id: createResult.id,
       entityType: 'Tickets',
       item,
       additionalConfigurationItems: createResult.additionalConfigurationItems,
       linkErrors: createResult.linkErrors,
       checklist,
-      validation,
-    };
+    });
   }
 
   // =====================================================

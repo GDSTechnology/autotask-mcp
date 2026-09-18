@@ -1353,6 +1353,74 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Calculate project schedule', readOnlyHint: true }
   },
   {
+    name: 'autotask_build_project_from_plan',
+    description: "Build engine: realize a validated project build plan as a real Autotask project — project → phases (parent-first) → tasks → task dependencies. SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written and the tool returns the planned mutation counts for review. Idempotent + resumable: it tags the project with a build key and, on a re-run (same buildKey, or same company+name), reuses the existing project and creates only the phases/tasks/dependencies still missing (matched by title), so a retry after a partial failure never duplicates. Returns the shared write-plan envelope (status: dry_run | built | built_with_errors | validation_failed) with the Autotask projectId, a per-ref → id map, and a created/reused summary. Produce the plan with the SOW→project pipeline (or autotask_calculate_project_schedule for dates); this tool only builds an approved plan.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan: {
+          type: 'object',
+          description: 'Normalized project build plan (same shape as autotask_calculate_project_schedule). Tasks/phases use client-side string refs; the engine maps them to Autotask ids.',
+          properties: {
+            name: { type: 'string', description: 'Project name (also the idempotency name)' },
+            archetype: { type: 'string', description: 'Optional GDS archetype classification' },
+            source: { type: 'string', description: 'Optional provenance (SOW/quote id) — recorded in the project description, not built' },
+            phases: {
+              type: 'array',
+              description: 'Phases (optional). Each: { ref, title, parentRef?, description? } — ref is a unique client-side id; parentRef nests a sub-phase.',
+              items: {
+                type: 'object',
+                properties: {
+                  ref: { type: 'string' },
+                  title: { type: 'string' },
+                  parentRef: { type: 'string' },
+                  description: { type: 'string' }
+                },
+                required: ['ref', 'title']
+              }
+            },
+            tasks: {
+              type: 'array',
+              description: 'Tasks. Each: { ref, title, estimatedHours, phaseRef?, predecessors?, lagDays?, taskType?, description? }. predecessors are task refs that must finish first.',
+              items: {
+                type: 'object',
+                properties: {
+                  ref: { type: 'string' },
+                  title: { type: 'string' },
+                  estimatedHours: { type: 'number' },
+                  phaseRef: { type: 'string' },
+                  predecessors: { type: 'array', items: { type: 'string' }, description: 'Refs of tasks that must finish before this one starts' },
+                  lagDays: { type: 'number' },
+                  taskType: { type: 'number' },
+                  description: { type: 'string' }
+                },
+                required: ['ref', 'title', 'estimatedHours']
+              }
+            }
+          },
+          required: ['name', 'tasks']
+        },
+        companyID: { type: 'number', description: 'Company the project belongs to' },
+        buildKey: { type: 'string', description: 'Stable idempotency key for this build (default: "<companyID>:<plan.name>"). Re-running with the same key resumes instead of duplicating.' },
+        projectDefaults: {
+          type: 'object',
+          description: 'Autotask project fields applied on create (e.g. status, projectType, startDate, endDate, projectLeadResourceID, department). projectType is required by Autotask to create a project.',
+          properties: {
+            status: { type: 'number', description: 'Project status (e.g. 1=New, 2=In Progress)' },
+            projectType: { type: 'number', description: 'Project type (2=Proposal, 3=Template, 4=Internal, 5=Client, 8=Baseline)' },
+            startDate: { type: 'string', description: 'Project start date (YYYY-MM-DD)' },
+            endDate: { type: 'string', description: 'Project end date (YYYY-MM-DD)' },
+            projectLeadResourceID: { type: 'number', description: 'Project manager resource ID' },
+            department: { type: 'number', description: 'Department id' }
+          }
+        },
+        dryRun: { type: 'boolean', description: 'When true (DEFAULT), validate and return the plan without writing. Pass false to actually build.', default: true }
+      },
+      required: ['plan', 'companyID']
+    },
+    annotations: { title: 'Build project from plan' }
+  },
+  {
     name: 'autotask_create_project',
     description: 'Create a new project in Autotask',
     inputSchema: {
@@ -4538,7 +4606,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_build_project_from_plan', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

@@ -1390,6 +1390,20 @@ export class AutotaskToolHandler {
         const r = await s.linkProjectCommercial(a);
         return { result: r, message: `Project commercial linkage: ${r.status}` };
       }],
+      ['autotask_build_project_from_plan', async (a) => {
+        const r = await s.buildProjectFromPlan({
+          plan: a.plan, companyID: a.companyID, buildKey: a.buildKey,
+          projectDefaults: a.projectDefaults, dryRun: a.dryRun,
+        });
+        const sm = r.summary as Record<string, number> | undefined;
+        const msg =
+          r.status === 'dry_run' ? `Dry run OK — would create ${r.plannedPhases} phase(s), ${r.plannedTasks} task(s), ${r.plannedDependencies} dependency link(s)${r.existingProjectId ? ` (resuming project ${r.existingProjectId})` : ''}; nothing written`
+          : r.status === 'validation_failed' ? `Validation failed at step "${r.step}": ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`
+          : r.status === 'built' ? `Built project ${r.projectId}: +${sm?.phasesCreated} phase(s), +${sm?.tasksCreated} task(s), +${sm?.dependenciesCreated} dependency link(s)${r.resumed ? ' (resumed)' : ''}`
+          : r.status === 'built_with_errors' ? `Built project ${r.projectId} with ${(r.errors as any[])?.length} error(s): +${sm?.tasksCreated} task(s), +${sm?.phasesCreated} phase(s) — re-run to complete`
+          : `Build result: ${r.status}`;
+        return { result: r, message: msg };
+      }],
 
       // Resources
       ['autotask_search_resources', async (a) => {

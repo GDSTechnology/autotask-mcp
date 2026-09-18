@@ -1148,6 +1148,27 @@ export class AutotaskToolHandler {
       ['autotask_search_service_calls', async (a) => {
         return paged(await s.searchServiceCalls(a), 'service calls');
       }],
+      ['autotask_reconcile_service_call', async (a) => {
+        const r = await s.reconcileServiceCall({ serviceCallId: a.serviceCallId, ticketId: a.ticketId });
+        if (!r) return { result: null, message: 'No service call / linked ticket found to reconcile' };
+        const msg = r.issues.length === 0
+          ? `Service call ${r.serviceCallId} on ticket ${r.ticketNumber ?? r.ticketId}: no billing issues`
+          : `Service call ${r.serviceCallId} on ticket ${r.ticketNumber ?? r.ticketId}: ${r.issues.join(', ')}` +
+            (r.atRiskPartsValue > 0 ? ` ($${r.atRiskPartsValue} parts unfulfilled)` : '');
+        return { result: r, message: msg };
+      }],
+      ['autotask_report_service_call_leakage', async (a) => {
+        const r = await s.reportServiceCallLeakage({
+          lookbackDays: a.lookbackDays, companyID: a.companyID,
+          maxServiceCalls: a.maxServiceCalls, includeClean: a.includeClean,
+        });
+        return {
+          result: r,
+          message: `Scanned ${r.scanned} open service call(s) since ${r.window.after}; ${r.flagged} flagged — ` +
+            `${r.totals.doneNotClosed} done-not-closed, ${r.totals.noTimeLogged} no-time, ${r.totals.partsUnfulfilled} parts-unfulfilled ($${r.totals.atRiskPartsValue}), ` +
+            `${r.totals.unbilledTime} with unbilled time (${r.totals.unbilledHours}h)` + (r.truncated ? ' [truncated]' : ''),
+        };
+      }],
       ['autotask_create_service_call', async (a) => {
         const id = await s.createServiceCall(a);
         return { result: id, message: `Successfully created service call with ID: ${id}` };

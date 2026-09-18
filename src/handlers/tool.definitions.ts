@@ -3974,6 +3974,33 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_reconcile_service_call',
+    description: "Reconcile ONE service call against its linked ticket to catch billing leakage (read-only). Detects: done-not-closed (open service call, scheduled window in the past, time logged on the ticket in that window — techs recovered from ticket history if the assignment was later cleared by an owner change); no-time-logged (past-scheduled, no time in window); parts-unfulfilled (ticket charges still 'Need to Order/Fulfill', i.e. not pulled from inventory, with $ value); and unbilled-time (billable time not yet approved/posted, in hours). Give a serviceCallId, or a ticketId (uses the first service call linked to it). Returns per-flag evidence + an `issues` list.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        serviceCallId: { type: 'number', description: 'Service call to reconcile' },
+        ticketId: { type: 'number', description: 'Alternatively, a ticket — reconciles the first service call linked to it' }
+      }
+    },
+    annotations: { title: 'Reconcile service call', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_report_service_call_leakage',
+    description: "Weekly billing-leakage sweep (read-only): scans OPEN, past-scheduled service calls in a look-back window and reconciles each, returning only the ones with issues plus a digest — counts of done-not-closed / no-time-logged / parts-unfulfilled / unbilled-time, total parts $ at risk, and total unbilled hours. Built for a scheduled run (e.g. an n8n weekly cron): bounded by maxServiceCalls so cost is predictable. Scope with lookbackDays and optional companyID.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lookbackDays: { type: 'number', description: 'How many days back to scan service calls by scheduled start date (default 30)', minimum: 1 },
+        companyID: { type: 'number', description: 'Limit the sweep to one company (omit for all)' },
+        maxServiceCalls: { type: 'number', description: 'Cap on service calls examined (default 100, max 500) — keeps a scheduled run bounded', minimum: 1, maximum: 500 },
+        includeClean: { type: 'boolean', description: 'Include reconciled calls with no issues in `items` (default false — only flagged)' }
+      },
+      required: []
+    },
+    annotations: { title: 'Service-call billing leakage sweep', readOnlyHint: true }
+  },
+  {
     name: 'autotask_create_service_call',
     description: 'Create a new service call in Autotask. Service calls are used to schedule and plan work on tickets.',
     inputSchema: {
@@ -4634,7 +4661,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   service_calls: {
     description: 'Service call dispatching, ticket linking, and resource assignments',
-    tools: ['autotask_search_service_calls', 'autotask_get_service_call', 'autotask_create_service_call', 'autotask_update_service_call', 'autotask_delete_service_call', 'autotask_search_service_call_tickets', 'autotask_create_service_call_ticket', 'autotask_delete_service_call_ticket', 'autotask_search_service_call_ticket_resources', 'autotask_create_service_call_ticket_resource', 'autotask_delete_service_call_ticket_resource']
+    tools: ['autotask_reconcile_service_call', 'autotask_report_service_call_leakage', 'autotask_search_service_calls', 'autotask_get_service_call', 'autotask_create_service_call', 'autotask_update_service_call', 'autotask_delete_service_call', 'autotask_search_service_call_tickets', 'autotask_create_service_call_ticket', 'autotask_delete_service_call_ticket', 'autotask_search_service_call_ticket_resources', 'autotask_create_service_call_ticket_resource', 'autotask_delete_service_call_ticket_resource']
   },
   company_todos: {
     description: 'Company To-Dos — CRM calendar follow-ups (distinct from tasks, checklist items, time entries, appointments, and service calls)',

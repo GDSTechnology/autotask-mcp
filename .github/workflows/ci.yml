@@ -57,15 +57,29 @@ jobs:
         run: npm test
 
   docker:
-    name: Docker build (token-free)
+    name: Docker build (token-free, multi-arch)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Build production image
-        run: |
-          docker build \
-            --build-arg VERSION=ci-${{ github.sha }} \
-            --build-arg COMMIT_SHA=${{ github.sha }} \
-            -t autotask-mcp:ci .
+      # Validate BOTH release architectures build (#74) — QEMU emulates arm64 so
+      # a regression that breaks the arm64 image is caught in CI, not at release.
+      # No push/load: multi-platform builds can't load into the local daemon, and
+      # building alone is the signal we want here.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Build production image (amd64 + arm64)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83  # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+            COMMIT_SHA=${{ github.sha }}

@@ -18,6 +18,7 @@ import { resolveActionType } from '../utils/company-todo';
 import { buildContactSearchFilter, normalizeContactNote } from '../utils/contact';
 import { resolveCompanyOwnerResourceID } from '../utils/company-owner';
 import { computeBlockHourUsage } from '../utils/block-hours';
+import { computeRecurringRevenue, RecurringRevenue, RecurringLine } from '../utils/recurring-revenue';
 import {
   computeReorder, computeCloseouts, computeStaleStock,
   InvProductRow, ProductRow, LocationRow, OpenChargeRow, StockedItemRow,
@@ -2254,6 +2255,201 @@ export class AutotaskService {
       filters.length > 0 ? filters : MATCH_ALL,
       { maxRecords: pageSize }
     );
+  }
+
+  /**
+   * Search ContractServiceBundles — the recurring BUNDLE lines on a contract
+   * (#73). Live schema (verified): contractID, serviceBundleID, unitPrice,
+   * adjustedPrice, invoiceDescription; no per-period `units` (those live in
+   * ContractServiceBundleUnits).
+   */
+  async searchContractServiceBundles(
+    options: { contractID?: number; serviceBundleID?: number; pageSize?: number } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'contractID', options.contractID);
+    pushEq(filters, 'serviceBundleID', options.serviceBundleID);
+    const pageSize = Math.min(options.pageSize || 25, 500);
+    return http.query<Record<string, any>>(
+      'ContractServiceBundles',
+      filters.length > 0 ? filters : MATCH_ALL,
+      { maxRecords: pageSize }
+    );
+  }
+
+  /**
+   * Search ContractServiceUnits — the per-period BILLED UNITS for a contract's
+   * service lines (#73). Each row is one line for one period with `units` and a
+   * (prorated on partial months) `price`. Live schema (verified): all fields
+   * read-only; contractID / contractServiceID / serviceID / startDate / endDate
+   * are queryable. `coversDate` narrows to the period covering a date (the
+   * roll-up path); `startAfter`/`startBefore` bound a reporting window.
+   */
+  async searchContractServiceUnits(
+    options: {
+      contractID?: number | undefined; contractServiceID?: number | undefined; serviceID?: number | undefined;
+      coversDate?: string | undefined; startAfter?: string | undefined; startBefore?: string | undefined; pageSize?: number | undefined;
+    } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'contractID', options.contractID);
+    pushEq(filters, 'contractServiceID', options.contractServiceID);
+    pushEq(filters, 'serviceID', options.serviceID);
+    if (options.coversDate) {
+      filters.push({ op: 'lte', field: 'startDate', value: options.coversDate });
+      filters.push({ op: 'gte', field: 'endDate', value: options.coversDate });
+    }
+    if (options.startAfter) filters.push({ op: 'gte', field: 'startDate', value: options.startAfter });
+    if (options.startBefore) filters.push({ op: 'lte', field: 'startDate', value: options.startBefore });
+    const pageSize = Math.min(options.pageSize || 100, 500);
+    return http.query<Record<string, any>>(
+      'ContractServiceUnits',
+      filters.length > 0 ? filters : MATCH_ALL,
+      { maxRecords: pageSize }
+    );
+  }
+
+  /**
+   * Search ContractServiceBundleUnits — the per-period BILLED UNITS for a
+   * contract's bundle lines (#73). Bundle analog of searchContractServiceUnits;
+   * keyed by contractServiceBundleID / serviceBundleID.
+   */
+  async searchContractServiceBundleUnits(
+    options: {
+      contractID?: number | undefined; contractServiceBundleID?: number | undefined; serviceBundleID?: number | undefined;
+      coversDate?: string | undefined; startAfter?: string | undefined; startBefore?: string | undefined; pageSize?: number | undefined;
+    } = {}
+  ): Promise<Array<Record<string, any>>> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'contractID', options.contractID);
+    pushEq(filters, 'contractServiceBundleID', options.contractServiceBundleID);
+    pushEq(filters, 'serviceBundleID', options.serviceBundleID);
+    if (options.coversDate) {
+      filters.push({ op: 'lte', field: 'startDate', value: options.coversDate });
+      filters.push({ op: 'gte', field: 'endDate', value: options.coversDate });
+    }
+    if (options.startAfter) filters.push({ op: 'gte', field: 'startDate', value: options.startAfter });
+    if (options.startBefore) filters.push({ op: 'lte', field: 'startDate', value: options.startBefore });
+    const pageSize = Math.min(options.pageSize || 100, 500);
+    return http.query<Record<string, any>>(
+      'ContractServiceBundleUnits',
+      filters.length > 0 ? filters : MATCH_ALL,
+      { maxRecords: pageSize }
+    );
+  }
+
+  /**
+   * Billed-units report for a contract (#73): the actual per-period unit
+   * rows for its service lines (and, unless excluded, bundle lines), enriched
+   * with service/bundle names. Read-only. Scope by contract, a single service
+   * line, and/or a start-date window.
+   */
+  async getContractBilledUnits(options: {
+    contractID?: number; contractServiceID?: number;
+    startAfter?: string; startBefore?: string; includeBundles?: boolean; pageSize?: number;
+  }): Promise<{
+    serviceUnits: Array<Record<string, any>>;
+    bundleUnits: Array<Record<string, any>>;
+    totalServiceUnits: number;
+    totalBundleUnits: number;
+    totalBilled: number;
+  }> {
+    const includeBundles = options.includeBundles !== false;
+    const serviceUnits = await this.searchContractServiceUnits({
+      contractID: options.contractID,
+      contractServiceID: options.contractServiceID,
+      startAfter: options.startAfter,
+      startBefore: options.startBefore,
+      pageSize: options.pageSize,
+    });
+    // Bundle units have no contractServiceID; only fetch them for a whole-contract
+    // scope (not when a single service line was requested).
+    const bundleUnits = includeBundles && options.contractServiceID == null
+      ? await this.searchContractServiceBundleUnits({
+          contractID: options.contractID,
+          startAfter: options.startAfter,
+          startBefore: options.startBefore,
+          pageSize: options.pageSize,
+        })
+      : [];
+    await this.enrichServiceUnitNames(serviceUnits, bundleUnits);
+    const sum = (rows: Array<Record<string, any>>) =>
+      rows.reduce((t, r) => t + (typeof r.price === 'number' ? r.price : 0), 0);
+    return {
+      serviceUnits,
+      bundleUnits,
+      totalServiceUnits: serviceUnits.length,
+      totalBundleUnits: bundleUnits.length,
+      totalBilled: Math.round((sum(serviceUnits) + sum(bundleUnits) + Number.EPSILON) * 100) / 100,
+    };
+  }
+
+  /**
+   * Recurring-revenue roll-up for a contract (#73): MRR/ARR from its service +
+   * bundle rate lines and the per-period units covering `asOf` (default today).
+   * MRR = Σ units × rate (rate = adjustedPrice ?? unitPrice) — the prorated
+   * per-period `price` is surfaced per line but never summed (see
+   * utils/recurring-revenue). Read-only.
+   */
+  async getContractRecurringRevenue(options: {
+    contractID: number; asOfDate?: string;
+  }): Promise<RecurringRevenue & { contractID: number }> {
+    const asOf = options.asOfDate ? new Date(options.asOfDate) : new Date();
+    const coversDate = asOf.toISOString().slice(0, 10);
+    const [serviceLines, bundleLines, serviceUnitRows, bundleUnitRows] = await Promise.all([
+      this.searchContractServices({ contractID: options.contractID, pageSize: 500 }),
+      this.searchContractServiceBundles({ contractID: options.contractID, pageSize: 500 }),
+      this.searchContractServiceUnits({ contractID: options.contractID, coversDate, pageSize: 500 }),
+      this.searchContractServiceBundleUnits({ contractID: options.contractID, coversDate, pageSize: 500 }),
+    ]);
+    const report = computeRecurringRevenue({
+      asOf,
+      serviceLines: serviceLines.map((l) => ({ id: l.id as number, refId: l.serviceID as number, unitPrice: l.unitPrice as number, adjustedPrice: l.adjustedPrice as number })),
+      bundleLines: bundleLines.map((l) => ({ id: l.id as number, refId: l.serviceBundleID as number, unitPrice: l.unitPrice as number, adjustedPrice: l.adjustedPrice as number })),
+      serviceUnits: serviceUnitRows.map((u) => ({ lineId: u.contractServiceID as number, units: u.units as number, price: u.price as number, startDate: u.startDate as string, endDate: u.endDate as string })),
+      bundleUnits: bundleUnitRows.map((u) => ({ lineId: u.contractServiceBundleID as number, units: u.units as number, price: u.price as number, startDate: u.startDate as string, endDate: u.endDate as string })),
+    });
+    await this.enrichRecurringLineNames(report.lines);
+    return { contractID: options.contractID, ...report };
+  }
+
+  /** Best-effort: attach `serviceName`/`serviceBundleName` to raw unit rows. */
+  private async enrichServiceUnitNames(
+    serviceUnits: Array<Record<string, any>>, bundleUnits: Array<Record<string, any>>
+  ): Promise<void> {
+    try {
+      const svcIds = [...new Set(serviceUnits.map((r) => r.serviceID).filter((v) => typeof v === 'number'))];
+      const bunIds = [...new Set(bundleUnits.map((r) => r.serviceBundleID).filter((v) => typeof v === 'number'))];
+      const svcNames = new Map<number, string>();
+      const bunNames = new Map<number, string>();
+      await Promise.all([
+        ...svcIds.map(async (id) => { const s = await this.getService(id).catch(() => null); if (s?.name) svcNames.set(id, s.name); }),
+        ...bunIds.map(async (id) => { const b = await this.getServiceBundle(id).catch(() => null); if (b?.name) bunNames.set(id, b.name); }),
+      ]);
+      for (const r of serviceUnits) if (svcNames.has(r.serviceID)) r.serviceName = svcNames.get(r.serviceID);
+      for (const r of bundleUnits) if (bunNames.has(r.serviceBundleID)) r.serviceBundleName = bunNames.get(r.serviceBundleID);
+    } catch { /* enrichment is best-effort */ }
+  }
+
+  /** Best-effort: attach `refName` (service or bundle name) to roll-up lines. */
+  private async enrichRecurringLineNames(lines: RecurringLine[]): Promise<void> {
+    try {
+      const svcIds = [...new Set(lines.filter((l) => l.kind === 'service' && l.refId != null).map((l) => l.refId as number))];
+      const bunIds = [...new Set(lines.filter((l) => l.kind === 'bundle' && l.refId != null).map((l) => l.refId as number))];
+      const svcNames = new Map<number, string>();
+      const bunNames = new Map<number, string>();
+      await Promise.all([
+        ...svcIds.map(async (id) => { const s = await this.getService(id).catch(() => null); if (s?.name) svcNames.set(id, s.name); }),
+        ...bunIds.map(async (id) => { const b = await this.getServiceBundle(id).catch(() => null); if (b?.name) bunNames.set(id, b.name); }),
+      ]);
+      for (const l of lines) {
+        const name = l.kind === 'service' ? svcNames.get(l.refId as number) : bunNames.get(l.refId as number);
+        if (name) l.refName = name;
+      }
+    } catch { /* enrichment is best-effort */ }
   }
 
   // =====================================================

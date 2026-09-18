@@ -4405,6 +4405,35 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Search contract services', readOnlyHint: true }
   },
   {
+    name: 'autotask_get_contract_billed_units',
+    description: 'Billed units per contract service line (read-only). Returns the actual per-period ContractServiceUnits rows (and, unless excluded, ContractServiceBundleUnits) for a contract: units, price (the prorated amount billed for that period — partial first/last months are prorated), cost, and the period start/end. Service/bundle names are attached. Scope to a whole contract (contractID), a single line (contractServiceID), and/or a start-date window (startAfter/startBefore). Use this for "what was actually billed on this contract per month?"; for a summarized monthly/annual recurring total use autotask_report_contract_recurring_revenue.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: { type: 'number', description: 'Return billed-unit rows for this contract' },
+        contractServiceID: { type: 'number', description: 'Return billed-unit rows for a single ContractService line (bundle units are omitted when set)' },
+        startAfter: { type: 'string', description: 'Only periods starting on/after this date (YYYY-MM-DD)' },
+        startBefore: { type: 'string', description: 'Only periods starting on/before this date (YYYY-MM-DD)' },
+        includeBundles: { type: 'boolean', description: 'Include ContractServiceBundleUnits (default true; ignored when contractServiceID is set)' },
+        pageSize: { type: 'number', description: 'Max rows per entity (default 100, max 500)', minimum: 1, maximum: 500 }
+      }
+    },
+    annotations: { title: 'Contract billed units', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_report_contract_recurring_revenue',
+    description: "Recurring-revenue roll-up for a contract (read-only): monthly (MRR) and annual (ARR) recurring revenue from its recurring service + bundle lines as of a date. Per line, monthly = current units × rate (adjustedPrice, else unitPrice); the prorated per-period billed amount is reported per line but is NOT what MRR sums, so partial first/last months don't distort the steady-state figure. Lines with no allocation covering the date are listed as inactive and excluded from MRR. Use asOfDate to value the contract at a point in time (default today).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contractID: { type: 'number', description: 'Contract to roll up' },
+        asOfDate: { type: 'string', description: 'Value recurring lines active on this date (YYYY-MM-DD; default today)' }
+      },
+      required: ['contractID']
+    },
+    annotations: { title: 'Contract recurring revenue (MRR/ARR)', readOnlyHint: true }
+  },
+  {
     name: 'autotask_get_contract_milestone',
     description: 'Get a single ContractMilestone by id — a commercial milestone payment on a contract (title, amount, dateDue, status, description, billingCodeID, isInitialPayment).',
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'ContractMilestone id' } }, required: ['id'] },
@@ -4517,7 +4546,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

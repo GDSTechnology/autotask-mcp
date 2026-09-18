@@ -1499,6 +1499,18 @@ export class AutotaskToolHandler {
         const r = await s.searchContractServices({ contractID: a.contractID, serviceID: a.serviceID, quoteItemID: a.quoteItemID, pageSize: a.pageSize });
         return { result: r, message: `Found ${r.length} contract service(s)` };
       }],
+      ['autotask_get_contract_billed_units', async (a) => {
+        const r = await s.getContractBilledUnits({
+          contractID: a.contractID, contractServiceID: a.contractServiceID,
+          startAfter: a.startAfter, startBefore: a.startBefore,
+          includeBundles: a.includeBundles, pageSize: a.pageSize,
+        });
+        return { result: r, message: `${r.totalServiceUnits} service + ${r.totalBundleUnits} bundle unit row(s); $${r.totalBilled} billed` };
+      }],
+      ['autotask_report_contract_recurring_revenue', async (a) => {
+        const r = await s.getContractRecurringRevenue({ contractID: a.contractID, asOfDate: a.asOfDate });
+        return { result: r, message: `MRR $${r.mrr} / ARR $${r.arr} across ${r.activeLineCount} active recurring line(s) as of ${r.asOf}` };
+      }],
       ['autotask_get_contract_milestone', async (a) => {
         const r = await s.getContractMilestone(a.id); return { result: r, message: r ? `Contract milestone ${a.id}` : `Contract milestone ${a.id} not found` };
       }],

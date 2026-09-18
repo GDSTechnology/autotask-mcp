@@ -84,20 +84,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Multi-arch (linux/amd64 + linux/arm64, #74). QEMU emulates arm64 so the
+      # single amd64 runner can build both; buildx assembles one manifest list
+      # pushed under each tag, so consumers auto-select their arch. The image is
+      # pure-Node on alpine with `npm ci --ignore-scripts`, so nothing is
+      # compiled per-arch — the arm64 build is clean.
+      - name: Record build date
+        id: builddate
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push (token-free SDK, traceable)
-        run: |
-          IMAGE="ghcr.io/gdstechnology/autotask-mcp"
-          VER="${{ needs.release.outputs.version }}"
-          docker build \
-            --build-arg VERSION="${VER}" \
-            --build-arg COMMIT_SHA="${GITHUB_SHA}" \
-            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -t "${IMAGE}:${VER}" \
-            -t "${IMAGE}:latest" \
-            .
-          docker push "${IMAGE}:${VER}"
-          docker push "${IMAGE}:latest"
-          echo "Pushed ${IMAGE}:${VER} (and :latest)"
+      - name: Build and push multi-arch (token-free SDK, traceable)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83  # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/gdstechnology/autotask-mcp:${{ needs.release.outputs.version }}
+            ghcr.io/gdstechnology/autotask-mcp:latest
+          build-args: |
+            VERSION=${{ needs.release.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.builddate.outputs.date }}

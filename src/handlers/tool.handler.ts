@@ -1160,11 +1160,11 @@ export class AutotaskToolHandler {
       ['autotask_report_service_call_leakage', async (a) => {
         const r = await s.reportServiceCallLeakage({
           lookbackDays: a.lookbackDays, companyID: a.companyID,
-          maxServiceCalls: a.maxServiceCalls, includeClean: a.includeClean,
+          maxServiceCalls: a.maxServiceCalls, includeClean: a.includeClean, includeCompleted: a.includeCompleted,
         });
         return {
           result: r,
-          message: `Scanned ${r.scanned} open service call(s) since ${r.window.after}; ${r.flagged} flagged — ` +
+          message: `Scanned ${r.scanned} service call(s) since ${r.window.after} (${r.scannedOpen} open, ${r.scannedCompleted} completed); ${r.flagged} flagged — ` +
             `${r.totals.doneNotClosed} done-not-closed, ${r.totals.noTimeLogged} no-time, ${r.totals.partsUnfulfilled} parts-unfulfilled ($${r.totals.atRiskPartsValue}), ` +
             `${r.totals.unbilledTime} with unbilled time (${r.totals.unbilledHours}h)` + (r.truncated ? ' [truncated]' : ''),
         };

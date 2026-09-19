@@ -3987,13 +3987,14 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_report_service_call_leakage',
-    description: "Weekly billing-leakage sweep (read-only): scans OPEN, past-scheduled service calls in a look-back window and reconciles each, returning only the ones with issues plus a digest — counts of done-not-closed / no-time-logged / parts-unfulfilled / unbilled-time, total parts $ at risk, and total unbilled hours. Built for a scheduled run (e.g. an n8n weekly cron): bounded by maxServiceCalls so cost is predictable. Scope with lookbackDays and optional companyID.",
+    description: "Weekly billing-leakage sweep (read-only): scans past-scheduled service calls in a look-back window and reconciles each, returning the ones with issues plus a digest — counts of done-not-closed / no-time-logged / parts-unfulfilled / unbilled-time, total parts $ at risk, and total unbilled hours. By default only OPEN calls are scanned (prevention — catch orphans before they close); set includeCompleted to also scan COMPLETED calls, whose ticket-level leakage (parts never pulled from inventory, billable time never approved) persists after close (recovery). Canceled calls are always excluded. Built for a scheduled run (e.g. an n8n weekly cron): bounded by maxServiceCalls so cost is predictable. Scope with lookbackDays and optional companyID.",
     inputSchema: {
       type: 'object',
       properties: {
         lookbackDays: { type: 'number', description: 'How many days back to scan service calls by scheduled start date (default 30)', minimum: 1 },
         companyID: { type: 'number', description: 'Limit the sweep to one company (omit for all)' },
         maxServiceCalls: { type: 'number', description: 'Cap on service calls examined (default 100, max 500) — keeps a scheduled run bounded', minimum: 1, maximum: 500 },
+        includeCompleted: { type: 'boolean', description: 'Also scan COMPLETED service calls (closed work) for parts-unfulfilled / unbilled-time — the recovery pass (default false = open calls only). done-not-closed / no-time-logged never fire for completed calls.' },
         includeClean: { type: 'boolean', description: 'Include reconciled calls with no issues in `items` (default false — only flagged)' }
       },
       required: []

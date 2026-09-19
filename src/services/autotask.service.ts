@@ -4761,9 +4761,9 @@ export class AutotaskService {
    * Read-only; bounded by `maxServiceCalls` so a scheduled run is predictable.
    */
   async reportServiceCallLeakage(opts: {
-    lookbackDays?: number; companyID?: number; maxServiceCalls?: number; includeClean?: boolean;
+    lookbackDays?: number; companyID?: number; maxServiceCalls?: number; includeClean?: boolean; includeCompleted?: boolean;
   } = {}): Promise<{
-    scanned: number; flagged: number; window: { after: string; before: string };
+    scanned: number; scannedOpen: number; scannedCompleted: number; flagged: number; window: { after: string; before: string };
     totals: { doneNotClosed: number; noTimeLogged: number; partsUnfulfilled: number; unbilledTime: number; atRiskPartsValue: number; unbilledHours: number };
     items: SCReconResult[];
     truncated: boolean;
@@ -4779,13 +4779,21 @@ export class AutotaskService {
       ...(opts.companyID != null ? { companyID: opts.companyID } : {}),
       pageSize: maxServiceCalls,
     } as AutotaskQueryOptionsExtended);
-    // Only OPEN calls (not Complete/Canceled) are at risk of the orphan cascade.
-    const open = (search.items ?? []).filter((sc) => {
+    // Canceled calls are dead artifacts, never leakage — always excluded. OPEN
+    // calls are the orphan-cascade / done-not-closed risk (prevention). COMPLETED
+    // calls (default off) still carry ticket-level leakage — parts never pulled
+    // from inventory, billable time never approved — that persists after close, so
+    // includeCompleted turns the sweep into a recovery pass over closed work too.
+    const includeCompleted = opts.includeCompleted === true;
+    const isCompleted = (s: any) => s.isComplete === 1 || s.isComplete === true || s.status === 2;
+    const candidatesAll = (search.items ?? []).filter((sc) => {
       const s = sc as any;
-      return s.isComplete !== 1 && s.isComplete !== true && s.status !== 2 && s.status !== 101 && s.status !== 102;
+      if (s.status === 101 || s.status === 102) return false; // canceled
+      return includeCompleted || !isCompleted(s);
     });
-    const truncated = open.length > maxServiceCalls;
-    const candidates = open.slice(0, maxServiceCalls);
+    const truncated = candidatesAll.length > maxServiceCalls;
+    const candidates = candidatesAll.slice(0, maxServiceCalls);
+    const scannedCompleted = candidates.filter((sc) => isCompleted(sc)).length;
 
     const results: SCReconResult[] = [];
     for (const sc of candidates) {
@@ -4803,6 +4811,8 @@ export class AutotaskService {
     };
     return {
       scanned: candidates.length,
+      scannedOpen: candidates.length - scannedCompleted,
+      scannedCompleted,
       flagged: flaggedItems.length,
       window: { after, before },
       totals,

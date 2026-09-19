@@ -139,11 +139,38 @@ describe('reportServiceCallLeakage (sweep, mocked)', () => {
 
     const r = await s.reportServiceCallLeakage({ lookbackDays: 45 });
     expect(r.scanned).toBe(1);                 // the completed one was filtered out
+    expect(r.scannedOpen).toBe(1);
+    expect(r.scannedCompleted).toBe(0);
     expect(r.flagged).toBe(1);
     expect(r.totals.doneNotClosed).toBe(1);
     expect(r.totals.partsUnfulfilled).toBe(1);
     expect(r.totals.atRiskPartsValue).toBe(150);
     expect(r.totals.unbilledTime).toBe(1);
     expect(r.items[0].ticketNumber).toBe('T20260714.0185');
+  });
+
+  test('includeCompleted also scans closed calls for parts/unbilled (recovery), skips canceled', async () => {
+    const s = new AutotaskService(config, new Logger('error'));
+    jest.spyOn(s, 'searchServiceCalls').mockResolvedValue({ items: [
+      { id: 4688, isComplete: 0, status: 1, startDateTime: '2026-08-10T15:00:00Z', endDateTime: '2026-08-10T18:00:00Z' },  // open
+      { id: 999, isComplete: 1, status: 2, startDateTime: '2026-08-01T15:00:00Z', endDateTime: '2026-08-01T18:00:00Z' },   // completed, still has unfulfilled parts
+      { id: 777, status: 101, startDateTime: '2026-08-02T15:00:00Z', endDateTime: '2026-08-02T18:00:00Z' },                 // canceled → always skipped
+    ] } as any);
+    jest.spyOn(s, 'searchServiceCallTickets').mockImplementation(async (o: any) =>
+      [{ id: 1, serviceCallID: o.serviceCallId, ticketID: 500 + o.serviceCallId }] as any);
+    jest.spyOn(s, 'searchTimeEntries').mockResolvedValue({ items: [] } as any);
+    jest.spyOn(s, 'searchTicketCharges').mockResolvedValue([{ id: 1, name: 'Cat6', status: 3, unitQuantity: 100, unitPrice: 1 }] as any); // $100 unfulfilled
+    jest.spyOn(s, 'searchTicketHistory').mockResolvedValue([] as any);
+    jest.spyOn(s, 'getTicket').mockResolvedValue({ ticketNumber: 'T' } as any);
+
+    const withCompleted = await s.reportServiceCallLeakage({ lookbackDays: 45, includeCompleted: true });
+    expect(withCompleted.scanned).toBe(2);            // open + completed, canceled excluded
+    expect(withCompleted.scannedCompleted).toBe(1);
+    expect(withCompleted.totals.partsUnfulfilled).toBe(2); // both the open and the completed call
+    expect(withCompleted.totals.atRiskPartsValue).toBe(200);
+
+    const openOnly = await s.reportServiceCallLeakage({ lookbackDays: 45 });
+    expect(openOnly.scanned).toBe(1);                 // completed call excluded by default
+    expect(openOnly.totals.partsUnfulfilled).toBe(1);
   });
 });

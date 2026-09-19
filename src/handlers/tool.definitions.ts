@@ -1353,6 +1353,32 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Calculate project schedule', readOnlyHint: true }
   },
   {
+    name: 'autotask_generate_project_labor_plan',
+    description: "Deterministic labor plan for a project build plan (no Autotask writes, no AI). Compares three views of labor per phase — PLANNED (sum of the plan's task estimatedHours), QUOTED (what was sold, from the SOW/quote — you supply it), and CALCULATED (derived from BOM/scope quantities — you supply it) — and flags phases whose planned hours differ from quoted/calculated by more than the variance threshold (default 15%). Never overwrites quoted labor; it only reports variance for review (flags like over_quoted / under_quoted). Returns per-phase and total hours + deltas. Feed the same `plan` as autotask_calculate_project_schedule.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        plan: {
+          type: 'object',
+          description: 'Normalized project build plan (same shape as autotask_calculate_project_schedule): { name, phases:[{ref,title,parentRef?}], tasks:[{ref,title,estimatedHours,phaseRef?,...}] }.',
+          properties: {
+            name: { type: 'string' },
+            phases: { type: 'array', items: { type: 'object', properties: { ref: { type: 'string' }, title: { type: 'string' }, parentRef: { type: 'string' } }, required: ['ref', 'title'] } },
+            tasks: { type: 'array', items: { type: 'object', properties: { ref: { type: 'string' }, title: { type: 'string' }, estimatedHours: { type: 'number' }, phaseRef: { type: 'string' } }, required: ['ref', 'title', 'estimatedHours'] } }
+          },
+          required: ['name', 'tasks']
+        },
+        quotedHoursByPhase: { type: 'object', description: 'Quoted labor hours keyed by phase ref, e.g. {"p1": 40, "p2": 16}', additionalProperties: { type: 'number' } },
+        calculatedHoursByPhase: { type: 'object', description: 'Labor hours calculated from BOM/scope quantities, keyed by phase ref', additionalProperties: { type: 'number' } },
+        quotedHoursTotal: { type: 'number', description: 'Total quoted hours when a per-phase breakdown is not available' },
+        calculatedHoursTotal: { type: 'number', description: 'Total calculated hours when a per-phase breakdown is not available' },
+        varianceThresholdPct: { type: 'number', description: 'Fractional variance that counts as material (default 0.15 = 15%)', minimum: 0 }
+      },
+      required: ['plan']
+    },
+    annotations: { title: 'Generate project labor plan', readOnlyHint: true }
+  },
+  {
     name: 'autotask_build_project_from_plan',
     description: "Build engine: realize a validated project build plan as a real Autotask project — project → phases (parent-first) → tasks → task dependencies. SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written and the tool returns the planned mutation counts for review. Idempotent + resumable: it tags the project with a build key and, on a re-run (same buildKey, or same company+name), reuses the existing project and creates only the phases/tasks/dependencies still missing (matched by title), so a retry after a partial failure never duplicates. Returns the shared write-plan envelope (status: dry_run | built | built_with_errors | validation_failed) with the Autotask projectId, a per-ref → id map, and a created/reused summary. Produce the plan with the SOW→project pipeline (or autotask_calculate_project_schedule for dates); this tool only builds an approved plan.",
     inputSchema: {
@@ -4849,7 +4875,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_build_project_from_plan', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

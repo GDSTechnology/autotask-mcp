@@ -32,6 +32,7 @@ import { WritePlan, WritePlanResult } from '../utils/write-plan';
 import { ProjectBuildPlan, validateBuildPlan } from '../utils/project-plan';
 import { planProjectBuild, buildMarker, hasBuildMarker } from '../utils/project-build';
 import { reconcileServiceCall as reconcileServiceCallPure, SCReconResult } from '../utils/service-call-reconciliation';
+import { analyzeTicketBillingGaps as analyzeTicketBillingGapsPure, TBGResult, TBGTimeEntry, COMPLETE_TICKET_STATUS } from '../utils/ticket-billing-gaps';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -5156,6 +5157,113 @@ export class AutotaskService {
       this.logger.error(`Failed to get billing code ${id}:`, error);
       throw error;
     }
+  }
+
+  // Per-instance memo of work-type attributes (useType / billingCodeType / name)
+  // so the ticket-billing-gaps sweep resolves each billingCodeID at most once.
+  private billingCodeAttrCache = new Map<number, { useType?: number; billingCodeType?: number; name?: string }>();
+  private async resolveBillingCodeAttrs(id: number): Promise<{ useType?: number; billingCodeType?: number; name?: string }> {
+    const hit = this.billingCodeAttrCache.get(id);
+    if (hit) return hit;
+    const bc = (await this.getBillingCode(id).catch(() => null)) as Record<string, any> | null;
+    const attrs = bc ? { useType: bc.useType, billingCodeType: bc.billingCodeType, name: bc.name } : {};
+    this.billingCodeAttrCache.set(id, attrs);
+    return attrs;
+  }
+
+  /**
+   * Ticket-anchored billing-completeness analysis (read-only, for review): does a
+   * ticket show work that wasn't captured/billed? Fetches the ticket's time
+   * entries, tech reply notes and contract, resolves each entry's work type, and
+   * flags work-not-logged / note-without-time / billable-marked-non-billable.
+   */
+  async analyzeTicketBillingGaps(ticketId: number): Promise<TBGResult | null> {
+    const ticket = (await this.getTicket(ticketId)) as Record<string, any> | null;
+    if (!ticket) return null;
+    const [teRes, notes] = await Promise.all([
+      this.searchTimeEntries({ ticketId, pageSize: 500 } as AutotaskQueryOptionsExtended).catch(() => ({ items: [] } as any)),
+      this.searchTicketNotes(ticketId).catch(() => [] as any[]),
+    ]);
+    let contractType: number | null = null;
+    if (ticket.contractID != null) {
+      const c = (await this.getContract(ticket.contractID).catch(() => null)) as Record<string, any> | null;
+      contractType = c?.contractType ?? null;
+    }
+    // Resolve work-type attributes for the entries' billing codes (cached).
+    const entries: TBGTimeEntry[] = [];
+    for (const e of (teRes.items ?? []) as Record<string, any>[]) {
+      const attrs = e.billingCodeID != null ? await this.resolveBillingCodeAttrs(e.billingCodeID) : {};
+      entries.push({
+        resourceID: e.resourceID, dateWorked: e.dateWorked, hoursWorked: e.hoursWorked,
+        hoursToBill: e.hoursToBill, isNonBillable: e.isNonBillable,
+        workTypeUseType: attrs.useType, workTypeBillingCodeType: attrs.billingCodeType, workTypeName: attrs.name,
+      });
+    }
+    return analyzeTicketBillingGapsPure({
+      ticket: {
+        id: ticketId, ticketNumber: ticket.ticketNumber, status: ticket.status,
+        completedDate: ticket.completedDate ?? null, contractType,
+      },
+      timeEntries: entries,
+      notes: (notes ?? []) as any[],
+    });
+  }
+
+  /**
+   * Weekly ticket billing-gaps sweep (read-only, for review): scans tickets
+   * active in a look-back window — OPEN and, unless excluded, COMPLETED — and
+   * returns the ones with gaps plus a digest. Bounded by maxTickets for a
+   * predictable scheduled run. This is a review report; the human decides.
+   */
+  async reportTicketBillingGaps(opts: {
+    lookbackDays?: number; companyID?: number; maxTickets?: number; includeCompleted?: boolean; includeClean?: boolean;
+  } = {}): Promise<{
+    scanned: number; flagged: number; window: { after: string };
+    totals: { workNotLogged: number; noteWithoutTime: number; billableMarkedNonbillable: number; suspectNonbillableHours: number; uncapturedNotes: number };
+    items: TBGResult[]; truncated: boolean;
+  }> {
+    const lookbackDays = opts.lookbackDays ?? 14;
+    const maxTickets = Math.min(opts.maxTickets ?? 100, 500);
+    const after = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
+    const includeCompleted = opts.includeCompleted !== false; // default TRUE — "all tickets"
+    const scope = { lastActivityAfter: after, ...(opts.companyID != null ? { companyID: opts.companyID } : {}) } as AutotaskQueryOptionsExtended;
+
+    // Open tickets (searchTickets excludes status 5 by default) + completed ones
+    // (status 5) so a closed ticket with uncaptured work is still reviewed.
+    const openRes = await this.searchTickets({ ...scope, pageSize: maxTickets });
+    const completedRes = includeCompleted
+      ? await this.searchTickets({ ...scope, status: COMPLETE_TICKET_STATUS, pageSize: maxTickets })
+      : ({ items: [] } as any);
+    const byId = new Map<number, Record<string, any>>();
+    for (const t of [...(openRes.items ?? []), ...(completedRes.items ?? [])] as Record<string, any>[]) {
+      if (t.id != null) byId.set(t.id, t);
+    }
+    const all = [...byId.values()];
+    const truncated = all.length > maxTickets;
+    const candidates = all.slice(0, maxTickets);
+
+    const results: TBGResult[] = [];
+    for (const t of candidates) {
+      const r = await this.analyzeTicketBillingGaps(t.id).catch(() => null);
+      if (r) results.push(r);
+    }
+    const flaggedItems = results.filter((r) => r.issues.length > 0);
+    const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+    const totals = {
+      workNotLogged: flaggedItems.filter((r) => r.flags.workNotLogged).length,
+      noteWithoutTime: flaggedItems.filter((r) => r.flags.notesWithoutTime.count > 0).length,
+      billableMarkedNonbillable: flaggedItems.filter((r) => r.flags.nonbillableSuspect.count > 0).length,
+      suspectNonbillableHours: round2(flaggedItems.reduce((s, r) => s + r.flags.nonbillableSuspect.hours, 0)),
+      uncapturedNotes: flaggedItems.reduce((s, r) => s + r.flags.notesWithoutTime.count, 0),
+    };
+    return {
+      scanned: candidates.length,
+      flagged: flaggedItems.length,
+      window: { after },
+      totals,
+      items: opts.includeClean ? results : flaggedItems,
+      truncated,
+    };
   }
 
   async searchBillingCodes(_options: AutotaskQueryOptionsExtended = {}): Promise<AutotaskBillingCode[]> {

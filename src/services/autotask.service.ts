@@ -31,6 +31,7 @@ import { toProjectBlueprint } from '../utils/project-blueprint';
 import { WritePlan, WritePlanResult } from '../utils/write-plan';
 import { ProjectBuildPlan, validateBuildPlan } from '../utils/project-plan';
 import { planProjectBuild, buildMarker, hasBuildMarker } from '../utils/project-build';
+import { reconcileServiceCall as reconcileServiceCallPure, SCReconResult } from '../utils/service-call-reconciliation';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -4705,6 +4706,119 @@ export class AutotaskService {
       this.logger.error('Failed to search service calls:', error);
       throw error;
     }
+  }
+
+  /**
+   * Reconcile one service call against its linked ticket's time entries, charges
+   * and history — detecting the billing-leakage classes (done-not-closed,
+   * no-time-logged, unfulfilled parts, unbilled time). Read-only. Resolve by
+   * serviceCallId, or by ticketId (uses the first service call linked to it).
+   */
+  async reconcileServiceCall(opts: { serviceCallId?: number; ticketId?: number }): Promise<SCReconResult | null> {
+    let serviceCallId = opts.serviceCallId;
+    if (serviceCallId == null && opts.ticketId != null) {
+      const links = await this.searchServiceCallTickets({ ticketId: opts.ticketId } as AutotaskQueryOptionsExtended);
+      serviceCallId = links[0]?.serviceCallID;
+    }
+    if (serviceCallId == null) return null;
+    const sc = await this.getServiceCall(serviceCallId);
+    if (!sc) return null;
+    return this.reconcileFetchedServiceCall(sc);
+  }
+
+  /** Shared fetch+reconcile for one already-loaded service call (used by the sweep). */
+  private async reconcileFetchedServiceCall(sc: AutotaskServiceCall): Promise<SCReconResult | null> {
+    const links = await this.searchServiceCallTickets({ serviceCallId: (sc as any).id } as AutotaskQueryOptionsExtended);
+    const ticketId = links[0]?.ticketID;
+    if (ticketId == null) return null;
+    const [teRes, charges, history] = await Promise.all([
+      this.searchTimeEntries({ ticketId, pageSize: 500 } as AutotaskQueryOptionsExtended).catch(() => ({ items: [] } as any)),
+      this.searchTicketCharges({ ticketId, pageSize: 200 } as AutotaskQueryOptionsExtended & { ticketId?: number }).catch(() => []),
+      this.searchTicketHistory({ ticketId, pageSize: 300 } as AutotaskQueryOptionsExtended & { ticketId?: number }).catch(() => []),
+    ]);
+    let ticketNumber: string | undefined;
+    try { ticketNumber = ((await this.getTicket(ticketId)) as any)?.ticketNumber; } catch { /* best-effort */ }
+    return reconcileServiceCallPure({
+      serviceCall: {
+        id: (sc as any).id,
+        isComplete: (sc as any).isComplete,
+        status: (sc as any).status,
+        startDateTime: (sc as any).startDateTime,
+        endDateTime: (sc as any).endDateTime,
+      },
+      ticketId,
+      ...(ticketNumber !== undefined ? { ticketNumber } : {}),
+      timeEntries: (teRes.items ?? []) as any[],
+      charges: charges as any[],
+      history: history as any[],
+    });
+  }
+
+  /**
+   * Weekly billing-leakage sweep: scan open, past-scheduled service calls in a
+   * look-back window and reconcile each, returning only the ones with issues
+   * plus a digest (counts per issue type, parts $ at risk, unbilled hours).
+   * Read-only; bounded by `maxServiceCalls` so a scheduled run is predictable.
+   */
+  async reportServiceCallLeakage(opts: {
+    lookbackDays?: number; companyID?: number; maxServiceCalls?: number; includeClean?: boolean; includeCompleted?: boolean;
+  } = {}): Promise<{
+    scanned: number; scannedOpen: number; scannedCompleted: number; flagged: number; window: { after: string; before: string };
+    totals: { doneNotClosed: number; noTimeLogged: number; partsUnfulfilled: number; unbilledTime: number; atRiskPartsValue: number; unbilledHours: number };
+    items: SCReconResult[];
+    truncated: boolean;
+  }> {
+    const lookbackDays = opts.lookbackDays ?? 30;
+    const maxServiceCalls = Math.min(opts.maxServiceCalls ?? 100, 500);
+    const now = new Date();
+    const after = new Date(now.getTime() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
+    const before = now.toISOString().slice(0, 10);
+
+    const search = await this.searchServiceCalls({
+      startAfter: after, startBefore: before,
+      ...(opts.companyID != null ? { companyID: opts.companyID } : {}),
+      pageSize: maxServiceCalls,
+    } as AutotaskQueryOptionsExtended);
+    // Canceled calls are dead artifacts, never leakage — always excluded. OPEN
+    // calls are the orphan-cascade / done-not-closed risk (prevention). COMPLETED
+    // calls (default off) still carry ticket-level leakage — parts never pulled
+    // from inventory, billable time never approved — that persists after close, so
+    // includeCompleted turns the sweep into a recovery pass over closed work too.
+    const includeCompleted = opts.includeCompleted === true;
+    const isCompleted = (s: any) => s.isComplete === 1 || s.isComplete === true || s.status === 2;
+    const candidatesAll = (search.items ?? []).filter((sc) => {
+      const s = sc as any;
+      if (s.status === 101 || s.status === 102) return false; // canceled
+      return includeCompleted || !isCompleted(s);
+    });
+    const truncated = candidatesAll.length > maxServiceCalls;
+    const candidates = candidatesAll.slice(0, maxServiceCalls);
+    const scannedCompleted = candidates.filter((sc) => isCompleted(sc)).length;
+
+    const results: SCReconResult[] = [];
+    for (const sc of candidates) {
+      const r = await this.reconcileFetchedServiceCall(sc).catch(() => null);
+      if (r) results.push(r);
+    }
+    const flaggedItems = results.filter((r) => r.issues.length > 0);
+    const totals = {
+      doneNotClosed: flaggedItems.filter((r) => r.flags.doneNotClosed).length,
+      noTimeLogged: flaggedItems.filter((r) => r.flags.noTimeLogged).length,
+      partsUnfulfilled: flaggedItems.filter((r) => r.flags.unfulfilledParts.count > 0).length,
+      unbilledTime: flaggedItems.filter((r) => r.flags.unbilledTime.count > 0).length,
+      atRiskPartsValue: Math.round((flaggedItems.reduce((s, r) => s + r.atRiskPartsValue, 0) + Number.EPSILON) * 100) / 100,
+      unbilledHours: Math.round((flaggedItems.reduce((s, r) => s + r.flags.unbilledTime.hours, 0) + Number.EPSILON) * 100) / 100,
+    };
+    return {
+      scanned: candidates.length,
+      scannedOpen: candidates.length - scannedCompleted,
+      scannedCompleted,
+      flagged: flaggedItems.length,
+      window: { after, before },
+      totals,
+      items: opts.includeClean ? results : flaggedItems,
+      truncated,
+    };
   }
 
   async createServiceCall(data: Partial<AutotaskServiceCall>): Promise<number> {

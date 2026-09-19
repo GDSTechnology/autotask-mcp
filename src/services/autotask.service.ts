@@ -29,6 +29,8 @@ import { buildProjectHierarchy } from '../utils/project-structure';
 import { summarizeProjectLabor } from '../utils/project-labor';
 import { toProjectBlueprint } from '../utils/project-blueprint';
 import { WritePlan, WritePlanResult } from '../utils/write-plan';
+import { ProjectBuildPlan, validateBuildPlan } from '../utils/project-plan';
+import { planProjectBuild, buildMarker, hasBuildMarker } from '../utils/project-build';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1455,6 +1457,195 @@ export class AutotaskService {
       this.logger.error(`Failed to update project ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Find a previously-built project for a build key so a re-run resumes instead
+   * of duplicating (#46). Matches the build marker in the description first
+   * (authoritative), falling back to an exact projectName match within the
+   * company (covers a project created before markers, or edited descriptions).
+   */
+  private async findProjectByBuildKey(
+    companyID: number, buildKey: string, projectName: string
+  ): Promise<AutotaskProject | null> {
+    const { items } = await this.searchProjects({ companyID, pageSize: 500 } as AutotaskQueryOptions);
+    const marked = items.find((p) => hasBuildMarker((p as Record<string, any>).description, buildKey));
+    if (marked) return marked;
+    return items.find((p) => (p.projectName ?? '').trim() === projectName.trim()) ?? null;
+  }
+
+  /**
+   * Build engine (#46, §14): realize a validated ProjectBuildPlan as a real
+   * Autotask project — project → phases (parent-first) → tasks → dependencies —
+   * with the shared write-plan envelope. Safe by construction:
+   *
+   *  - dryRun defaults ON: unless `dryRun === false`, nothing is written; the
+   *    planned mutation counts are returned for review.
+   *  - idempotent + resumable: a re-run finds the prior project by build marker
+   *    (or name) and creates only the phases/tasks/dependencies still missing
+   *    (matched by title within the project), so a retry after a partial failure
+   *    never duplicates.
+   *  - partial-failure reporting: per-entity errors are collected and returned;
+   *    the created ids stay authoritative so a follow-up run completes the rest.
+   */
+  async buildProjectFromPlan(params: {
+    plan: ProjectBuildPlan;
+    companyID: number;
+    buildKey?: string | undefined;
+    projectDefaults?: Record<string, any> | undefined;
+    dryRun?: boolean | undefined;
+  }): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+
+    // 1. Structural validation of the plan (pure).
+    const v = validateBuildPlan(params.plan);
+    if (!v.valid) return wp.fail('plan', { errors: v.errors, warnings: v.warnings });
+    wp.ok('plan', { phases: (params.plan.phases ?? []).length, tasks: (params.plan.tasks ?? []).length, warnings: v.warnings });
+
+    // 2. Company must exist (the project's owner).
+    if (params.companyID == null) return wp.fail('company', 'companyID is required');
+    const company = await this.getCompany(params.companyID);
+    if (!company) return wp.fail('company', `Company ${params.companyID} not found`);
+    wp.ok('company', { id: params.companyID });
+
+    const bp = planProjectBuild(params.plan);
+    const buildKey = (params.buildKey && params.buildKey.trim()) || `${params.companyID}:${params.plan.name}`;
+
+    // 3. Idempotency probe: is there already a project for this build key?
+    const existing = await this.findProjectByBuildKey(params.companyID, buildKey, params.plan.name);
+    wp.ok('idempotency', existing ? { existingProjectId: existing.id, resume: true } : { willCreateProject: true });
+
+    // 4. Dry run (default) — report the plan; write nothing.
+    if (params.dryRun !== false) {
+      return wp.dryRun({
+        buildKey,
+        existingProjectId: existing?.id ?? null,
+        plannedProject: { projectName: params.plan.name, companyID: params.companyID, ...(params.projectDefaults ?? {}) },
+        plannedPhases: bp.counts.phases,
+        plannedTasks: bp.counts.tasks,
+        plannedDependencies: bp.counts.dependencies,
+      });
+    }
+
+    // 5. Execute. Collect per-entity outcomes; never throw past a single record —
+    //    a partial build must be resumable, so we record the error and continue.
+    const errors: Array<{ step: string; ref?: string; detail: string }> = [];
+
+    // 5a. Project (reuse existing, else create with the build marker embedded).
+    let projectId: number;
+    if (existing?.id != null) {
+      projectId = existing.id;
+    } else {
+      const description = [params.plan.source, buildMarker(buildKey)].filter(Boolean).join('\n');
+      projectId = await this.createProject({
+        projectName: params.plan.name,
+        companyID: params.companyID,
+        description,
+        ...(params.projectDefaults ?? {}),
+      } as Partial<AutotaskProject>);
+    }
+
+    // 5b. Existing phases/tasks (for resume) → title→id maps.
+    const phaseTitleToId = new Map<string, number>();
+    const taskTitleToId = new Map<string, number>();
+    if (existing?.id != null) {
+      try {
+        const [ph, tk] = await Promise.all([
+          this.searchPhases(projectId, { pageSize: 500 }),
+          this.searchTasks({ projectID: projectId, pageSize: 500 } as AutotaskQueryOptions),
+        ]);
+        for (const p of ph.items) if (p.title && p.id != null) phaseTitleToId.set(p.title, p.id);
+        for (const t of tk.items) if (t.title && t.id != null) taskTitleToId.set(t.title, t.id);
+      } catch (e) {
+        errors.push({ step: 'load-existing', detail: (e as Error).message });
+      }
+    }
+
+    // 5c. Phases (parent-first). refs → real ids.
+    const phaseRefToId = new Map<string, number>();
+    const phaseResults: Array<{ ref: string; id: number | null; reused: boolean }> = [];
+    for (const p of bp.orderedPhases) {
+      try {
+        let id = phaseTitleToId.get(p.title);
+        const reused = id != null;
+        if (id == null) {
+          const payload: Record<string, any> = { projectID: projectId, title: p.title };
+          if (p.description) payload.description = p.description;
+          if (p.parentRef && phaseRefToId.has(p.parentRef)) payload.parentPhaseID = phaseRefToId.get(p.parentRef);
+          id = await this.createPhase(payload as Partial<AutotaskPhase>);
+          phaseTitleToId.set(p.title, id);
+        }
+        phaseRefToId.set(p.ref, id);
+        phaseResults.push({ ref: p.ref, id, reused });
+      } catch (e) {
+        errors.push({ step: 'phase', ref: p.ref, detail: (e as Error).message });
+        phaseResults.push({ ref: p.ref, id: null, reused: false });
+      }
+    }
+
+    // 5d. Tasks. refs → real ids.
+    const taskRefToId = new Map<string, number>();
+    const taskResults: Array<{ ref: string; id: number | null; reused: boolean }> = [];
+    for (const t of bp.tasks) {
+      try {
+        let id = taskTitleToId.get(t.title);
+        const reused = id != null;
+        if (id == null) {
+          const payload: Record<string, any> = { projectID: projectId, title: t.title, estimatedHours: t.estimatedHours ?? 0 };
+          if (t.description) payload.description = t.description;
+          if (t.phaseRef && phaseRefToId.has(t.phaseRef)) payload.phaseID = phaseRefToId.get(t.phaseRef);
+          if (t.taskType != null) payload.taskType = t.taskType;
+          id = await this.createTask(payload as Partial<AutotaskTask>);
+          taskTitleToId.set(t.title, id);
+        }
+        taskRefToId.set(t.ref, id);
+        taskResults.push({ ref: t.ref, id, reused });
+      } catch (e) {
+        errors.push({ step: 'task', ref: t.ref, detail: (e as Error).message });
+        taskResults.push({ ref: t.ref, id: null, reused: false });
+      }
+    }
+
+    // 5e. Dependencies. Skip any already present (resume-safe); skip edges whose
+    //     endpoints didn't get created.
+    let depsCreated = 0;
+    let depsReused = 0;
+    for (const edge of bp.dependencies) {
+      const successorId = taskRefToId.get(edge.taskRef);
+      const predId = taskRefToId.get(edge.predecessorRef);
+      if (successorId == null || predId == null) {
+        errors.push({ step: 'dependency', ref: `${edge.taskRef}<-${edge.predecessorRef}`, detail: 'endpoint task not created' });
+        continue;
+      }
+      try {
+        if (existing?.id != null) {
+          const current = await this.listTaskPredecessors(successorId);
+          if (current.some((r) => (r as Record<string, any>).predecessorTaskID === predId)) { depsReused++; continue; }
+        }
+        await this.addTaskPredecessor(successorId, predId, edge.lagDays);
+        depsCreated++;
+      } catch (e) {
+        errors.push({ step: 'dependency', ref: `${edge.taskRef}<-${edge.predecessorRef}`, detail: (e as Error).message });
+      }
+    }
+
+    const summary = {
+      phasesCreated: phaseResults.filter((p) => p.id != null && !p.reused).length,
+      phasesReused: phaseResults.filter((p) => p.reused).length,
+      tasksCreated: taskResults.filter((t) => t.id != null && !t.reused).length,
+      tasksReused: taskResults.filter((t) => t.reused).length,
+      dependenciesCreated: depsCreated,
+      dependenciesReused: depsReused,
+    };
+    return wp.done(errors.length > 0 ? 'built_with_errors' : 'built', {
+      projectId,
+      buildKey,
+      resumed: existing?.id != null,
+      summary,
+      phases: phaseResults,
+      tasks: taskResults,
+      ...(errors.length > 0 ? { errors } : {}),
+    });
   }
 
   /**

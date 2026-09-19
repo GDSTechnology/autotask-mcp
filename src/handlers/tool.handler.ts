@@ -12,6 +12,7 @@ import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
 import { calculateProjectSchedule } from '../utils/project-schedule.js';
+import { generateProjectLaborPlan } from '../utils/project-labor-plan.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1374,6 +1375,23 @@ export class AutotaskToolHandler {
         return {
           result: r,
           message: `Scheduled ${r.taskCount} task(s): ${r.startDate} → ${r.targetCompletionDate} (${r.durationWorkingDays} working days, ${r.totalEstimatedHours}h)${warn}`,
+        };
+      }],
+      ['autotask_generate_project_labor_plan', async (a) => {
+        // Pure/deterministic — no Autotask I/O. Compares planned vs quoted vs
+        // calculated labor for a caller-provided plan.
+        const r = generateProjectLaborPlan({
+          plan: a.plan,
+          quotedHoursByPhase: a.quotedHoursByPhase,
+          calculatedHoursByPhase: a.calculatedHoursByPhase,
+          quotedHoursTotal: a.quotedHoursTotal,
+          calculatedHoursTotal: a.calculatedHoursTotal,
+          varianceThresholdPct: a.varianceThresholdPct,
+        });
+        const q = r.totals.quotedHours != null ? ` vs ${r.totals.quotedHours}h quoted` : '';
+        return {
+          result: r,
+          message: `Labor plan: ${r.totals.plannedHours}h planned${q} across ${r.phases.length} phase(s); ${r.flaggedPhases} flagged for variance (>${Math.round(r.varianceThresholdPct * 100)}%)`,
         };
       }],
       ['autotask_create_project', async (a) => {

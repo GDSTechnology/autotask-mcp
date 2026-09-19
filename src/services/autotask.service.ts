@@ -38,6 +38,7 @@ import {
   planBulkProductUpdate, planProductMerge,
   CatalogGapsResult, ProductLite, SearchableProduct,
 } from '../utils/catalog-hygiene';
+import { computeProjectPL, ProjectPLResult } from '../utils/project-pl';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -4985,6 +4986,58 @@ export class AutotaskService {
       this.logger.error('Failed to search time entries:', error);
       throw error;
     }
+  }
+
+  /**
+   * Profitability (P&L) for a project / task / ticket (#98), bucketed by week or
+   * month. Burden-based cost from ALL time worked (billable or not, posted or
+   * not) vs realized revenue from posted billing items, with posted-vs-pending
+   * clarity and a cost-coverage flag for hours whose resource has no burden set.
+   * Read-only. Give exactly one of projectID / taskId / ticketId.
+   */
+  async getProjectPL(opts: {
+    projectID?: number; taskId?: number; ticketId?: number;
+    bucket?: 'week' | 'month'; from?: string; to?: string;
+  }): Promise<ProjectPLResult> {
+    const http = await this.ensureClient();
+    const bucket = opts.bucket ?? 'month';
+    const scope: 'project' | 'task' | 'ticket' = opts.projectID != null ? 'project' : opts.taskId != null ? 'task' : 'ticket';
+    const entityId = (opts.projectID ?? opts.taskId ?? opts.ticketId)!;
+    if (entityId == null) throw new Error('getProjectPL requires one of projectID, taskId, ticketId');
+
+    // Resolve the set of taskIDs / ticketID that scope the time entries.
+    const teFilters: QueryFilter[] = [];
+    const biFilters: QueryFilter[] = [];
+    if (scope === 'project') {
+      const tasks = await this.searchTasks({ projectID: opts.projectID, pageSize: 500 } as AutotaskQueryOptionsExtended);
+      const taskIds = tasks.items.map((t) => t.id).filter((x): x is number => x != null);
+      if (taskIds.length === 0) teFilters.push({ op: 'eq', field: 'taskID', value: -1 }); // no tasks → no labor
+      else teFilters.push({ op: 'in', field: 'taskID', value: taskIds });
+      biFilters.push({ op: 'eq', field: 'projectID', value: opts.projectID });
+    } else if (scope === 'task') {
+      teFilters.push({ op: 'eq', field: 'taskID', value: opts.taskId });
+      biFilters.push({ op: 'eq', field: 'taskID', value: opts.taskId });
+    } else {
+      teFilters.push({ op: 'eq', field: 'ticketID', value: opts.ticketId });
+      biFilters.push({ op: 'eq', field: 'ticketID', value: opts.ticketId });
+    }
+    if (opts.from) { teFilters.push({ op: 'gte', field: 'dateWorked', value: opts.from }); biFilters.push({ op: 'gte', field: 'itemDate', value: opts.from }); }
+    if (opts.to) { teFilters.push({ op: 'lte', field: 'dateWorked', value: opts.to }); biFilters.push({ op: 'lte', field: 'itemDate', value: opts.to }); }
+
+    const [timeEntries, billingItems] = await Promise.all([
+      http.query<any>('TimeEntries', teFilters, { includeFields: ['id', 'resourceID', 'hoursWorked', 'isNonBillable', 'billingApprovalDateTime', 'dateWorked', 'taskID', 'ticketID'], maxRecords: 5000 }),
+      http.query<any>('BillingItems', biFilters, { includeFields: ['id', 'totalAmount', 'ourCost', 'billingItemType', 'nonBillable', 'postedDate', 'itemDate', 'projectID', 'taskID', 'ticketID'], maxRecords: 5000 }),
+    ]);
+
+    // Resource burden (internalCost) for the resources that logged time.
+    const resourceIds = [...new Set(timeEntries.map((t: any) => t.resourceID).filter((x: any): x is number => x != null))];
+    const burdenByResource = new Map<number, number>();
+    for (let i = 0; i < resourceIds.length; i += 200) {
+      const rows = await http.query<any>('Resources', [{ op: 'in', field: 'id', value: resourceIds.slice(i, i + 200) }], { includeFields: ['id', 'internalCost'], maxRecords: 500 });
+      for (const r of rows) burdenByResource.set(r.id, r.internalCost ?? 0);
+    }
+
+    return computeProjectPL({ scope, entityId, bucket, timeEntries, billingItems, burdenByResource });
   }
 
   // =====================================================

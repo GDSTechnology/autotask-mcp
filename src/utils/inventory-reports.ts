@@ -161,6 +161,17 @@ export interface StockedItemRow {
   createDateTime?: string;
   pickedRemovedDateTime?: string | null;
 }
+/** Aging buckets by oldest still-on-hand receipt (#41). */
+export type StaleBucket = 'lt90' | 'd90_180' | 'd180_365' | 'd365plus';
+/** Phantom = aged on-hand that was NEVER decremented in Autotask (likely a count
+ *  error — received historically, consumed physically but never drawn down).
+ *  dead-stock = had movement before but has stalled (genuine dead inventory). */
+export type StaleClassification = 'phantom' | 'dead-stock';
+
+export function staleBucketOf(days: number): StaleBucket {
+  return days < 90 ? 'lt90' : days < 180 ? 'd90_180' : days < 365 ? 'd180_365' : 'd365plus';
+}
+
 export interface StaleLine {
   inventoryProductID: number;
   productID: number | null;
@@ -170,6 +181,9 @@ export interface StaleLine {
   oldestReceiptDays: number;
   removedRecently: number;
   stale: boolean;
+  bucket: StaleBucket;
+  /** Set only for stale lines once movement history is known (see classifyStaleLines). */
+  classification?: StaleClassification | undefined;
 }
 
 /**
@@ -220,8 +234,22 @@ export function computeStaleStock(
       oldestReceiptDays: Math.round(g.oldest),
       removedRecently: g.removedRecently,
       stale: g.oldest > staleDays && g.removedRecently === 0,
+      bucket: staleBucketOf(Math.round(g.oldest)),
     });
   }
   lines.sort((a, b) => Number(b.stale) - Number(a.stale) || b.value - a.value);
   return lines;
+}
+
+/**
+ * Split stale lines into phantom vs dead-stock (#41) using movement history:
+ * `everRemoved` is the set of inventoryProductIDs that have ANY removal
+ * (pickedRemovedDateTime) on record — regardless of recency. A stale product not
+ * in that set was never decremented in Autotask → phantom; one in it had movement
+ * that has since stalled → genuine dead-stock. Only stale lines are classified.
+ */
+export function classifyStaleLines(lines: StaleLine[], everRemoved: Set<number>): void {
+  for (const l of lines) {
+    if (l.stale) l.classification = everRemoved.has(l.inventoryProductID) ? 'dead-stock' : 'phantom';
+  }
 }

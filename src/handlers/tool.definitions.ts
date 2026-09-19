@@ -2583,7 +2583,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_report_inventory_stale',
-    description: 'Inventory stale/trending report. On-hand stock aged by receipt date with recent-movement counts, flagging dead stock (in stock longer than the stale threshold with no recent removals) and ranking by tied-up value. The "is it selling or rotting on the shelf" report.',
+    description: 'Inventory stale/trending report. On-hand stock aged by receipt date with recent-movement counts, flagging dead stock (in stock longer than the stale threshold with no recent removals) and ranking by tied-up value. Each stale line carries an aging `bucket` (lt90 / d90_180 / d180_365 / d365plus, with per-bucket totals in `byBucket`) and a `classification`: "phantom" = never decremented in Autotask (no removal ever on record — likely a stock-count error to reconcile against physical) vs "dead-stock" = had movement but has stalled (genuine dead inventory). Summary includes phantomCount/phantomValue and deadStockCount/deadStockValue. The "is it selling, rotting on the shelf, or never really there" report.',
     inputSchema: {
       type: 'object',
       properties: {

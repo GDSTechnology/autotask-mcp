@@ -4002,6 +4002,32 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Service-call billing leakage sweep', readOnlyHint: true }
   },
   {
+    name: 'autotask_analyze_ticket_billing_gaps',
+    description: "Ticket-anchored billing-completeness check for review (read-only). For one ticket, flags: work-not-logged (a tech email-reply note or a completed ticket but ZERO time entries); note-without-time (a tech reply landed as an Email Note but no time entry by that tech on the same day — the classic 'CC'd the ticket, note added, time never finished'); and billable-marked-non-billable (a non-billable time entry that looks billable — its work type is client labor / not a Non-Billable code, and/or the contract is Time & Materials, and/or the ticket also has billable time). Returns per-entry evidence + which signals fired, for a human to decide. Use autotask_report_ticket_billing_gaps to sweep many tickets.",
+    inputSchema: {
+      type: 'object',
+      properties: { ticketId: { type: 'number', description: 'Ticket to analyze' } },
+      required: ['ticketId']
+    },
+    annotations: { title: 'Ticket billing gaps', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_report_ticket_billing_gaps',
+    description: "Weekly ticket billing-gaps sweep for review (read-only). Scans tickets active in a look-back window — OPEN and (default on) COMPLETED, so 'all tickets' are covered — and returns the ones with gaps plus a digest: counts of work-not-logged / note-without-time / billable-marked-non-billable, total suspect non-billable hours, and total uncaptured notes. This is a REVIEW report — no changes are made; you decide. Built for a scheduled run (n8n weekly cron); bounded by maxTickets. Scope with lookbackDays and optional companyID.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lookbackDays: { type: 'number', description: 'Scan tickets with activity in the last N days (default 14)', minimum: 1 },
+        companyID: { type: 'number', description: 'Limit to one company (omit for all)' },
+        maxTickets: { type: 'number', description: 'Cap on tickets examined (default 100, max 500) — keeps a scheduled run bounded', minimum: 1, maximum: 500 },
+        includeCompleted: { type: 'boolean', description: 'Also scan COMPLETED tickets (default true — "all tickets"). Set false for open-only.' },
+        includeClean: { type: 'boolean', description: 'Include tickets with no gaps in `items` (default false — only flagged)' }
+      },
+      required: []
+    },
+    annotations: { title: 'Ticket billing-gaps sweep', readOnlyHint: true }
+  },
+  {
     name: 'autotask_create_service_call',
     description: 'Create a new service call in Autotask. Service calls are used to schedule and plan work on tickets.',
     inputSchema: {
@@ -4642,7 +4668,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

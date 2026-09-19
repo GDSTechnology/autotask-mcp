@@ -1169,6 +1169,28 @@ export class AutotaskToolHandler {
             `${r.totals.unbilledTime} with unbilled time (${r.totals.unbilledHours}h)` + (r.truncated ? ' [truncated]' : ''),
         };
       }],
+      ['autotask_analyze_ticket_billing_gaps', async (a) => {
+        const r = await s.analyzeTicketBillingGaps(a.ticketId);
+        if (!r) return { result: null, message: `Ticket ${a.ticketId} not found` };
+        const msg = r.issues.length === 0
+          ? `Ticket ${r.ticketNumber ?? r.ticketId}: no billing gaps`
+          : `Ticket ${r.ticketNumber ?? r.ticketId}: ${r.issues.join(', ')}` +
+            (r.flags.nonbillableSuspect.hours > 0 ? ` (${r.flags.nonbillableSuspect.hours}h non-billable suspect)` : '') +
+            (r.flags.notesWithoutTime.count > 0 ? ` (${r.flags.notesWithoutTime.count} note(s) w/o time)` : '');
+        return { result: r, message: msg };
+      }],
+      ['autotask_report_ticket_billing_gaps', async (a) => {
+        const r = await s.reportTicketBillingGaps({
+          lookbackDays: a.lookbackDays, companyID: a.companyID,
+          maxTickets: a.maxTickets, includeCompleted: a.includeCompleted, includeClean: a.includeClean,
+        });
+        return {
+          result: r,
+          message: `Scanned ${r.scanned} ticket(s) active since ${r.window.after}; ${r.flagged} flagged — ` +
+            `${r.totals.workNotLogged} work-not-logged, ${r.totals.noteWithoutTime} note-without-time (${r.totals.uncapturedNotes} notes), ` +
+            `${r.totals.billableMarkedNonbillable} billable-marked-nonbillable (${r.totals.suspectNonbillableHours}h)` + (r.truncated ? ' [truncated]' : ''),
+        };
+      }],
       ['autotask_create_service_call', async (a) => {
         const id = await s.createServiceCall(a);
         return { result: id, message: `Successfully created service call with ID: ${id}` };

@@ -4271,6 +4271,117 @@ export class AutotaskService {
   }
 
   // =====================================================
+  // Product & Inventory full-access CRUD (#93 / #19)
+  // Admin cleanup needs create/update on the catalog and the full inventory
+  // surface (stock levels, locations, transfers, count adjustments), not just
+  // read reports. Thin wrappers over the REST entities; count-mutating writes
+  // (transfer / add / remove) are gated as inventory-movement (confirm:true).
+  // =====================================================
+
+  async createProduct(data: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    const id = await http.create('Products', data);
+    this.logger.info(`Product created with ID: ${id}`);
+    return id;
+  }
+  async updateProduct(id: number, updates: Record<string, any>): Promise<void> {
+    const http = await this.ensureClient();
+    await http.update('Products', id, updates);
+    this.logger.info(`Product ${id} updated`);
+  }
+
+  // --- InventoryProducts: a product's stock levels at a location ---
+  async searchInventoryProducts(opts: { productID?: number; inventoryLocationID?: number; pageSize?: number } = {}): Promise<any[]> {
+    const http = await this.ensureClient();
+    const f: QueryFilter[] = [];
+    pushEq(f, 'productID', opts.productID);
+    pushEq(f, 'inventoryLocationID', opts.inventoryLocationID);
+    return http.query<any>('InventoryProducts', f.length ? f : MATCH_ALL, { maxRecords: Math.min(opts.pageSize || 100, 500) });
+  }
+  async getInventoryProduct(id: number): Promise<any> {
+    const http = await this.ensureClient();
+    return http.get<any>('InventoryProducts', id);
+  }
+  async createInventoryProduct(data: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    const id = await http.create('InventoryProducts', data);
+    this.logger.info(`InventoryProduct created with ID: ${id}`);
+    return id;
+  }
+  async updateInventoryProduct(id: number, updates: Record<string, any>): Promise<void> {
+    const http = await this.ensureClient();
+    await http.update('InventoryProducts', id, updates);
+    this.logger.info(`InventoryProduct ${id} updated`);
+  }
+
+  // --- InventoryLocations: warehouses / tech vans ---
+  async searchInventoryLocations(opts: { isActive?: boolean; pageSize?: number } = {}): Promise<any[]> {
+    const http = await this.ensureClient();
+    const f: QueryFilter[] = [];
+    if (opts.isActive !== undefined) f.push({ op: 'eq', field: 'isActive', value: opts.isActive });
+    return http.query<any>('InventoryLocations', f.length ? f : MATCH_ALL, { maxRecords: Math.min(opts.pageSize || 200, 500) });
+  }
+  async getInventoryLocation(id: number): Promise<any> {
+    const http = await this.ensureClient();
+    return http.get<any>('InventoryLocations', id);
+  }
+  async createInventoryLocation(data: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    const id = await http.create('InventoryLocations', data);
+    this.logger.info(`InventoryLocation created with ID: ${id}`);
+    return id;
+  }
+  async updateInventoryLocation(id: number, updates: Record<string, any>): Promise<void> {
+    const http = await this.ensureClient();
+    await http.update('InventoryLocations', id, updates);
+    this.logger.info(`InventoryLocation ${id} updated`);
+  }
+
+  // --- InventoryStockedItems: individual stocked units (serials, counts) ---
+  async searchInventoryStockedItems(opts: { inventoryProductID?: number; currentInventoryLocationID?: number; serialNumber?: string; pageSize?: number } = {}): Promise<any[]> {
+    const http = await this.ensureClient();
+    const f: QueryFilter[] = [];
+    pushEq(f, 'inventoryProductID', opts.inventoryProductID);
+    pushEq(f, 'currentInventoryLocationID', opts.currentInventoryLocationID);
+    if (opts.serialNumber) f.push({ op: 'eq', field: 'serialNumber', value: opts.serialNumber });
+    return http.query<any>('InventoryStockedItems', f.length ? f : MATCH_ALL, { maxRecords: Math.min(opts.pageSize || 100, 500) });
+  }
+  async getInventoryStockedItem(id: number): Promise<any> {
+    const http = await this.ensureClient();
+    return http.get<any>('InventoryStockedItems', id);
+  }
+
+  // --- InventoryTransfers: move stock between locations ---
+  async searchInventoryTransfers(opts: { productID?: number; fromLocationID?: number; toLocationID?: number; pageSize?: number } = {}): Promise<any[]> {
+    const http = await this.ensureClient();
+    const f: QueryFilter[] = [];
+    pushEq(f, 'productID', opts.productID);
+    pushEq(f, 'fromLocationID', opts.fromLocationID);
+    pushEq(f, 'toLocationID', opts.toLocationID);
+    return http.query<any>('InventoryTransfers', f.length ? f : MATCH_ALL, { maxRecords: Math.min(opts.pageSize || 100, 500) });
+  }
+  async createInventoryTransfer(data: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    const id = await http.create('InventoryTransfers', data);
+    this.logger.info(`InventoryTransfer created with ID: ${id}`);
+    return id;
+  }
+
+  // --- Stock count adjustments (add / remove) ---
+  async addInventoryStock(data: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    const id = await http.create('InventoryStockedItemsAdd', data);
+    this.logger.info(`InventoryStockedItemsAdd created with ID: ${id}`);
+    return id;
+  }
+  async removeInventoryStock(data: Record<string, any>): Promise<number> {
+    const http = await this.ensureClient();
+    const id = await http.create('InventoryStockedItemsRemove', data);
+    this.logger.info(`InventoryStockedItemsRemove created with ID: ${id}`);
+    return id;
+  }
+
+  // =====================================================
   // Catalog hygiene (Phase A — read-only inspection, #93)
   // =====================================================
 

@@ -37,7 +37,13 @@ export const FINANCIAL_TOOLS = new Set<string>([
 export const EXTERNAL_COMM_TOOLS = new Set<string>([]);
 
 /** Inventory movements — show source/dest/qty/serials (§4.3, populated in Phase 3). */
-export const INVENTORY_MOVEMENT_TOOLS = new Set<string>([]);
+export const INVENTORY_MOVEMENT_TOOLS = new Set<string>([
+  // Count-mutating inventory writes — require an explicit confirm:true (§4.3).
+  // (remove_inventory_stock is classified 'destructive' via its annotation, which
+  // also forces confirmation, so it isn't listed here.)
+  'autotask_create_inventory_transfer',
+  'autotask_add_inventory_stock',
+]);
 
 export function classifyRisk(
   toolName: string,

@@ -1957,6 +1957,63 @@ export class AutotaskToolHandler {
         const r = await s.findDuplicateProducts({ activeOnly: a.activeOnly, maxProducts: a.maxProducts, limit: a.limit });
         return { result: r, message: `${r.duplicateGroups} duplicate group(s) covering ${r.totalDuplicateProducts} product(s) of ${r.scanned} scanned${r.truncated ? ' [truncated]' : ''}` };
       }],
+      // Product CRUD (full access)
+      ['autotask_create_product', async (a) => {
+        const id = await s.createProduct(a); return { result: id, message: `Created product ${id}` };
+      }],
+      ['autotask_update_product', async (a) => {
+        const { id, ...rest } = a; await s.updateProduct(id, rest); return { result: undefined, message: `Updated product ${id}` };
+      }],
+      // Inventory products (stock at a location)
+      ['autotask_search_inventory_products', async (a) => {
+        const r = await s.searchInventoryProducts({ productID: a.productID, inventoryLocationID: a.inventoryLocationID, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} inventory-product record(s)` };
+      }],
+      ['autotask_get_inventory_product', async (a) => {
+        const r = await s.getInventoryProduct(a.id); return { result: r, message: r ? `Inventory product ${a.id}` : `Inventory product ${a.id} not found` };
+      }],
+      ['autotask_create_inventory_product', async (a) => {
+        const id = await s.createInventoryProduct(a); return { result: id, message: `Created inventory-product ${id}` };
+      }],
+      ['autotask_update_inventory_product', async (a) => {
+        const { id, ...rest } = a; await s.updateInventoryProduct(id, rest); return { result: undefined, message: `Updated inventory-product ${id}` };
+      }],
+      // Inventory locations
+      ['autotask_search_inventory_locations', async (a) => {
+        const r = await s.searchInventoryLocations({ isActive: a.isActive, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} inventory location(s)` };
+      }],
+      ['autotask_get_inventory_location', async (a) => {
+        const r = await s.getInventoryLocation(a.id); return { result: r, message: r ? `Inventory location ${a.id}` : `Inventory location ${a.id} not found` };
+      }],
+      ['autotask_create_inventory_location', async (a) => {
+        const id = await s.createInventoryLocation(a); return { result: id, message: `Created inventory location ${id}` };
+      }],
+      ['autotask_update_inventory_location', async (a) => {
+        const { id, ...rest } = a; await s.updateInventoryLocation(id, rest); return { result: undefined, message: `Updated inventory location ${id}` };
+      }],
+      // Stocked items (units / serials / counts)
+      ['autotask_search_inventory_stocked_items', async (a) => {
+        const r = await s.searchInventoryStockedItems({ inventoryProductID: a.inventoryProductID, currentInventoryLocationID: a.currentInventoryLocationID, serialNumber: a.serialNumber, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} stocked-item record(s)` };
+      }],
+      ['autotask_get_inventory_stocked_item', async (a) => {
+        const r = await s.getInventoryStockedItem(a.id); return { result: r, message: r ? `Stocked item ${a.id}` : `Stocked item ${a.id} not found` };
+      }],
+      // Transfers + count adjustments (inventory-movement: need confirm:true)
+      ['autotask_search_inventory_transfers', async (a) => {
+        const r = await s.searchInventoryTransfers({ productID: a.productID, fromLocationID: a.fromLocationID, toLocationID: a.toLocationID, pageSize: a.pageSize });
+        return { result: r, message: `Found ${r.length} transfer(s)` };
+      }],
+      ['autotask_create_inventory_transfer', async (a) => {
+        const id = await s.createInventoryTransfer(a); return { result: id, message: `Created inventory transfer ${id} (${a.quantityTransferred} of product ${a.productID}: ${a.fromLocationID}→${a.toLocationID})` };
+      }],
+      ['autotask_add_inventory_stock', async (a) => {
+        const id = await s.addInventoryStock(a); return { result: id, message: `Added ${a.quantityBeingAdded} unit(s) to inventory-product ${a.inventoryProductID} (adjustment ${id})` };
+      }],
+      ['autotask_remove_inventory_stock', async (a) => {
+        const id = await s.removeInventoryStock(a); return { result: id, message: `Removed ${a.quantityBeingRemoved} unit(s) from inventory-product ${a.inventoryProductID} (adjustment ${id})` };
+      }],
 
       // Services
       ['autotask_get_service', async (a) => {

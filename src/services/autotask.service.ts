@@ -35,6 +35,7 @@ import { reconcileServiceCall as reconcileServiceCallPure, SCReconResult } from 
 import { analyzeTicketBillingGaps as analyzeTicketBillingGapsPure, TBGResult, TBGTimeEntry, COMPLETE_TICKET_STATUS } from '../utils/ticket-billing-gaps';
 import {
   buildCategoryTree, findCatalogGaps, findDuplicateProducts, matchProducts,
+  planBulkProductUpdate, planProductMerge,
   CatalogGapsResult, ProductLite, SearchableProduct,
 } from '../utils/catalog-hygiene';
 import {
@@ -4379,6 +4380,107 @@ export class AutotaskService {
     const id = await http.create('InventoryStockedItemsRemove', data);
     this.logger.info(`InventoryStockedItemsRemove created with ID: ${id}`);
     return id;
+  }
+
+  // --- Phase B: guarded bulk catalog writes (dry-run-first) ---
+
+  /**
+   * Bulk product update (#93 Phase B): apply per-product field patches
+   * (category, description, MSRP, part numbers, isActive, …). Diffs against
+   * current values so only real changes are written and no-ops/unknown fields are
+   * skipped. dryRun defaults ON — returns the planned changes and writes nothing
+   * unless dryRun:false. Per-item partial-failure reporting on execute.
+   */
+  async bulkUpdateProducts(params: { updates: Array<Record<string, any> & { id: number }>; dryRun?: boolean }): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    const updates = params.updates ?? [];
+    if (updates.length === 0) return wp.fail('updates', 'no product updates supplied');
+    if (updates.some((u) => u.id == null)) return wp.fail('updates', 'every update needs an id');
+    wp.ok('input', { products: updates.length });
+
+    const ids = [...new Set(updates.map((u) => u.id))];
+    const current = new Map<number, Record<string, any>>();
+    for (let i = 0; i < ids.length; i += 200) {
+      const rows = await (await this.ensureClient()).query<any>('Products', [{ op: 'in', field: 'id', value: ids.slice(i, i + 200) }], { includeFields: this.CATALOG_FIELDS, maxRecords: 500 });
+      for (const r of rows) current.set(r.id, r);
+    }
+    const plan = planBulkProductUpdate(current, updates);
+    wp.ok('diff', { withChanges: plan.totalWithChanges, changedFields: plan.totalChangedFields, notFound: plan.notFound.length });
+
+    if (params.dryRun !== false) {
+      return wp.dryRun({ plannedUpdates: plan.items.filter((i) => i.found && !i.noop), noop: plan.items.filter((i) => i.noop).map((i) => i.id), notFound: plan.notFound });
+    }
+
+    const applied: number[] = [];
+    const errors: Array<{ id: number; detail: string }> = [];
+    for (const item of plan.items) {
+      if (!item.found || item.noop) continue;
+      const patch: Record<string, any> = {};
+      for (const [k, ch] of Object.entries(item.changes)) patch[k] = ch.to;
+      try { await this.updateProduct(item.id, patch); applied.push(item.id); }
+      catch (e) { errors.push({ id: item.id, detail: (e as Error).message }); }
+    }
+    return wp.done(errors.length > 0 ? 'updated_with_errors' : 'updated', {
+      updated: applied.length, updatedIds: applied,
+      noop: plan.items.filter((i) => i.noop).map((i) => i.id), notFound: plan.notFound,
+      ...(errors.length > 0 ? { errors } : {}),
+    });
+  }
+
+  /**
+   * Merge duplicate products (#93 Phase B): keep `survivorId`, enrich it with any
+   * fields it lacks from the duplicates, and mark the duplicates inactive. Never
+   * moves inventory — duplicates that still hold on-hand stock are flagged so
+   * counts can be reconciled/transferred first. dryRun defaults ON.
+   */
+  async mergeProducts(params: { survivorId: number; duplicateIds: number[]; enrichSurvivor?: boolean; dryRun?: boolean }): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    const dupIds = [...new Set(params.duplicateIds ?? [])].filter((id) => id !== params.survivorId);
+    if (params.survivorId == null) return wp.fail('survivor', 'survivorId is required');
+    if (dupIds.length === 0) return wp.fail('duplicates', 'at least one duplicate id (distinct from survivor) is required');
+
+    const survivor = (await this.getProduct(params.survivorId)) as Record<string, any> | null;
+    if (!survivor) return wp.fail('survivor', `Product ${params.survivorId} not found`);
+    const duplicates: Record<string, any>[] = [];
+    for (const id of dupIds) {
+      const d = (await this.getProduct(id)) as Record<string, any> | null;
+      if (!d) return wp.fail('duplicates', `Product ${id} not found`);
+      duplicates.push(d);
+    }
+    wp.ok('products', { survivor: params.survivorId, duplicates: dupIds });
+
+    // On-hand per duplicate product (across locations) — warn, never auto-move.
+    const onHand = new Map<number, number>();
+    for (const d of duplicates) {
+      const ips = await this.searchInventoryProducts({ productID: d.id, pageSize: 500 });
+      onHand.set(d.id, ips.reduce((s: number, ip: any) => s + (ip.onHandUnits ?? 0), 0));
+    }
+    const plan = planProductMerge(survivor, duplicates, onHand, { ...(params.enrichSurvivor !== undefined ? { enrichSurvivor: params.enrichSurvivor } : {}) });
+    wp.ok('plan', { enrichFields: Object.keys(plan.survivorPatch), deactivate: plan.deactivate, onHandWarnings: plan.onHandWarnings });
+
+    if (params.dryRun !== false) {
+      return wp.dryRun({
+        survivorId: plan.survivorId, survivorPatch: plan.survivorPatch,
+        wouldDeactivate: plan.deactivate, onHandWarnings: plan.onHandWarnings,
+      });
+    }
+
+    const errors: Array<{ step: string; id?: number; detail: string }> = [];
+    if (Object.keys(plan.survivorPatch).length > 0) {
+      const patch: Record<string, any> = {};
+      for (const [k, ch] of Object.entries(plan.survivorPatch)) patch[k] = ch.to;
+      try { await this.updateProduct(plan.survivorId, patch); } catch (e) { errors.push({ step: 'enrich-survivor', id: plan.survivorId, detail: (e as Error).message }); }
+    }
+    const deactivated: number[] = [];
+    for (const id of plan.deactivate) {
+      try { await this.updateProduct(id, { isActive: false }); deactivated.push(id); }
+      catch (e) { errors.push({ step: 'deactivate', id, detail: (e as Error).message }); }
+    }
+    return wp.done(errors.length > 0 ? 'merged_with_errors' : 'merged', {
+      survivorId: plan.survivorId, enriched: Object.keys(plan.survivorPatch),
+      deactivated, onHandWarnings: plan.onHandWarnings,
+      ...(errors.length > 0 ? { errors } : {}),
+    });
   }
 
   // =====================================================

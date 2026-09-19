@@ -2614,6 +2614,38 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Find duplicate products', readOnlyHint: true }
   },
   {
+    name: 'autotask_bulk_update_products',
+    description: "Bulk-update products for catalog cleanup (dry-run-first). Pass an `updates` array of per-product patches ({ id, plus any of: name, description, sku, internalProductID, manufacturerName, manufacturerProductName, vendorProductNumber, productCategory, unitCost, unitPrice, msrp, isActive, isSerialized, link, defaultVendorID }). Each patch is diffed against current values, so only real changes are written and no-ops are skipped. SAFE BY DEFAULT: unless dryRun:false, nothing is written and the planned before→after changes are returned for review. Returns per-item results with partial-failure reporting. Use for mass reclassify / description / MSRP / part-number standardization.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        updates: {
+          type: 'array',
+          description: 'Per-product patches; each needs id + at least one field to change.',
+          items: { type: 'object', properties: { id: { type: 'number' }, name: { type: 'string' }, description: { type: 'string' }, sku: { type: 'string' }, internalProductID: { type: 'string' }, manufacturerName: { type: 'string' }, manufacturerProductName: { type: 'string' }, vendorProductNumber: { type: 'string' }, productCategory: { type: 'number' }, unitCost: { type: 'number' }, unitPrice: { type: 'number' }, msrp: { type: 'number' }, isActive: { type: 'boolean' }, isSerialized: { type: 'boolean' }, link: { type: 'string' }, defaultVendorID: { type: 'number' } }, required: ['id'] }
+        },
+        dryRun: { type: 'boolean', description: 'When true (DEFAULT) validate + return planned changes without writing. Pass false to apply.', default: true }
+      },
+      required: ['updates']
+    },
+    annotations: { title: 'Bulk update products' }
+  },
+  {
+    name: 'autotask_merge_products',
+    description: "Merge duplicate products (dry-run-first): keep `survivorId`, enrich it with any fields it's missing from the duplicates (description/MSRP/category/part numbers/pricing), and mark the duplicate products inactive. Never moves inventory — duplicates that still hold on-hand stock are flagged (onHandWarnings) so you reconcile/transfer counts first. SAFE BY DEFAULT: unless dryRun:false, nothing is written and the plan (survivor enrichment + which dups would deactivate + stock warnings) is returned. Get candidate groups from autotask_find_duplicate_products.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        survivorId: { type: 'number', description: 'Product to keep' },
+        duplicateIds: { type: 'array', items: { type: 'number' }, description: 'Products to merge into the survivor (deactivated)' },
+        enrichSurvivor: { type: 'boolean', description: 'Copy missing fields from dups onto the survivor (default true)' },
+        dryRun: { type: 'boolean', description: 'When true (DEFAULT) return the plan without writing. Pass false to apply.', default: true }
+      },
+      required: ['survivorId', 'duplicateIds']
+    },
+    annotations: { title: 'Merge duplicate products' }
+  },
+  {
     name: 'autotask_create_product',
     description: 'Create a product in the catalog. Common fields: name, description, sku, internalProductID, manufacturerName, manufacturerProductName, vendorProductNumber, productCategory (picklist id — see autotask_list_product_categories), unitCost, unitPrice, msrp, isActive, isSerialized, defaultVendorID, link.',
     inputSchema: {
@@ -4829,7 +4861,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',
-    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_find_product', 'autotask_list_product_categories', 'autotask_find_catalog_gaps', 'autotask_find_duplicate_products', 'autotask_create_product', 'autotask_update_product', 'autotask_search_inventory_products', 'autotask_get_inventory_product', 'autotask_create_inventory_product', 'autotask_update_inventory_product', 'autotask_search_inventory_locations', 'autotask_get_inventory_location', 'autotask_create_inventory_location', 'autotask_update_inventory_location', 'autotask_search_inventory_stocked_items', 'autotask_get_inventory_stocked_item', 'autotask_search_inventory_transfers', 'autotask_create_inventory_transfer', 'autotask_add_inventory_stock', 'autotask_remove_inventory_stock', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
+    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_find_product', 'autotask_list_product_categories', 'autotask_find_catalog_gaps', 'autotask_find_duplicate_products', 'autotask_bulk_update_products', 'autotask_merge_products', 'autotask_create_product', 'autotask_update_product', 'autotask_search_inventory_products', 'autotask_get_inventory_product', 'autotask_create_inventory_product', 'autotask_update_inventory_product', 'autotask_search_inventory_locations', 'autotask_get_inventory_location', 'autotask_create_inventory_location', 'autotask_update_inventory_location', 'autotask_search_inventory_stocked_items', 'autotask_get_inventory_stocked_item', 'autotask_search_inventory_transfers', 'autotask_create_inventory_transfer', 'autotask_add_inventory_stock', 'autotask_remove_inventory_stock', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
   },
   resources: {
     description: 'Search Autotask resources (technicians/staff) and roles (for assignment / time entries)',

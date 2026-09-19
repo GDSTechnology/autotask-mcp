@@ -1957,6 +1957,21 @@ export class AutotaskToolHandler {
         const r = await s.findDuplicateProducts({ activeOnly: a.activeOnly, maxProducts: a.maxProducts, limit: a.limit });
         return { result: r, message: `${r.duplicateGroups} duplicate group(s) covering ${r.totalDuplicateProducts} product(s) of ${r.scanned} scanned${r.truncated ? ' [truncated]' : ''}` };
       }],
+      // Catalog Phase B: guarded bulk writes (dry-run-first)
+      ['autotask_bulk_update_products', async (a) => {
+        const r = await s.bulkUpdateProducts({ updates: a.updates, dryRun: a.dryRun });
+        const msg = r.status === 'dry_run' ? `Dry run: ${(r.plannedUpdates as any[])?.length ?? 0} product(s) would change; nothing written`
+          : r.status === 'validation_failed' ? `Validation failed at "${r.step}": ${r.detail}`
+          : `Updated ${r.updated} product(s)` + ((r.errors as any[])?.length ? ` with ${(r.errors as any[]).length} error(s)` : '');
+        return { result: r, message: msg };
+      }],
+      ['autotask_merge_products', async (a) => {
+        const r = await s.mergeProducts({ survivorId: a.survivorId, duplicateIds: a.duplicateIds, enrichSurvivor: a.enrichSurvivor, dryRun: a.dryRun });
+        const msg = r.status === 'dry_run' ? `Dry run: would deactivate ${(r.wouldDeactivate as any[])?.length ?? 0} dup(s) into survivor ${r.survivorId}` + ((r.onHandWarnings as any[])?.length ? `; ${(r.onHandWarnings as any[]).length} still hold stock` : '') + '; nothing written'
+          : r.status === 'validation_failed' ? `Validation failed at "${r.step}": ${r.detail}`
+          : `Merged: deactivated ${(r.deactivated as any[])?.length ?? 0} dup(s) into survivor ${r.survivorId}` + ((r.errors as any[])?.length ? ` with ${(r.errors as any[]).length} error(s)` : '');
+        return { result: r, message: msg };
+      }],
       // Product CRUD (full access)
       ['autotask_create_product', async (a) => {
         const id = await s.createProduct(a); return { result: id, message: `Created product ${id}` };

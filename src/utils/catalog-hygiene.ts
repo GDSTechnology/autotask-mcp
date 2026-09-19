@@ -209,6 +209,93 @@ export function matchProducts(
   return out.slice(0, opts.limit ?? 25);
 }
 
+// ---- write planning (Phase B, dry-run-first) --------------------------------
+
+export interface BulkUpdateItem {
+  id: number;
+  found: boolean;
+  changes: Record<string, { from: unknown; to: unknown }>;
+  /** true when the product exists but every supplied field already matches */
+  noop: boolean;
+}
+export interface BulkUpdatePlan {
+  items: BulkUpdateItem[];
+  totalWithChanges: number;
+  totalChangedFields: number;
+  notFound: number[];
+}
+
+const PRODUCT_UPDATABLE = new Set([
+  'name', 'description', 'sku', 'internalProductID', 'manufacturerName', 'manufacturerProductName',
+  'vendorProductNumber', 'productCategory', 'unitCost', 'unitPrice', 'msrp', 'isActive', 'isSerialized', 'link', 'defaultVendorID',
+]);
+
+/**
+ * Diff each requested product patch against current values (pure). Only fields
+ * that actually change are kept, so a dry run shows exactly what would be written
+ * and no-ops are skipped. Unknown/immutable fields are ignored.
+ */
+export function planBulkProductUpdate(
+  current: Map<number, Record<string, any>>,
+  updates: Array<Record<string, any> & { id: number }>,
+): BulkUpdatePlan {
+  const items: BulkUpdateItem[] = [];
+  const notFound: number[] = [];
+  let totalChangedFields = 0;
+  for (const u of updates) {
+    const cur = current.get(u.id);
+    if (!cur) { notFound.push(u.id); items.push({ id: u.id, found: false, changes: {}, noop: false }); continue; }
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    for (const [k, v] of Object.entries(u)) {
+      if (k === 'id' || !PRODUCT_UPDATABLE.has(k)) continue;
+      if (cur[k] !== v) changes[k] = { from: cur[k] ?? null, to: v };
+    }
+    totalChangedFields += Object.keys(changes).length;
+    items.push({ id: u.id, found: true, changes, noop: Object.keys(changes).length === 0 });
+  }
+  return { items, totalWithChanges: items.filter((i) => i.found && !i.noop).length, totalChangedFields, notFound };
+}
+
+/** Fields a merge copies onto the survivor when the survivor is missing them. */
+export const MERGE_ENRICH_FIELDS = ['description', 'msrp', 'productCategory', 'manufacturerName', 'manufacturerProductName', 'vendorProductNumber', 'unitCost', 'unitPrice', 'link'];
+
+export interface MergePlan {
+  survivorId: number;
+  survivorPatch: Record<string, { from: unknown; to: unknown }>;
+  deactivate: number[];
+  /** duplicates that still hold stock — reconcile counts before deactivating */
+  onHandWarnings: Array<{ id: number; onHand: number }>;
+}
+
+/**
+ * Plan a duplicate merge (pure): enrich the survivor with fields it lacks from
+ * the duplicates (first non-empty wins), and list the duplicates to deactivate.
+ * Duplicates with on-hand stock are flagged so counts can be moved first — this
+ * never auto-moves inventory.
+ */
+export function planProductMerge(
+  survivor: Record<string, any>,
+  duplicates: Array<Record<string, any>>,
+  onHandByProductId: Map<number, number>,
+  opts: { enrichSurvivor?: boolean } = {},
+): MergePlan {
+  const survivorPatch: Record<string, { from: unknown; to: unknown }> = {};
+  if (opts.enrichSurvivor !== false) {
+    for (const f of MERGE_ENRICH_FIELDS) {
+      const has = survivor[f] != null && survivor[f] !== '' && survivor[f] !== 0;
+      if (has) continue;
+      const donor = duplicates.find((d) => d[f] != null && d[f] !== '' && d[f] !== 0);
+      if (donor) survivorPatch[f] = { from: survivor[f] ?? null, to: donor[f] };
+    }
+  }
+  const onHandWarnings: Array<{ id: number; onHand: number }> = [];
+  for (const d of duplicates) {
+    const oh = onHandByProductId.get(d.id) ?? 0;
+    if (oh > 0) onHandWarnings.push({ id: d.id, onHand: oh });
+  }
+  return { survivorId: survivor.id, survivorPatch, deactivate: duplicates.map((d) => d.id), onHandWarnings };
+}
+
 // ---- duplicate detection -----------------------------------------------------
 
 export interface DupGroup {

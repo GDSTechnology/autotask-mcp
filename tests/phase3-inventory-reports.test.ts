@@ -1,7 +1,7 @@
 // Inventory report accounting (Expansion Spec §Phase 3). Pure — no tenant.
 
 import {
-  computeReorder, computeCloseouts, computeStaleStock, isGenericProduct, locationType,
+  computeReorder, computeCloseouts, computeStaleStock, classifyStaleLines, staleBucketOf, isGenericProduct, locationType,
 } from '../src/utils/inventory-reports';
 
 const products = {
@@ -82,5 +82,26 @@ describe('computeStaleStock', () => {
     const fresh = lines.find((l) => l.inventoryProductID === 501)!;
     expect(fresh).toMatchObject({ removedRecently: 1, stale: false });
     expect(lines[0].stale).toBe(true); // stale sorted first
+  });
+
+  test('assigns aging buckets (#41)', () => {
+    const lines = computeStaleStock(items as any, resolve, { asOf, staleDays: 180, recentDays: 180 });
+    expect(lines.find((l) => l.inventoryProductID === 500)!.bucket).toBe('d365plus'); // ~575d
+    expect(lines.find((l) => l.inventoryProductID === 501)!.bucket).toBe('lt90');      // ~31d
+    expect(staleBucketOf(30)).toBe('lt90');
+    expect(staleBucketOf(120)).toBe('d90_180');
+    expect(staleBucketOf(200)).toBe('d180_365');
+    expect(staleBucketOf(400)).toBe('d365plus');
+  });
+});
+
+describe('classifyStaleLines (#41 phantom vs dead-stock)', () => {
+  const mk = (id: number, stale: boolean): any => ({ inventoryProductID: id, stale, bucket: 'd365plus' });
+  test('stale product never removed → phantom; with movement → dead-stock; non-stale untouched', () => {
+    const lines = [mk(1, true), mk(2, true), mk(3, false)];
+    classifyStaleLines(lines as any, new Set([2])); // only #2 has ever been removed
+    expect(lines[0].classification).toBe('phantom');   // #1 never removed
+    expect(lines[1].classification).toBe('dead-stock'); // #2 had movement
+    expect(lines[2].classification).toBeUndefined();    // not stale → not classified
   });
 });

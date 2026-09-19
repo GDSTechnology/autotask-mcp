@@ -1527,7 +1527,7 @@ export class AutotaskToolHandler {
       }],
       ['autotask_report_inventory_stale', async (a) => {
         const r = await s.getInventoryStale({ staleDays: a.staleDays, recentDays: a.recentDays });
-        return { result: r, message: `${r.staleCount} stale product(s) of ${r.count} on hand; $${r.staleValue} tied up in dead stock` };
+        return { result: r, message: `${r.staleCount} stale product(s) of ${r.count} on hand; $${r.staleValue} tied up — ${r.phantomCount} phantom ($${r.phantomValue}, never decremented) vs ${r.deadStockCount} dead-stock ($${r.deadStockValue})` };
       }],
       ['autotask_create_contracts_bulk', async (a) => {
         const r = await s.createContracts(a.contracts);

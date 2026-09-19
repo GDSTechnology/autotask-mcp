@@ -20,7 +20,7 @@ import { resolveCompanyOwnerResourceID } from '../utils/company-owner';
 import { computeBlockHourUsage } from '../utils/block-hours';
 import { computeRecurringRevenue, RecurringRevenue, RecurringLine } from '../utils/recurring-revenue';
 import {
-  computeReorder, computeCloseouts, computeStaleStock,
+  computeReorder, computeCloseouts, computeStaleStock, classifyStaleLines, StaleBucket,
   InvProductRow, ProductRow, LocationRow, OpenChargeRow, StockedItemRow,
 } from '../utils/inventory-reports';
 import { summarizeTicketCharges, ChargeRow } from '../utils/charge-report';
@@ -4352,7 +4352,43 @@ export class AutotaskService {
     };
     const lines = computeStaleStock(items, resolve, { staleDays, recentDays });
     const stale = lines.filter((l) => l.stale);
-    return { count: lines.length, staleCount: stale.length, staleValue: Math.round(stale.reduce((s, l) => s + l.value, 0) * 100) / 100, lines };
+
+    // Phantom vs dead-stock (#41): a stale product with NO removal ever on record
+    // was never decremented in Autotask (likely a count error), vs one that had
+    // movement and has since stalled (genuine dead stock). Scope the movement
+    // lookup to just the stale products so the extra query stays bounded.
+    const staleIds = [...new Set(stale.map((l) => l.inventoryProductID))];
+    const everRemoved = new Set<number>();
+    for (let i = 0; i < staleIds.length; i += 200) {
+      const rows = await http.query<{ inventoryProductID: number }>(
+        'InventoryStockedItems',
+        [{ op: 'in', field: 'inventoryProductID', value: staleIds.slice(i, i + 200) }, { op: 'noteq', field: 'pickedRemovedDateTime', value: null }],
+        { includeFields: ['inventoryProductID'], maxRecords: 5000 }
+      );
+      for (const r of rows) if (r.inventoryProductID != null) everRemoved.add(r.inventoryProductID);
+    }
+    classifyStaleLines(lines, everRemoved);
+
+    // Aggregates for review: value tied up by classification and by aging bucket.
+    const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+    const phantom = stale.filter((l) => l.classification === 'phantom');
+    const deadStock = stale.filter((l) => l.classification === 'dead-stock');
+    const byBucket: Record<StaleBucket, { count: number; value: number }> = {
+      lt90: { count: 0, value: 0 }, d90_180: { count: 0, value: 0 }, d180_365: { count: 0, value: 0 }, d365plus: { count: 0, value: 0 },
+    };
+    for (const l of stale) { byBucket[l.bucket].count += 1; byBucket[l.bucket].value = r2(byBucket[l.bucket].value + l.value); }
+
+    return {
+      count: lines.length,
+      staleCount: stale.length,
+      staleValue: r2(stale.reduce((s, l) => s + l.value, 0)),
+      phantomCount: phantom.length,
+      phantomValue: r2(phantom.reduce((s, l) => s + l.value, 0)),
+      deadStockCount: deadStock.length,
+      deadStockValue: r2(deadStock.reduce((s, l) => s + l.value, 0)),
+      byBucket,
+      lines,
+    };
   }
 
   async getService(id: number): Promise<AutotaskServiceEntity | null> {

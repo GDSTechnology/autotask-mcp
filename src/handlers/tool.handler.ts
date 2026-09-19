@@ -1941,6 +1941,22 @@ export class AutotaskToolHandler {
         const r = await s.searchProducts({ searchTerm: a.searchTerm, isActive: a.isActive, pageSize: a.pageSize });
         return { result: r, message: `Found ${r.length} products` };
       }],
+      ['autotask_find_product', async (a) => {
+        const r = await s.findProducts(a.query, { limit: a.limit, activeOnly: a.activeOnly, maxProducts: a.maxProducts });
+        return { result: r, message: `${r.matchCount} match(es) for "${a.query}" across ${r.scanned} product(s)${r.truncated ? ' [catalog truncated]' : ''}` };
+      }],
+      ['autotask_list_product_categories', async (a) => {
+        const r = await s.listProductCategories({ withCounts: a.withCounts, maxProducts: a.maxProducts });
+        return { result: r, message: `${r.categoryCount} categories (${r.malformedCount} malformed)` };
+      }],
+      ['autotask_find_catalog_gaps', async (a) => {
+        const r = await s.findCatalogGaps({ activeOnly: a.activeOnly, minDescriptionLength: a.minDescriptionLength, maxSamples: a.maxSamples, maxProducts: a.maxProducts });
+        return { result: r, message: `${r.scanned} product(s): ${r.gaps.missingCategory.count} no-category, ${r.gaps.missingMsrp.count} no-MSRP, ${r.gaps.weakDescription.count} weak-description${r.truncated ? ' [truncated]' : ''}` };
+      }],
+      ['autotask_find_duplicate_products', async (a) => {
+        const r = await s.findDuplicateProducts({ activeOnly: a.activeOnly, maxProducts: a.maxProducts, limit: a.limit });
+        return { result: r, message: `${r.duplicateGroups} duplicate group(s) covering ${r.totalDuplicateProducts} product(s) of ${r.scanned} scanned${r.truncated ? ' [truncated]' : ''}` };
+      }],
 
       // Services
       ['autotask_get_service', async (a) => {

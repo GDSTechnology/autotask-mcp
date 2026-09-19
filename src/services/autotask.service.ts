@@ -34,6 +34,10 @@ import { planProjectBuild, buildMarker, hasBuildMarker } from '../utils/project-
 import { reconcileServiceCall as reconcileServiceCallPure, SCReconResult } from '../utils/service-call-reconciliation';
 import { analyzeTicketBillingGaps as analyzeTicketBillingGapsPure, TBGResult, TBGTimeEntry, COMPLETE_TICKET_STATUS } from '../utils/ticket-billing-gaps';
 import {
+  buildCategoryTree, findCatalogGaps, findDuplicateProducts, matchProducts,
+  CatalogGapsResult, ProductLite, SearchableProduct,
+} from '../utils/catalog-hygiene';
+import {
   AutotaskCompany,
   AutotaskContact,
   AutotaskTicket,
@@ -4264,6 +4268,82 @@ export class AutotaskService {
       this.logger.error('Failed to search products:', error);
       throw error;
     }
+  }
+
+  // =====================================================
+  // Catalog hygiene (Phase A — read-only inspection, #93)
+  // =====================================================
+
+  private readonly CATALOG_FIELDS = [
+    'id', 'name', 'description', 'productCategory', 'msrp', 'unitPrice', 'isActive',
+    'sku', 'internalProductID', 'externalProductID', 'manufacturerName', 'manufacturerProductName', 'vendorProductNumber',
+  ];
+
+  /** Pull catalog products (bounded) with the fields the hygiene tools need.
+   *  Autotask's native search is weak, so the hygiene/search tools scan the
+   *  catalog and match in-memory; `maxProducts` keeps that bounded. */
+  private async fetchCatalogProducts(opts: { activeOnly?: boolean | undefined; maxProducts?: number | undefined } = {}): Promise<any[]> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxProducts ?? 5000, 20000);
+    const filters: QueryFilter[] = opts.activeOnly ? [{ op: 'eq', field: 'isActive', value: true }] : [{ op: 'gte', field: 'id', value: 0 }];
+    return http.query<any>('Products', filters, { includeFields: this.CATALOG_FIELDS, maxRecords: max });
+  }
+
+  /** List the productCategory picklist as a parent→child tree, flagging
+   *  malformed labels; optionally tally product counts per category (#93). */
+  async listProductCategories(opts: { withCounts?: boolean; maxProducts?: number } = {}): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const picks = await http.picklistValues('Products', 'productCategory');
+    let counts: Map<number, number> | undefined;
+    let countedProducts = 0;
+    let truncated = false;
+    if (opts.withCounts) {
+      const products = await this.fetchCatalogProducts({ maxProducts: opts.maxProducts });
+      counts = new Map<number, number>();
+      for (const p of products) if (p.productCategory != null) counts.set(p.productCategory, (counts.get(p.productCategory) ?? 0) + 1);
+      countedProducts = products.length;
+      truncated = products.length >= Math.min(opts.maxProducts ?? 5000, 20000);
+    }
+    const tree = buildCategoryTree(
+      picks.map((p: any) => ({ value: Number(p.value), label: String(p.label), isActive: p.isActive })),
+      counts,
+    );
+    return {
+      categoryCount: tree.nodes.length,
+      malformedCount: tree.malformedCount,
+      ...(opts.withCounts ? { countedProducts, countsTruncated: truncated } : {}),
+      roots: tree.roots,
+      categories: tree.nodes,
+    };
+  }
+
+  /** Products missing a category / MSRP / usable description (#93). */
+  async findCatalogGaps(opts: { activeOnly?: boolean; minDescriptionLength?: number; maxSamples?: number; maxProducts?: number } = {}): Promise<CatalogGapsResult & { truncated: boolean }> {
+    const products = await this.fetchCatalogProducts({ activeOnly: opts.activeOnly ?? true, maxProducts: opts.maxProducts });
+    const res = findCatalogGaps(products as ProductLite[], { ...(opts.minDescriptionLength !== undefined ? { minDescriptionLength: opts.minDescriptionLength } : {}), ...(opts.maxSamples !== undefined ? { maxSamples: opts.maxSamples } : {}) });
+    return { ...res, truncated: products.length >= Math.min(opts.maxProducts ?? 5000, 20000) };
+  }
+
+  /** Duplicate-product candidate groups with a suggested survivor (#93). */
+  async findDuplicateProducts(opts: { activeOnly?: boolean; maxProducts?: number; limit?: number } = {}): Promise<Record<string, any>> {
+    const products = await this.fetchCatalogProducts({ activeOnly: opts.activeOnly ?? false, maxProducts: opts.maxProducts });
+    const groups = findDuplicateProducts(products as ProductLite[]);
+    const limited = opts.limit ? groups.slice(0, opts.limit) : groups;
+    return {
+      scanned: products.length,
+      duplicateGroups: limited.length,
+      totalDuplicateProducts: groups.reduce((s, g) => s + g.members.length, 0),
+      groups: limited,
+      truncated: products.length >= Math.min(opts.maxProducts ?? 5000, 20000),
+    };
+  }
+
+  /** Clean normalized product search across all identifiers (#93) — the usable
+   *  layer over Autotask's weak native search. */
+  async findProducts(query: string, opts: { limit?: number; activeOnly?: boolean; maxProducts?: number } = {}): Promise<Record<string, any>> {
+    const products = await this.fetchCatalogProducts({ activeOnly: false, maxProducts: opts.maxProducts });
+    const matches = matchProducts(products as SearchableProduct[], query, { ...(opts.limit !== undefined ? { limit: opts.limit } : {}), ...(opts.activeOnly !== undefined ? { activeOnly: opts.activeOnly } : {}) });
+    return { query, scanned: products.length, matchCount: matches.length, matches, truncated: products.length >= Math.min(opts.maxProducts ?? 5000, 20000) };
   }
 
   // =====================================================

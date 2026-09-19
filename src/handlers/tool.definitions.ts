@@ -2557,6 +2557,63 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_find_product',
+    description: "Clean, normalized product search across ALL identifiers — the usable layer over Autotask's weak native search. Matches the query against sku, internalProductID, externalProductID, manufacturerProductName, vendorProductNumber (+ name/description tokens), scores each product, and returns ranked matches with which fields matched. An exact identifier hit ranks highest; token overlap catches e.g. \"cat6 keystone\" → \"Blue Cat6 Keystone\". Use this instead of autotask_search_products when a plain name search misses. Read-only.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Part number, manufacturer/vendor number, or name terms' },
+        limit: { type: 'number', description: 'Max matches to return (default 25)', minimum: 1, maximum: 200 },
+        activeOnly: { type: 'boolean', description: 'Only active products (default false — dedup/cleanup often needs inactive ones too)' },
+        maxProducts: { type: 'number', description: 'Cap on catalog rows scanned (default 5000, max 20000)', minimum: 1, maximum: 20000 }
+      },
+      required: ['query']
+    },
+    annotations: { title: 'Find product (clean search)', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_list_product_categories',
+    description: "List the productCategory picklist as a parent→child tree (categories are a hierarchical picklist named 'Parent>Child>Grandchild', not a REST entity). Flags malformed labels (a label that reads like a description, not a name) and, with withCounts, tallies products per category. The map for standardizing/reclassifying the catalog. Read-only.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        withCounts: { type: 'boolean', description: 'Tally product counts per category (scans the catalog; default false)' },
+        maxProducts: { type: 'number', description: 'Cap on products scanned for counts (default 5000, max 20000)', minimum: 1, maximum: 20000 }
+      },
+      required: []
+    },
+    annotations: { title: 'List product categories', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_find_catalog_gaps',
+    description: 'Find products with data gaps for cleanup (read-only): missing productCategory, missing MSRP, or a weak description (empty, too short, or identical to the name). Returns counts plus sample product refs per gap type. Scope with activeOnly (default true).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        activeOnly: { type: 'boolean', description: 'Only active products (default true)' },
+        minDescriptionLength: { type: 'number', description: 'Descriptions shorter than this count as weak (default 10)', minimum: 1 },
+        maxSamples: { type: 'number', description: 'Sample product refs per gap type (default 25)', minimum: 1 },
+        maxProducts: { type: 'number', description: 'Cap on catalog rows scanned (default 5000, max 20000)', minimum: 1, maximum: 20000 }
+      },
+      required: []
+    },
+    annotations: { title: 'Find catalog gaps', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_find_duplicate_products',
+    description: 'Find duplicate-product candidate groups (read-only): products sharing a normalized identifier (sku, else manufacturerProductName, else name) are grouped, each with a suggested survivor (active > most complete > lowest id) — the item to keep when merging the rest down. Includes inactive products by default so existing dupes surface. Returns groups ranked by size. Use before a Phase B merge.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        activeOnly: { type: 'boolean', description: 'Only active products (default false)' },
+        limit: { type: 'number', description: 'Max duplicate groups to return (default all)', minimum: 1 },
+        maxProducts: { type: 'number', description: 'Cap on catalog rows scanned (default 5000, max 20000)', minimum: 1, maximum: 20000 }
+      },
+      required: []
+    },
+    annotations: { title: 'Find duplicate products', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_inventory_reorder',
     description: 'Inventory reorder-control report. Lists stocked products at or below their minimum (across all locations) with a suggested order quantity (up to max, net of on-order) and estimated cost. The monthly "what to order" report. Each line notes whether the location is a warehouse or a resource/tech-van.',
     inputSchema: {
@@ -4672,7 +4729,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',
-    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
+    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_find_product', 'autotask_list_product_categories', 'autotask_find_catalog_gaps', 'autotask_find_duplicate_products', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
   },
   resources: {
     description: 'Search Autotask resources (technicians/staff) and roles (for assignment / time entries)',

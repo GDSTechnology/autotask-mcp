@@ -2614,6 +2614,106 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Find duplicate products', readOnlyHint: true }
   },
   {
+    name: 'autotask_create_product',
+    description: 'Create a product in the catalog. Common fields: name, description, sku, internalProductID, manufacturerName, manufacturerProductName, vendorProductNumber, productCategory (picklist id — see autotask_list_product_categories), unitCost, unitPrice, msrp, isActive, isSerialized, defaultVendorID, link.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Product name' },
+        description: { type: 'string' },
+        sku: { type: 'string', description: 'Your internal/clean part number' },
+        internalProductID: { type: 'string' },
+        manufacturerName: { type: 'string' },
+        manufacturerProductName: { type: 'string', description: 'Manufacturer part number' },
+        vendorProductNumber: { type: 'string', description: 'Supplier part number' },
+        productCategory: { type: 'number', description: 'Category picklist id' },
+        unitCost: { type: 'number' }, unitPrice: { type: 'number' }, msrp: { type: 'number' },
+        isActive: { type: 'boolean' }, isSerialized: { type: 'boolean' },
+        defaultVendorID: { type: 'number' }, link: { type: 'string', description: 'Product/reference URL' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    name: 'autotask_update_product',
+    description: 'Update a catalog product by id. Pass id plus any fields to change (name, description, sku, internalProductID, manufacturerProductName, vendorProductNumber, productCategory, unitCost, unitPrice, msrp, isActive, link, …). Use to standardize part numbers, fix categories/descriptions, set MSRP, or deactivate a duplicate (isActive:false).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Product id' },
+        name: { type: 'string' }, description: { type: 'string' }, sku: { type: 'string' },
+        internalProductID: { type: 'string' }, manufacturerName: { type: 'string' }, manufacturerProductName: { type: 'string' },
+        vendorProductNumber: { type: 'string' }, productCategory: { type: 'number' },
+        unitCost: { type: 'number' }, unitPrice: { type: 'number' }, msrp: { type: 'number' },
+        isActive: { type: 'boolean' }, isSerialized: { type: 'boolean' }, link: { type: 'string' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'autotask_search_inventory_products',
+    description: "A product's stock levels per location (InventoryProducts): onHandUnits, availableUnits, reservedUnits, pickedUnits, unitsOnOrder, quantityMinimum/Maximum, bin, referenceNumber. Filter by productID and/or inventoryLocationID.",
+    inputSchema: { type: 'object', properties: { productID: { type: 'number' }, inventoryLocationID: { type: 'number' }, pageSize: { type: 'number', minimum: 1, maximum: 500 } }, required: [] },
+    annotations: { title: 'Search inventory products', readOnlyHint: true }
+  },
+  { name: 'autotask_get_inventory_product', description: 'Get one InventoryProducts record (a product\'s stock at a location) by id.', inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] }, annotations: { title: 'Get inventory product', readOnlyHint: true } },
+  {
+    name: 'autotask_create_inventory_product',
+    description: 'Stock a product at a location: create an InventoryProducts record. Required: productID, inventoryLocationID, quantityMinimum, quantityMaximum, availableUnits. Optional: bin, referenceNumber.',
+    inputSchema: { type: 'object', properties: { productID: { type: 'number' }, inventoryLocationID: { type: 'number' }, quantityMinimum: { type: 'number' }, quantityMaximum: { type: 'number' }, availableUnits: { type: 'number' }, bin: { type: 'string' }, referenceNumber: { type: 'string' } }, required: ['productID', 'inventoryLocationID', 'quantityMinimum', 'quantityMaximum', 'availableUnits'] }
+  },
+  {
+    name: 'autotask_update_inventory_product',
+    description: 'Update an InventoryProducts record (stock levels/min-max/bin) by id. Note: on-hand counts are changed via stock add/remove or transfers, not here — this sets quantityMinimum/Maximum, bin, referenceNumber.',
+    inputSchema: { type: 'object', properties: { id: { type: 'number' }, quantityMinimum: { type: 'number' }, quantityMaximum: { type: 'number' }, bin: { type: 'string' }, referenceNumber: { type: 'string' } }, required: ['id'] }
+  },
+  {
+    name: 'autotask_search_inventory_locations',
+    description: 'Inventory locations (warehouses / tech vans): locationName, isActive, isDefault, resourceID (a resource-linked location = a tech van). Optionally filter by isActive.',
+    inputSchema: { type: 'object', properties: { isActive: { type: 'boolean' }, pageSize: { type: 'number', minimum: 1, maximum: 500 } }, required: [] },
+    annotations: { title: 'Search inventory locations', readOnlyHint: true }
+  },
+  { name: 'autotask_get_inventory_location', description: 'Get one InventoryLocations record by id.', inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] }, annotations: { title: 'Get inventory location', readOnlyHint: true } },
+  {
+    name: 'autotask_create_inventory_location',
+    description: 'Create an inventory location (warehouse or tech van). Required: locationName, isActive. Optional: isDefault, resourceID (link to a resource for a tech-van location).',
+    inputSchema: { type: 'object', properties: { locationName: { type: 'string' }, isActive: { type: 'boolean' }, isDefault: { type: 'boolean' }, resourceID: { type: 'number' } }, required: ['locationName', 'isActive'] }
+  },
+  {
+    name: 'autotask_update_inventory_location',
+    description: 'Update an inventory location by id (locationName, isActive, isDefault, resourceID).',
+    inputSchema: { type: 'object', properties: { id: { type: 'number' }, locationName: { type: 'string' }, isActive: { type: 'boolean' }, isDefault: { type: 'boolean' }, resourceID: { type: 'number' } }, required: ['id'] }
+  },
+  {
+    name: 'autotask_search_inventory_stocked_items',
+    description: 'Individual stocked units (InventoryStockedItems): onHandUnits, availableUnits, serialNumber, statusID, unitCost, currentInventoryLocationID, vendorID, and consumption links (ticketChargeID / projectChargeID / pickedRemovedDateTime). Filter by inventoryProductID, currentInventoryLocationID, and/or serialNumber.',
+    inputSchema: { type: 'object', properties: { inventoryProductID: { type: 'number' }, currentInventoryLocationID: { type: 'number' }, serialNumber: { type: 'string' }, pageSize: { type: 'number', minimum: 1, maximum: 500 } }, required: [] },
+    annotations: { title: 'Search stocked items', readOnlyHint: true }
+  },
+  { name: 'autotask_get_inventory_stocked_item', description: 'Get one InventoryStockedItems record by id.', inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] }, annotations: { title: 'Get stocked item', readOnlyHint: true } },
+  {
+    name: 'autotask_search_inventory_transfers',
+    description: 'Stock transfers between locations (InventoryTransfers): productID, fromLocationID, toLocationID, quantityTransferred, transferDate, notes, serialNumber. Filter by productID / fromLocationID / toLocationID.',
+    inputSchema: { type: 'object', properties: { productID: { type: 'number' }, fromLocationID: { type: 'number' }, toLocationID: { type: 'number' }, pageSize: { type: 'number', minimum: 1, maximum: 500 } }, required: [] },
+    annotations: { title: 'Search inventory transfers', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_inventory_transfer',
+    description: 'Move stock between locations (creates an InventoryTransfers record; mutates on-hand at both locations). Required: fromLocationID, toLocationID, productID, quantityTransferred. Optional: serialNumber (serialized), notes, transferByResourceID, transferDate. Inventory-movement — requires confirm:true.',
+    inputSchema: { type: 'object', properties: { fromLocationID: { type: 'number' }, toLocationID: { type: 'number' }, productID: { type: 'number' }, quantityTransferred: { type: 'number' }, serialNumber: { type: 'string' }, notes: { type: 'string' }, transferByResourceID: { type: 'number' }, transferDate: { type: 'string' }, confirm: { type: 'boolean', description: 'Must be true to execute (inventory movement)' } }, required: ['fromLocationID', 'toLocationID', 'productID', 'quantityTransferred'] }
+  },
+  {
+    name: 'autotask_add_inventory_stock',
+    description: 'Add/receive stock — raise on-hand for an inventory product (InventoryStockedItemsAdd). Use to correct a phantom under-count or receive units. Required: inventoryProductID, quantityBeingAdded, vendorID, determineCostUsing. Optional: unitCost, serialNumber, vendorInvoiceNumber, reasonForUpdate. Inventory-movement — requires confirm:true.',
+    inputSchema: { type: 'object', properties: { inventoryProductID: { type: 'number' }, quantityBeingAdded: { type: 'number' }, vendorID: { type: 'number' }, determineCostUsing: { type: 'number', description: 'Cost source (Autotask picklist)' }, unitCost: { type: 'number' }, serialNumber: { type: 'string' }, vendorInvoiceNumber: { type: 'string' }, reasonForUpdate: { type: 'string' }, confirm: { type: 'boolean', description: 'Must be true to execute (inventory movement)' } }, required: ['inventoryProductID', 'quantityBeingAdded', 'vendorID', 'determineCostUsing'] }
+  },
+  {
+    name: 'autotask_remove_inventory_stock',
+    description: '⚠ DESTRUCTIVE/HIGH-IMPACT: Remove stock — lower on-hand for an inventory product (InventoryStockedItemsRemove), a write-down that is not easily reversible. Use to correct a phantom over-count / write off dead stock. Required: quantityBeingRemoved, plus inventoryProductID (or a specific inventoryStockedItemID). Optional: reasonForUpdate. Requires confirm:true.',
+    inputSchema: { type: 'object', properties: { inventoryProductID: { type: 'number' }, inventoryStockedItemID: { type: 'number' }, quantityBeingRemoved: { type: 'number' }, reasonForUpdate: { type: 'string' }, confirm: { type: 'boolean', description: 'Must be true to execute (destructive stock write-down)' } }, required: ['quantityBeingRemoved'] },
+    annotations: { title: 'Remove inventory stock', destructiveHint: true }
+  },
+  {
     name: 'autotask_report_inventory_reorder',
     description: 'Inventory reorder-control report. Lists stocked products at or below their minimum (across all locations) with a suggested order quantity (up to max, net of on-order) and estimated cost. The monthly "what to order" report. Each line notes whether the location is a warehouse or a resource/tech-van.',
     inputSchema: {
@@ -4729,7 +4829,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',
-    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_find_product', 'autotask_list_product_categories', 'autotask_find_catalog_gaps', 'autotask_find_duplicate_products', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
+    tools: ['autotask_get_product', 'autotask_search_products', 'autotask_find_product', 'autotask_list_product_categories', 'autotask_find_catalog_gaps', 'autotask_find_duplicate_products', 'autotask_create_product', 'autotask_update_product', 'autotask_search_inventory_products', 'autotask_get_inventory_product', 'autotask_create_inventory_product', 'autotask_update_inventory_product', 'autotask_search_inventory_locations', 'autotask_get_inventory_location', 'autotask_create_inventory_location', 'autotask_update_inventory_location', 'autotask_search_inventory_stocked_items', 'autotask_get_inventory_stocked_item', 'autotask_search_inventory_transfers', 'autotask_create_inventory_transfer', 'autotask_add_inventory_stock', 'autotask_remove_inventory_stock', 'autotask_report_inventory_reorder', 'autotask_report_inventory_closeouts', 'autotask_report_inventory_stale', 'autotask_get_service', 'autotask_search_services', 'autotask_get_service_bundle', 'autotask_search_service_bundles']
   },
   resources: {
     description: 'Search Autotask resources (technicians/staff) and roles (for assignment / time entries)',

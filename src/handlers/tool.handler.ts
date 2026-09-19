@@ -1535,6 +1535,13 @@ export class AutotaskToolHandler {
         const r = await s.getUnbilledReport({ companyID: a.companyID, minAgeDays: a.minAgeDays });
         return { result: r, message: `$${r.totalAmount} unbilled across ${r.totalCount} item(s); $${r.atRiskAmount} at risk (>30d)` };
       }],
+      ['autotask_report_project_pl', async (a) => {
+        const r = await s.getProjectPL({ projectID: a.projectID, taskId: a.taskId, ticketId: a.ticketId, bucket: a.bucket, from: a.from, to: a.to });
+        const t = r.totals;
+        const cov = r.costCoverage.hoursNoBurden > 0 ? ` — ${r.costCoverage.hoursNoBurden}h with NO burden set (cost understated)` : '';
+        const pend = t.pendingBillableHours > 0 ? `; ${t.pendingBillableHours}h pending/unposted` : '';
+        return { result: r, message: `${r.scope} ${r.entityId} P&L (${r.bucket}): $${t.postedRevenue} revenue − $${t.totalCost} cost = $${t.realizedMargin} margin${t.marginPct != null ? ` (${Math.round(t.marginPct * 100)}%)` : ''} over ${r.buckets.length} ${r.bucket}(s)${pend}${cov}` };
+      }],
       ['autotask_report_inventory_reorder', async (a) => {
         const r = await s.getInventoryReorder({ locationID: a.locationID, warehouseOnly: a.warehouseOnly });
         return { result: r, message: `${r.count} product/location line(s) below minimum; est order cost $${r.totalEstCost}` };

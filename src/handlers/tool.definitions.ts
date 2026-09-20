@@ -3422,6 +3422,24 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Unbilled-work report', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_sla_compliance',
+    description: "SLA compliance report (read-only). Classifies each ticket's three SLA stages — Triage/First-Response, Tech-Engagement/Resolution-Plan, Resolved — as met (actual ≤ due) / missed (actual > due) / pending (open, due in future) / breached (open, due passed) / no_target (no SLA due set). Returns per-stage counts + compliance % (met ÷ closed), a breach queue (open+overdue, worst first) for 'what needs attention now', and optional grouping. Scope by createDate window (default last 30 days) + optional company/queue; group by queue, resource, company, week, or month. For n8n/chat dashboards.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Tickets created on/after (YYYY-MM-DD); default 30 days ago' },
+        to: { type: 'string', description: 'Tickets created on/before (YYYY-MM-DD)' },
+        companyID: { type: 'number', description: 'Limit to one company' },
+        queueID: { type: 'number', description: 'Limit to one queue' },
+        openOnly: { type: 'boolean', description: 'Only non-complete tickets (default false)' },
+        groupBy: { type: 'string', enum: ['queue', 'resource', 'company', 'week', 'month'], description: 'Break the report down by this dimension' },
+        maxTickets: { type: 'number', description: 'Cap on tickets evaluated (default 2000, max 10000)', minimum: 1, maximum: 10000 }
+      },
+      required: []
+    },
+    annotations: { title: 'SLA compliance report', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_project_pl',
     description: "Profitability (P&L) for a project, task, or ticket, bucketed by week or month — real burden cost vs realized revenue, not assumed margins. COST = every time entry's hoursWorked × the resource's burden (Resources.internalCost), billable or not, posted or not — because paid time is a cost the moment it's worked (non-billable hours drag margin). REVENUE = totalAmount of POSTED billing items only (realized). Also reports pendingBillableHours (approved/posted lag = revenue-in-waiting) and a costCoverage flag (hours whose resource has NO burden set → cost understated; also the HR to-fix list). Give exactly one of projectID / taskId / ticketId. Read-only; for review (n8n/chat).",
     inputSchema: {
@@ -4900,7 +4918,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_report_sla_compliance', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

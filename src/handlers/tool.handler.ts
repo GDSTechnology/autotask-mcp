@@ -1535,6 +1535,16 @@ export class AutotaskToolHandler {
         const r = await s.getUnbilledReport({ companyID: a.companyID, minAgeDays: a.minAgeDays });
         return { result: r, message: `$${r.totalAmount} unbilled across ${r.totalCount} item(s); $${r.atRiskAmount} at risk (>30d)` };
       }],
+      ['autotask_report_sla_compliance', async (a) => {
+        const r = await s.getSlaCompliance({ from: a.from, to: a.to, companyID: a.companyID, queueID: a.queueID, openOnly: a.openOnly, groupBy: a.groupBy, maxTickets: a.maxTickets });
+        const tr = r.stages.triage, en = r.stages.engagement, rv = r.stages.resolved;
+        const pct = (a2: any) => a2.compliancePct == null ? 'n/a' : `${a2.compliancePct}%`;
+        const rm = r.responseMetrics;
+        const base = r.targetsConfigured === 0
+          ? `No SLA targets configured on ${r.ticketsEvaluated} ticket(s) — compliance n/a`
+          : `SLA over ${r.ticketsEvaluated} ticket(s) (${r.targetsConfigured} with targets): triage ${pct(tr)}, engagement ${pct(en)}, resolved ${pct(rv)}; ${r.breaches.length} open breach(es)`;
+        return { result: r, message: `${base}. Actual: median ${rm.medianHoursToFirstResponse ?? 'n/a'}h to first response, ${rm.medianHoursToResolve ?? 'n/a'}h to resolve${r.truncated ? ' [truncated]' : ''}` };
+      }],
       ['autotask_report_project_pl', async (a) => {
         const r = await s.getProjectPL({ projectID: a.projectID, taskId: a.taskId, ticketId: a.ticketId, bucket: a.bucket, from: a.from, to: a.to });
         const t = r.totals;

@@ -39,6 +39,7 @@ import {
   CatalogGapsResult, ProductLite, SearchableProduct,
 } from '../utils/catalog-hygiene';
 import { computeProjectPL, ProjectPLResult } from '../utils/project-pl';
+import { computeSlaCompliance, SlaComplianceResult } from '../utils/sla-compliance';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -5038,6 +5039,43 @@ export class AutotaskService {
     }
 
     return computeProjectPL({ scope, entityId, bucket, timeEntries, billingItems, burdenByResource });
+  }
+
+  /**
+   * SLA compliance report (#100): classify each ticket's three SLA stages
+   * (Triage / Tech-Engagement / Resolved) as met / missed / pending / breached /
+   * no-target, with per-stage compliance %, a breach queue (open + overdue), and
+   * optional grouping. Read-only. Scoped by createDate window + optional
+   * company/queue; bounded by maxTickets.
+   */
+  async getSlaCompliance(opts: {
+    from?: string; to?: string; companyID?: number; queueID?: number; openOnly?: boolean;
+    groupBy?: 'queue' | 'resource' | 'company' | 'week' | 'month'; maxTickets?: number;
+  } = {}): Promise<SlaComplianceResult> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxTickets ?? 2000, 10000);
+    const from = opts.from ?? new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const filters: QueryFilter[] = [{ op: 'gte', field: 'createDate', value: from }];
+    if (opts.to) filters.push({ op: 'lte', field: 'createDate', value: opts.to });
+    if (opts.companyID != null) filters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    if (opts.queueID != null) filters.push({ op: 'eq', field: 'queueID', value: opts.queueID });
+    if (opts.openOnly) filters.push({ op: 'noteq', field: 'status', value: 5 }); // 5 = Complete
+
+    // Query Tickets directly (not searchTickets) so the SLA fields aren't stripped
+    // by the aggressive read optimizer.
+    const tickets = await http.query<any>('Tickets', filters, {
+      includeFields: [
+        'id', 'ticketNumber', 'status', 'queueID', 'assignedResourceID', 'companyID', 'createDate',
+        'firstResponseDueDateTime', 'firstResponseDateTime',
+        'resolutionPlanDueDateTime', 'resolutionPlanDateTime',
+        'resolvedDueDateTime', 'resolvedDateTime',
+        'serviceLevelAgreementHasBeenMet', 'serviceLevelAgreementID',
+      ],
+      maxRecords: max,
+    });
+    const result = computeSlaCompliance(tickets, new Date(), { ...(opts.groupBy ? { groupBy: opts.groupBy } : {}) });
+    if (tickets.length >= max) result.truncated = true;
+    return result;
   }
 
   // =====================================================

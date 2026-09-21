@@ -3482,6 +3482,47 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Generate ITIL SLA framework', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_sla_coverage',
+    description: "SLA coverage / readiness check (read-only, #102). Reports which contracts have NO SLA linked (Contracts.serviceLevelAgreementID empty) and whether any SLA definitions exist at all — the empty serviceLevelAgreementID picklist is the root of a 'no SLAs anywhere' tenant. Returns: the available SLA definitions (picklist values), counts of linked vs unlinked, the unlinked contract list (id, name, company, type, status, endDate), and a readiness verdict (no_sla_definitions | unlinked_contracts | all_linked). Active-status detection is derived from the status picklist labels; scope by company or explicit status, or activeOnly:false for every status. Pairs with autotask_generate_sla_framework (make the spec) and autotask_assign_contract_sla (link them).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Limit to one company' },
+        status: { type: 'number', description: 'Limit to one contract status value (overrides activeOnly)' },
+        activeOnly: { type: 'boolean', description: 'Only active-status contracts (default true; active values derived from the status picklist labels)' },
+        maxContracts: { type: 'number', description: 'Cap on contracts evaluated (default 2000, max 10000)', minimum: 1, maximum: 10000 }
+      },
+      required: []
+    },
+    annotations: { title: 'SLA coverage report', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_assign_contract_sla',
+    description: "Bulk-assign an SLA to contracts (#102). SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written — it returns the planned assignments for review. serviceLevelAgreementID IS API-writable (unlike SLA definitions, which are UI-only), so this links existing SLAs to contracts. FAILS CLOSED if the tenant has no SLA definitions yet, or if a serviceLevelAgreementID isn't a valid active picklist value (returns the valid values). Skips no-ops (already set) and reports contracts not found. Give either assignments:[{contractID, serviceLevelAgreementID}] or the shorthand serviceLevelAgreementID + contractIDs:[...]. Returns the shared write-plan envelope (status: dry_run | validation_failed | assigned | assigned_with_errors). Reversible — it only sets a picklist link. Use autotask_report_sla_coverage to find the unlinked contracts and autotask_get_field_info('Contracts','serviceLevelAgreementID') to see valid SLA values.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignments: {
+          type: 'array',
+          description: 'Explicit per-contract assignments. Each: { contractID, serviceLevelAgreementID }.',
+          items: {
+            type: 'object',
+            properties: {
+              contractID: { type: 'number' },
+              serviceLevelAgreementID: { type: ['number', 'string'], description: 'A valid active value from the Contracts.serviceLevelAgreementID picklist' }
+            },
+            required: ['contractID', 'serviceLevelAgreementID']
+          }
+        },
+        serviceLevelAgreementID: { type: ['number', 'string'], description: 'Shorthand: assign this one SLA to every id in contractIDs' },
+        contractIDs: { type: 'array', items: { type: 'number' }, description: 'Shorthand: contracts to assign serviceLevelAgreementID to' },
+        dryRun: { type: 'boolean', description: 'Default true — plan only, no writes. Pass false to apply.' }
+      },
+      required: []
+    },
+    annotations: { title: 'Assign SLA to contracts', readOnlyHint: false }
+  },
+  {
     name: 'autotask_report_project_pl',
     description: "Profitability (P&L) for a project, task, or ticket, bucketed by week or month — real burden cost vs realized revenue, not assumed margins. COST = every time entry's hoursWorked × the resource's burden (Resources.internalCost), billable or not, posted or not — because paid time is a cost the moment it's worked (non-billable hours drag margin). REVENUE = totalAmount of POSTED billing items only (realized). Also reports pendingBillableHours (approved/posted lag = revenue-in-waiting) and a costCoverage flag (hours whose resource has NO burden set → cost understated; also the HR to-fix list). Give exactly one of projectID / taskId / ticketId. Read-only; for review (n8n/chat).",
     inputSchema: {
@@ -4960,7 +5001,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_report_sla_compliance', 'autotask_generate_sla_framework', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_report_sla_compliance', 'autotask_generate_sla_framework', 'autotask_report_sla_coverage', 'autotask_assign_contract_sla', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

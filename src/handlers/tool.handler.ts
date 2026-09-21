@@ -1564,6 +1564,21 @@ export class AutotaskToolHandler {
           message: `ITIL SLA framework: ${r.priorityScheme.length}-level priority scheme + ${r.targets.length} target row(s) across ${new Set(r.targets.map((t) => t.tier)).size} tier(s). Advisory only — enter in the Autotask UI${mig}.`,
         };
       }],
+      ['autotask_report_sla_coverage', async (a) => {
+        const r = await s.getContractSlaCoverage({ companyID: a.companyID, status: a.status, activeOnly: a.activeOnly, maxContracts: a.maxContracts });
+        const msg = r.readiness === 'no_sla_definitions'
+          ? `No SLA definitions in this tenant — define them in the UI first (${r.contractsEvaluated} contract(s) checked)`
+          : `${r.linked}/${r.contractsEvaluated} contract(s) linked to an SLA; ${r.unlinked} unlinked${r.truncated ? ' [truncated]' : ''}`;
+        return { result: r, message: msg };
+      }],
+      ['autotask_assign_contract_sla', async (a) => {
+        const r = await s.assignContractSla({ assignments: a.assignments, serviceLevelAgreementID: a.serviceLevelAgreementID, contractIDs: a.contractIDs, dryRun: a.dryRun });
+        const detail = (d: unknown) => typeof d === 'string' ? d : (d as any)?.message ?? JSON.stringify(d);
+        const msg = r.status === 'dry_run' ? `Dry run: would assign an SLA to ${(r.plannedAssignments as any[])?.length ?? 0} contract(s); nothing written`
+          : r.status === 'validation_failed' ? `Validation failed at "${r.step}": ${detail(r.detail)}`
+          : `Assigned an SLA to ${r.assigned} contract(s)` + ((r.errors as any[])?.length ? ` with ${(r.errors as any[]).length} error(s)` : '');
+        return { result: r, message: msg };
+      }],
       ['autotask_report_project_pl', async (a) => {
         const r = await s.getProjectPL({ projectID: a.projectID, taskId: a.taskId, ticketId: a.ticketId, bucket: a.bucket, from: a.from, to: a.to });
         const t = r.totals;

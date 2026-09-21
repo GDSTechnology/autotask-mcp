@@ -3440,6 +3440,48 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'SLA compliance report', readOnlyHint: true }
   },
   {
+    name: 'autotask_generate_sla_framework',
+    description: "ITIL SLA setup helper (advisory, deterministic, no Autotask writes). Generates the standardized SLA build to ENTER IN THE AUTOTASK UI, because SLA and priority definitions are UI-only (no REST entity for ServiceLevelAgreements; the priority picklist is not API-writable). Output: (1) an Impact × Urgency → Priority matrix (decision guidance — Autotask has no impact/urgency field); (2) a clean P1–P4 (or P5) priority scheme with names/descriptions to replace a drifted picklist; (3) an SLA target matrix — first-response / resolution-plan / resolution per priority × request type (Incident vs Service Request) × customer tier, with 24x7-vs-8x5 coverage; (4) UI steps and caveats. Optionally pass your CURRENT priority values to get a classified migration map (severity → Pn, response-time → SLA, work-type → queue, planned → Change). All numbers are ITIL-typical starting templates — tune via overrides. Pairs with autotask_report_sla_compliance, which measures met/missed once the SLAs are entered and assigned.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        levels: { type: 'number', enum: [4, 5], description: 'Priority levels: 4 (P1–P4, default) or 5 (adds P5 Planning lane)' },
+        requestTypes: { type: 'array', items: { type: 'string', enum: ['Incident', 'ServiceRequest'] }, description: 'Request types to generate targets for (default both)' },
+        tiers: {
+          type: 'array',
+          description: 'Customer tiers. Each: { name, multiplier, coverage? }. multiplier scales all target durations (>1 = looser); coverage overrides the level default. Omit for a single Standard tier (×1).',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              multiplier: { type: 'number', description: 'Duration multiplier (e.g. 1 premier, 1.5 standard, 2 break-fix)', exclusiveMinimum: 0 },
+              coverage: { type: 'string', enum: ['24x7', '8x5'], description: 'Force this tier\'s coverage regardless of priority default' }
+            },
+            required: ['name', 'multiplier']
+          }
+        },
+        currentPriorities: { type: 'array', items: { type: 'string' }, description: 'Your existing (possibly messy) priority picklist values, to classify and map to the clean scheme' },
+        businessHoursPerDay: { type: 'number', description: 'Business hours per working day for business-day math (default 8)', exclusiveMinimum: 0 },
+        serviceRequestResolutionMultiplier: { type: 'number', description: 'How much looser Service Request plan/resolution is vs Incident at the same priority (default 2)', exclusiveMinimum: 0 },
+        overrides: {
+          type: 'object',
+          description: 'Override default targets per priority code (P1..P5). Each value: { firstResponse?, resolutionPlan?, resolution? } in MINUTES, and/or { coverage }.',
+          additionalProperties: {
+            type: 'object',
+            properties: {
+              firstResponse: { type: 'number', description: 'Minutes' },
+              resolutionPlan: { type: 'number', description: 'Minutes' },
+              resolution: { type: 'number', description: 'Minutes' },
+              coverage: { type: 'string', enum: ['24x7', '8x5'] }
+            }
+          }
+        }
+      },
+      required: []
+    },
+    annotations: { title: 'Generate ITIL SLA framework', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_project_pl',
     description: "Profitability (P&L) for a project, task, or ticket, bucketed by week or month — real burden cost vs realized revenue, not assumed margins. COST = every time entry's hoursWorked × the resource's burden (Resources.internalCost), billable or not, posted or not — because paid time is a cost the moment it's worked (non-billable hours drag margin). REVENUE = totalAmount of POSTED billing items only (realized). Also reports pendingBillableHours (approved/posted lag = revenue-in-waiting) and a costCoverage flag (hours whose resource has NO burden set → cost understated; also the HR to-fix list). Give exactly one of projectID / taskId / ticketId. Read-only; for review (n8n/chat).",
     inputSchema: {
@@ -4918,7 +4960,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_report_sla_compliance', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_report_sla_compliance', 'autotask_generate_sla_framework', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

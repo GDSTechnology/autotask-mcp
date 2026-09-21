@@ -3523,6 +3523,25 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Assign SLA to contracts', readOnlyHint: false }
   },
   {
+    name: 'autotask_report_time_entry_compliance',
+    description: "Time-entry compliance / team hours (read-only, #100). Answers 'is the team doing real-time time entry, and are the hours there?' from TimeEntries. Per resource × week (or month): hours logged vs EXPECTED (utilization % and billable utilization %), billable vs non-billable split (non-billable is still paid time), APPROVED vs UNAPPROVED hours (billingApprovalDateTime — the timesheet check-and-balance; unapproved can't be billed/applied to contracts), and LATE entries (createDateTime logged > lateThresholdDays after dateWorked — the real-time-discipline signal). Flags resources: no_time, under_logged, low_billable_utilization, chronic_late_entry. Returns per-resource per-bucket rows + totals + overall + a data-quality block. Scope by dateWorked window (default last 4 weeks) + optional resource. For n8n/chat dashboards; no scheduling/notification here.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Work done on/after (YYYY-MM-DD); default 28 days ago' },
+        to: { type: 'string', description: 'Work done on/before (YYYY-MM-DD); default today' },
+        bucket: { type: 'string', enum: ['week', 'month'], description: 'Aggregation bucket (default week)' },
+        resourceID: { type: 'number', description: 'Limit to one resource' },
+        expectedHoursPerBucket: { type: 'number', description: 'Expected loggable hours per bucket (overrides expectedHoursPerWeek)', exclusiveMinimum: 0 },
+        expectedHoursPerWeek: { type: 'number', description: 'Expected hours per week (default 40); month expected derived from this', exclusiveMinimum: 0 },
+        lateThresholdDays: { type: 'number', description: 'Entries created more than this many days after the day worked count as late (default 2)', minimum: 0 },
+        maxEntries: { type: 'number', description: 'Cap on time entries evaluated (default 5000, max 20000)', minimum: 1, maximum: 20000 }
+      },
+      required: []
+    },
+    annotations: { title: 'Time-entry compliance report', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_project_pl',
     description: "Profitability (P&L) for a project, task, or ticket, bucketed by week or month — real burden cost vs realized revenue, not assumed margins. COST = every time entry's hoursWorked × the resource's burden (Resources.internalCost), billable or not, posted or not — because paid time is a cost the moment it's worked (non-billable hours drag margin). REVENUE = totalAmount of POSTED billing items only (realized). Also reports pendingBillableHours (approved/posted lag = revenue-in-waiting) and a costCoverage flag (hours whose resource has NO burden set → cost understated; also the HR to-fix list). Give exactly one of projectID / taskId / ticketId. Read-only; for review (n8n/chat).",
     inputSchema: {
@@ -4997,7 +5016,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

@@ -1564,6 +1564,18 @@ export class AutotaskToolHandler {
           message: `ITIL SLA framework: ${r.priorityScheme.length}-level priority scheme + ${r.targets.length} target row(s) across ${new Set(r.targets.map((t) => t.tier)).size} tier(s). Advisory only — enter in the Autotask UI${mig}.`,
         };
       }],
+      ['autotask_report_time_entry_compliance', async (a) => {
+        const r = await s.getTimeEntryComplianceReport({
+          from: a.from, to: a.to, bucket: a.bucket, resourceID: a.resourceID,
+          expectedHoursPerBucket: a.expectedHoursPerBucket, expectedHoursPerWeek: a.expectedHoursPerWeek,
+          lateThresholdDays: a.lateThresholdDays, maxEntries: a.maxEntries,
+        });
+        const o = r.overall;
+        return {
+          result: r,
+          message: `Time entry over ${r.resourcesEvaluated} resource(s), ${r.bucketsCovered.length} ${r.bucket}(s): ${o.totalHours}h logged (${o.billableHours}h billable), ${o.unapprovedHours}h unapproved, ${o.lateEntries} late entr(y/ies); ${r.flagged.length} resource(s) flagged${r.truncated ? ' [truncated]' : ''}`,
+        };
+      }],
       ['autotask_report_sla_coverage', async (a) => {
         const r = await s.getContractSlaCoverage({ companyID: a.companyID, status: a.status, activeOnly: a.activeOnly, maxContracts: a.maxContracts });
         const msg = r.readiness === 'no_sla_definitions'

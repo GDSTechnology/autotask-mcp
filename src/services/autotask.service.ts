@@ -44,6 +44,7 @@ import {
   classifyContractSlaCoverage, planContractSlaAssignment, activeStatusValues,
   SlaCoverageResult, PicklistOption, AssignInput, ContractLite,
 } from '../utils/contract-sla';
+import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -5079,6 +5080,54 @@ export class AutotaskService {
     });
     const result = computeSlaCompliance(tickets, new Date(), { ...(opts.groupBy ? { groupBy: opts.groupBy } : {}) });
     if (tickets.length >= max) result.truncated = true;
+    return result;
+  }
+
+  /**
+   * Time-entry compliance / team hours (#100). Per resource × week/month:
+   * hours logged vs expected (utilization), billable vs non-billable, approved
+   * vs unapproved (billingApprovalDateTime — the timesheet check-and-balance),
+   * and LATE entries (createDateTime vs dateWorked) as the real-time-discipline
+   * signal. Flags under-logged / not-logging / low-utilization / chronically-late
+   * resources. Read-only; scoped by dateWorked window (default last 4 weeks).
+   */
+  async getTimeEntryComplianceReport(opts: {
+    from?: string; to?: string; bucket?: 'week' | 'month'; resourceID?: number;
+    expectedHoursPerBucket?: number; expectedHoursPerWeek?: number; lateThresholdDays?: number;
+    maxEntries?: number;
+  } = {}): Promise<TimeEntryComplianceResult> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxEntries ?? 5000, 20000);
+    const to = opts.to ?? new Date().toISOString().slice(0, 10);
+    const from = opts.from ?? new Date(Date.now() - 28 * 86_400_000).toISOString().slice(0, 10);
+
+    const filters: QueryFilter[] = [
+      { op: 'gte', field: 'dateWorked', value: from },
+      { op: 'lte', field: 'dateWorked', value: to },
+    ];
+    if (opts.resourceID != null) filters.push({ op: 'eq', field: 'resourceID', value: opts.resourceID });
+
+    const entries = await http.query<any>('TimeEntries', filters, {
+      includeFields: ['id', 'resourceID', 'hoursWorked', 'isNonBillable', 'billingApprovalDateTime', 'dateWorked', 'createDateTime'],
+      maxRecords: max,
+    });
+
+    // Resource names for the resources that logged time (bounded).
+    const resourceIds = [...new Set(entries.map((e: any) => e.resourceID).filter((x: any): x is number => x != null))];
+    const resourceNames = new Map<number, string>();
+    for (let i = 0; i < resourceIds.length; i += 200) {
+      const rows = await http.query<any>('Resources', [{ op: 'in', field: 'id', value: resourceIds.slice(i, i + 200) }], { includeFields: ['id', 'firstName', 'lastName'], maxRecords: 500 });
+      for (const r of rows) resourceNames.set(r.id, [r.firstName, r.lastName].filter(Boolean).join(' ') || `Resource ${r.id}`);
+    }
+
+    const result = computeTimeEntryCompliance(entries, from, to, {
+      ...(opts.bucket ? { bucket: opts.bucket } : {}),
+      ...(opts.expectedHoursPerBucket != null ? { expectedHoursPerBucket: opts.expectedHoursPerBucket } : {}),
+      ...(opts.expectedHoursPerWeek != null ? { expectedHoursPerWeek: opts.expectedHoursPerWeek } : {}),
+      ...(opts.lateThresholdDays != null ? { lateThresholdDays: opts.lateThresholdDays } : {}),
+      resourceNames,
+    });
+    if (entries.length >= max) result.truncated = true;
     return result;
   }
 

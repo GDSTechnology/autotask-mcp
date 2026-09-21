@@ -3542,6 +3542,23 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Time-entry compliance report', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_tickets_needing_scheduling',
+    description: "Tickets needing scheduling (read-only, #100). Open tickets that should be on the calendar but aren't — extends the service-call reconciliation in report_service_call_leakage (that fixes leakage on tickets that HAD a service call; this catches the ones that never got one). Classifies each candidate as unscheduled (no service call linked), past_service_call (only stale/past calls — likely needs rescheduling), or scheduled (a future service call; excluded from the list, still counted). By default limits to open tickets with hoursToBeScheduled > 0 (the native 'hours remain to schedule' signal); pass requireHoursToSchedule:false to consider every open ticket, or ticketType to scope to install/project types. Returns the needs-scheduling list (worst backlog first — most hours, then oldest) with age + due date, counts, total hours to schedule, and optional grouping. For n8n/chat dashboards.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Limit to one company' },
+        queueID: { type: 'number', description: 'Limit to one queue' },
+        ticketType: { type: 'number', description: 'Limit to one ticket type (e.g. install/project)' },
+        requireHoursToSchedule: { type: 'boolean', description: 'Only tickets with hoursToBeScheduled > 0 (default true); false = every open ticket' },
+        groupBy: { type: 'string', enum: ['queue', 'company', 'resource'], description: 'Summarize the backlog by this dimension' },
+        maxTickets: { type: 'number', description: 'Cap on tickets evaluated (default 2000, max 10000)', minimum: 1, maximum: 10000 }
+      },
+      required: []
+    },
+    annotations: { title: 'Tickets needing scheduling', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_project_pl',
     description: "Profitability (P&L) for a project, task, or ticket, bucketed by week or month — real burden cost vs realized revenue, not assumed margins. COST = every time entry's hoursWorked × the resource's burden (Resources.internalCost), billable or not, posted or not — because paid time is a cost the moment it's worked (non-billable hours drag margin). REVENUE = totalAmount of POSTED billing items only (realized). Also reports pendingBillableHours (approved/posted lag = revenue-in-waiting) and a costCoverage flag (hours whose resource has NO burden set → cost understated; also the HR to-fix list). Give exactly one of projectID / taskId / ticketId. Read-only; for review (n8n/chat).",
     inputSchema: {
@@ -5040,7 +5057,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   service_calls: {
     description: 'Service call dispatching, ticket linking, and resource assignments',
-    tools: ['autotask_reconcile_service_call', 'autotask_report_service_call_leakage', 'autotask_search_service_calls', 'autotask_get_service_call', 'autotask_create_service_call', 'autotask_update_service_call', 'autotask_delete_service_call', 'autotask_search_service_call_tickets', 'autotask_create_service_call_ticket', 'autotask_delete_service_call_ticket', 'autotask_search_service_call_ticket_resources', 'autotask_create_service_call_ticket_resource', 'autotask_delete_service_call_ticket_resource']
+    tools: ['autotask_reconcile_service_call', 'autotask_report_service_call_leakage', 'autotask_report_tickets_needing_scheduling', 'autotask_search_service_calls', 'autotask_get_service_call', 'autotask_create_service_call', 'autotask_update_service_call', 'autotask_delete_service_call', 'autotask_search_service_call_tickets', 'autotask_create_service_call_ticket', 'autotask_delete_service_call_ticket', 'autotask_search_service_call_ticket_resources', 'autotask_create_service_call_ticket_resource', 'autotask_delete_service_call_ticket_resource']
   },
   company_todos: {
     description: 'Company To-Dos — CRM calendar follow-ups (distinct from tasks, checklist items, time entries, appointments, and service calls)',

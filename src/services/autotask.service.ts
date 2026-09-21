@@ -45,6 +45,7 @@ import {
   SlaCoverageResult, PicklistOption, AssignInput, ContractLite,
 } from '../utils/contract-sla';
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
+import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -5128,6 +5129,56 @@ export class AutotaskService {
       resourceNames,
     });
     if (entries.length >= max) result.truncated = true;
+    return result;
+  }
+
+  /**
+   * Tickets needing scheduling (#100). Open tickets with hours left to schedule
+   * (and/or an install/project type) that have NO usable Service Call — the work
+   * that never made it onto the calendar. Classifies unscheduled (no service call)
+   * vs past_service_call (only stale/past calls) vs scheduled (a future call).
+   * Read-only. By default limits to open tickets with hoursToBeScheduled > 0;
+   * pass requireHoursToSchedule:false to consider every open ticket.
+   */
+  async getTicketsNeedingScheduling(opts: {
+    companyID?: number; queueID?: number; ticketType?: number;
+    requireHoursToSchedule?: boolean; groupBy?: 'queue' | 'company' | 'resource'; maxTickets?: number;
+  } = {}): Promise<TicketsNeedingSchedulingResult> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxTickets ?? 2000, 10000);
+    const filters: QueryFilter[] = [{ op: 'noteq', field: 'status', value: 5 }]; // 5 = Complete
+    if (opts.companyID != null) filters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    if (opts.queueID != null) filters.push({ op: 'eq', field: 'queueID', value: opts.queueID });
+    if (opts.ticketType != null) filters.push({ op: 'eq', field: 'ticketType', value: opts.ticketType });
+    if (opts.requireHoursToSchedule !== false) filters.push({ op: 'gt', field: 'hoursToBeScheduled', value: 0 });
+
+    const tickets = await http.query<any>('Tickets', filters, {
+      includeFields: ['id', 'ticketNumber', 'companyID', 'queueID', 'ticketType', 'priority', 'status', 'assignedResourceID', 'hoursToBeScheduled', 'createDate', 'dueDateTime'],
+      maxRecords: max,
+    });
+
+    // Which candidate tickets have a service-call link, and when those calls start.
+    const ticketIds = tickets.map((t: any) => t.id).filter((x: any): x is number => x != null);
+    const linkPairs: Array<{ ticketID: number; serviceCallID: number }> = [];
+    for (let i = 0; i < ticketIds.length; i += 200) {
+      const links = await http.query<any>('ServiceCallTickets', [{ op: 'in', field: 'ticketID', value: ticketIds.slice(i, i + 200) }], { includeFields: ['id', 'ticketID', 'serviceCallID'], maxRecords: 500 });
+      for (const l of links) linkPairs.push({ ticketID: l.ticketID, serviceCallID: l.serviceCallID });
+    }
+    const scIds = [...new Set(linkPairs.map((l) => l.serviceCallID).filter((x): x is number => x != null))];
+    const scStart = new Map<number, string | null>();
+    for (let i = 0; i < scIds.length; i += 200) {
+      const calls = await http.query<any>('ServiceCalls', [{ op: 'in', field: 'id', value: scIds.slice(i, i + 200) }], { includeFields: ['id', 'startDateTime'], maxRecords: 500 });
+      for (const c of calls) scStart.set(c.id, c.startDateTime ?? null);
+    }
+    const serviceCallsByTicket = new Map<number, ServiceCallLite[]>();
+    for (const l of linkPairs) {
+      const arr = serviceCallsByTicket.get(l.ticketID) ?? [];
+      arr.push({ id: l.serviceCallID, startDateTime: scStart.get(l.serviceCallID) ?? null });
+      serviceCallsByTicket.set(l.ticketID, arr);
+    }
+
+    const result = computeTicketsNeedingScheduling(tickets, serviceCallsByTicket, new Date(), { ...(opts.groupBy ? { groupBy: opts.groupBy } : {}) });
+    if (tickets.length >= max) result.truncated = true;
     return result;
   }
 

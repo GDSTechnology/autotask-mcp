@@ -41,6 +41,10 @@ import {
 import { computeProjectPL, ProjectPLResult } from '../utils/project-pl';
 import { computeSlaCompliance, SlaComplianceResult } from '../utils/sla-compliance';
 import {
+  classifyContractSlaCoverage, planContractSlaAssignment, activeStatusValues,
+  SlaCoverageResult, PicklistOption, AssignInput, ContractLite,
+} from '../utils/contract-sla';
+import {
   AutotaskCompany,
   AutotaskContact,
   AutotaskTicket,
@@ -5076,6 +5080,109 @@ export class AutotaskService {
     const result = computeSlaCompliance(tickets, new Date(), { ...(opts.groupBy ? { groupBy: opts.groupBy } : {}) });
     if (tickets.length >= max) result.truncated = true;
     return result;
+  }
+
+  /**
+   * SLA coverage / readiness check (#102 slice 2). Which contracts have no SLA
+   * linked, and whether any SLA definitions exist at all. Active-status detection
+   * is derived from the status picklist LABELS (tenant-agnostic); scope by company
+   * or an explicit status, or set activeOnly:false to include every status.
+   * Read-only.
+   */
+  async getContractSlaCoverage(opts: {
+    companyID?: number; status?: number; activeOnly?: boolean; maxContracts?: number;
+  } = {}): Promise<SlaCoverageResult> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxContracts ?? 2000, 10000);
+    const fi = await this.getFieldInfo('Contracts');
+    const slaField = fi.find((f) => f.name === 'serviceLevelAgreementID');
+    const slaValues: PicklistOption[] = (slaField?.picklistValues ?? [])
+      .filter((v) => v.isActive !== false).map((v) => ({ value: v.value, label: v.label }));
+    const statusField = fi.find((f) => f.name === 'status');
+    const statusValues: PicklistOption[] = (statusField?.picklistValues ?? []).map((v) => ({ value: v.value, label: v.label }));
+    const activeVals = activeStatusValues(statusValues);
+
+    const filters: QueryFilter[] = [];
+    if (opts.companyID != null) filters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    if (opts.status != null) filters.push({ op: 'eq', field: 'status', value: opts.status });
+    else if (opts.activeOnly !== false && activeVals.size > 0) filters.push({ op: 'in', field: 'status', value: [...activeVals] });
+
+    const rows = await http.query<any>('Contracts', filters.length ? filters : MATCH_ALL, {
+      includeFields: ['id', 'contractName', 'companyID', 'contractType', 'status', 'endDate', 'serviceLevelAgreementID'],
+      maxRecords: max,
+    });
+    const contracts: ContractLite[] = rows.map((r) => ({
+      id: r.id, contractName: r.contractName, companyID: r.companyID,
+      contractType: r.contractType, status: r.status, endDate: r.endDate,
+      serviceLevelAgreementID: r.serviceLevelAgreementID,
+    }));
+    const result = classifyContractSlaCoverage(contracts, slaValues);
+    if (rows.length >= max) result.truncated = true;
+    return result;
+  }
+
+  /**
+   * Bulk-assign an SLA to contracts (#102 slice 3). `serviceLevelAgreementID` is
+   * API-writable once SLAs exist in the UI. DRY-RUN BY DEFAULT (dryRun !== false):
+   * returns the planned assignments and writes nothing. Fails closed if the tenant
+   * has NO SLA definitions yet, or if an SLA value isn't a valid active picklist
+   * value. Give either `assignments:[{contractID, serviceLevelAgreementID}]` or the
+   * shorthand `serviceLevelAgreementID` + `contractIDs:[...]`. Shared write-plan
+   * envelope; reversible (it only sets a picklist link).
+   */
+  async assignContractSla(params: {
+    assignments?: AssignInput[]; serviceLevelAgreementID?: number | string; contractIDs?: number[]; dryRun?: boolean;
+  }): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    let assignments: AssignInput[] = params.assignments ?? [];
+    if (assignments.length === 0 && params.serviceLevelAgreementID != null && params.contractIDs?.length) {
+      assignments = params.contractIDs.map((id) => ({ contractID: id, serviceLevelAgreementID: params.serviceLevelAgreementID! }));
+    }
+    if (assignments.length === 0) return wp.fail('input', 'supply assignments[] or (serviceLevelAgreementID + contractIDs[])');
+    if (assignments.some((a) => a.contractID == null || a.serviceLevelAgreementID == null || a.serviceLevelAgreementID === '')) {
+      return wp.fail('input', 'every assignment needs a contractID and a serviceLevelAgreementID');
+    }
+    wp.ok('input', { assignments: assignments.length });
+
+    const fi = await this.getFieldInfo('Contracts');
+    const slaField = fi.find((f) => f.name === 'serviceLevelAgreementID');
+    const slaValues: PicklistOption[] = (slaField?.picklistValues ?? [])
+      .filter((v) => v.isActive !== false).map((v) => ({ value: v.value, label: v.label }));
+    if (slaValues.length === 0) {
+      return wp.fail('sla_definitions', 'No SLA definitions exist in this tenant (Contracts.serviceLevelAgreementID has 0 values). Create them in the Autotask UI first — see autotask_generate_sla_framework.');
+    }
+    wp.ok('sla_definitions', { available: slaValues.length });
+
+    const ids = [...new Set(assignments.map((a) => a.contractID))];
+    const current = new Map<number, ContractLite>();
+    for (let i = 0; i < ids.length; i += 200) {
+      const rows = await (await this.ensureClient()).query<any>('Contracts', [{ op: 'in', field: 'id', value: ids.slice(i, i + 200) }], {
+        includeFields: ['id', 'contractName', 'companyID', 'serviceLevelAgreementID'], maxRecords: 500,
+      });
+      for (const r of rows) current.set(r.id, { id: r.id, contractName: r.contractName, companyID: r.companyID, serviceLevelAgreementID: r.serviceLevelAgreementID });
+    }
+    const plan = planContractSlaAssignment(current, assignments, slaValues);
+    wp.ok('diff', { planned: plan.planned.length, noop: plan.noop.length, notFound: plan.notFound.length, invalidSla: plan.invalidSla.length });
+
+    if (plan.planned.length === 0 && plan.invalidSla.length > 0) {
+      return wp.fail('sla_value', { message: 'no valid assignments — every serviceLevelAgreementID was invalid', invalidSla: plan.invalidSla, validValues: slaValues });
+    }
+
+    if (params.dryRun !== false) {
+      return wp.dryRun({ plannedAssignments: plan.planned, noop: plan.noop, notFound: plan.notFound, invalidSla: plan.invalidSla });
+    }
+
+    const coerce = (v: number | string): number | string => { const n = Number(v); return Number.isNaN(n) ? v : n; };
+    const applied: number[] = [];
+    const errors: Array<{ contractID: number; detail: string }> = [];
+    for (const item of plan.planned) {
+      try { await this.updateContract(item.contractID, { serviceLevelAgreementID: coerce(item.to) } as any); applied.push(item.contractID); }
+      catch (e) { errors.push({ contractID: item.contractID, detail: (e as Error).message }); }
+    }
+    return wp.done(errors.length ? 'assigned_with_errors' : 'assigned', {
+      assigned: applied.length, assignedIds: applied, noop: plan.noop, notFound: plan.notFound, invalidSla: plan.invalidSla,
+      ...(errors.length ? { errors } : {}),
+    });
   }
 
   // =====================================================

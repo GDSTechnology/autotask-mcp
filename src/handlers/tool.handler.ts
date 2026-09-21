@@ -13,6 +13,7 @@ import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
 import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { generateProjectLaborPlan } from '../utils/project-labor-plan.js';
+import { generateSlaFramework } from '../utils/sla-framework.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1544,6 +1545,24 @@ export class AutotaskToolHandler {
           ? `No SLA targets configured on ${r.ticketsEvaluated} ticket(s) — compliance n/a`
           : `SLA over ${r.ticketsEvaluated} ticket(s) (${r.targetsConfigured} with targets): triage ${pct(tr)}, engagement ${pct(en)}, resolved ${pct(rv)}; ${r.breaches.length} open breach(es)`;
         return { result: r, message: `${base}. Actual: median ${rm.medianHoursToFirstResponse ?? 'n/a'}h to first response, ${rm.medianHoursToResolve ?? 'n/a'}h to resolve${r.truncated ? ' [truncated]' : ''}` };
+      }],
+      ['autotask_generate_sla_framework', async (a) => {
+        // Pure/deterministic — no Autotask I/O. Produces an ITIL-standard SLA spec
+        // (priority matrix + clean scheme + target matrix) to enter in the UI.
+        const r = generateSlaFramework({
+          levels: a.levels,
+          requestTypes: a.requestTypes,
+          tiers: a.tiers,
+          currentPriorities: a.currentPriorities,
+          businessHoursPerDay: a.businessHoursPerDay,
+          serviceRequestResolutionMultiplier: a.serviceRequestResolutionMultiplier,
+          overrides: a.overrides,
+        });
+        const mig = r.priorityMigration ? `; mapped ${r.priorityMigration.length} current priority value(s)` : '';
+        return {
+          result: r,
+          message: `ITIL SLA framework: ${r.priorityScheme.length}-level priority scheme + ${r.targets.length} target row(s) across ${new Set(r.targets.map((t) => t.tier)).size} tier(s). Advisory only — enter in the Autotask UI${mig}.`,
+        };
       }],
       ['autotask_report_project_pl', async (a) => {
         const r = await s.getProjectPL({ projectID: a.projectID, taskId: a.taskId, ticketId: a.ticketId, bucket: a.bucket, from: a.from, to: a.to });

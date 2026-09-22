@@ -89,7 +89,7 @@ export function computeBomLabor(input: BomLaborInput): BomLaborResult {
     const qty = Number(it.quantity) || 0;
     const rate = findRate(it.item, rates);
     let hpu = rate ? rateHoursPerUnit(rate) : null;
-    let matched = rate != null && hpu != null;
+    const matched = rate != null && hpu != null;
     if (hpu == null && input.defaultHoursPerUnit != null) { hpu = input.defaultHoursPerUnit; }
 
     if (hpu == null) {

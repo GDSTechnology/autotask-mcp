@@ -47,6 +47,7 @@ import {
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
+import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -5230,6 +5231,43 @@ export class AutotaskService {
     if (completed.length >= max) trunc.completed = true;
     if (open.length >= max) trunc.open = true;
     if (Object.keys(trunc).length) result.truncated = trunc;
+    return result;
+  }
+
+  /**
+   * Request segmentation dimension (#100). Split tickets into delivery segments
+   * (project / install / recurring / support, or any caller scheme) and report
+   * per-segment KPIs (volume, open backlog, completion, avg open age, share).
+   * Segment rules are caller-provided (queues/types are tenant-specific); with
+   * none supplied it falls back to the universal ITIL classification by
+   * ticketType. Read-only; scoped by createDate window (default last 90 days) +
+   * optional company/queue, or openOnly for the current backlog.
+   */
+  async getRequestSegmentation(opts: {
+    from?: string; to?: string; companyID?: number; queueID?: number; openOnly?: boolean;
+    segments?: SegmentRule[]; defaultSegmentName?: string; maxTickets?: number;
+  } = {}): Promise<RequestSegmentationResult> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxTickets ?? 5000, 20000);
+    const to = opts.to ?? new Date().toISOString().slice(0, 10);
+    const from = opts.from ?? new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
+    const filters: QueryFilter[] = [];
+    if (opts.openOnly) filters.push({ op: 'noteq', field: 'status', value: 5 });
+    else { filters.push({ op: 'gte', field: 'createDate', value: from }); filters.push({ op: 'lte', field: 'createDate', value: to }); }
+    if (opts.companyID != null) filters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    if (opts.queueID != null) filters.push({ op: 'eq', field: 'queueID', value: opts.queueID });
+
+    const tickets = await http.query<any>('Tickets', filters, {
+      includeFields: ['id', 'ticketType', 'queueID', 'priority', 'issueType', 'title', 'status', 'createDate', 'completedDate'],
+      maxRecords: max,
+    });
+
+    const result = computeRequestSegmentation(tickets, from, to, {
+      ...(opts.segments ? { segments: opts.segments } : {}),
+      ...(opts.defaultSegmentName ? { defaultSegmentName: opts.defaultSegmentName } : {}),
+      ...(opts.openOnly != null ? { openOnly: opts.openOnly } : {}),
+    });
+    if (tickets.length >= max) result.truncated = true;
     return result;
   }
 

@@ -1576,6 +1576,17 @@ export class AutotaskToolHandler {
           message: `Time entry over ${r.resourcesEvaluated} resource(s), ${r.bucketsCovered.length} ${r.bucket}(s): ${o.totalHours}h logged (${o.billableHours}h billable), ${o.unapprovedHours}h unapproved, ${o.lateEntries} late entr(y/ies); ${r.flagged.length} resource(s) flagged${r.truncated ? ' [truncated]' : ''}`,
         };
       }],
+      ['autotask_report_request_segmentation', async (a) => {
+        const r = await s.getRequestSegmentation({
+          from: a.from, to: a.to, companyID: a.companyID, queueID: a.queueID, openOnly: a.openOnly,
+          segments: a.segments, defaultSegmentName: a.defaultSegmentName, maxTickets: a.maxTickets,
+        });
+        const top = r.segments.slice(0, 3).map((s2) => `${s2.name} ${s2.total}${s2.sharePct != null ? ` (${s2.sharePct}%)` : ''}`).join(', ');
+        return {
+          result: r,
+          message: `Segmented ${r.ticketsEvaluated} ticket(s) into ${r.segments.length} segment(s) [${r.rulesUsed}]: ${top}${r.segments.length > 3 ? ', …' : ''}${r.truncated ? ' [truncated]' : ''}`,
+        };
+      }],
       ['autotask_report_ticket_throughput', async (a) => {
         const r = await s.getTicketThroughput({
           from: a.from, to: a.to, companyID: a.companyID, queueID: a.queueID,

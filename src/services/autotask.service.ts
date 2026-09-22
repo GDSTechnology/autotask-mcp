@@ -47,7 +47,7 @@ import {
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
-import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhookPayload, validateWebhookCreate, WebhookParams } from '../utils/webhook-entities';
+import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhookPayload, validateWebhookCreate, buildWebhookFieldRow, WebhookParams, WebhookFieldSpec } from '../utils/webhook-entities';
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
 import {
   AutotaskCompany,
@@ -5403,7 +5403,7 @@ export class AutotaskService {
    * re-triggering the webhook (loop prevention). Standing config — dryRun defaults ON.
    */
   async createWebhook(entityKey: string, params: WebhookParams & {
-    fields?: Array<{ fieldID: number; isSubscribedToDisplayValueChanges?: boolean; isDisplayAlwaysField?: boolean }>;
+    fields?: WebhookFieldSpec[];
     excludedResourceIDs?: number[];
     dryRun?: boolean;
   }): Promise<WritePlanResult> {
@@ -5413,20 +5413,25 @@ export class AutotaskService {
     if (errors.length) return wp.fail('input', { errors });
     wp.ok('input', { entity: map.key });
 
-    const payload = buildWebhookPayload({ isActive: params.isActive ?? true, ...params });
+    // Defaults for required fields Autotask expects on create (verified live).
+    const payload = buildWebhookPayload({
+      ...params,
+      isActive: params.isActive ?? true,
+      sendThresholdExceededNotification: params.sendThresholdExceededNotification ?? false,
+    });
     const fields = params.fields ?? [];
     const excluded = [...new Set(params.excludedResourceIDs ?? [])];
     wp.ok('plan', { fields: fields.length, excludedResources: excluded.length });
 
     if (params.dryRun !== false) {
-      return wp.dryRun({ entity: map.key, plannedWebhook: payload, plannedFields: fields, plannedExcludedResources: excluded });
+      return wp.dryRun({ entity: map.key, plannedWebhook: payload, plannedFields: fields.map((f) => buildWebhookFieldRow(0, f)), plannedExcludedResources: excluded });
     }
 
     const http = await this.ensureClient();
     const webhookID = await http.create(map.parent, payload);
     const childErrors: Array<{ step: string; detail: string }> = [];
     for (const f of fields) {
-      try { await http.create(map.fields, { [WEBHOOK_PARENT_FK]: webhookID, fieldID: f.fieldID, isSubscribedToDisplayValueChanges: f.isSubscribedToDisplayValueChanges ?? false, isDisplayAlwaysField: f.isDisplayAlwaysField ?? false }); }
+      try { await http.create(map.fields, buildWebhookFieldRow(webhookID, f)); }
       catch (e) { childErrors.push({ step: `field:${f.fieldID}`, detail: (e as Error).message }); }
     }
     for (const rid of excluded) {

@@ -1511,6 +1511,29 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Build project from plan' }
   },
   {
+    name: 'autotask_extend_project',
+    description: "Project extension (#46 §2.4): add phases / tasks / dependencies to an EXISTING project by id — a change order, an added phase, a recurring month, a new site, or extra tasks. SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written and it returns what WOULD be added (the phases/tasks not already present by title). IDEMPOTENT MERGE: phases and tasks already in the project (matched by title) are reused, never duplicated, so re-running is safe and resumable. Same normalized plan shape and build engine as autotask_build_project_from_plan, but targets a known projectID instead of creating/finding a project. Returns the shared write-plan envelope (status: dry_run | validation_failed | extended | extended_with_errors) with a created/reused summary. Produce the `plan` with the SOW→project pipeline (extract_project_scope → calculate_bom_labor → calculate_project_schedule).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectID: { type: 'number', description: 'The existing Autotask project to extend' },
+        plan: {
+          type: 'object',
+          description: 'Normalized build plan fragment to merge in (same shape as autotask_build_project_from_plan): { name, phases:[{ref,title,parentRef?,description?}], tasks:[{ref,title,estimatedHours,phaseRef?,predecessors?,lagDays?,taskType?,description?}] }. Only phases/tasks not already present (by title) are created.',
+          properties: {
+            name: { type: 'string', description: 'Label for the plan fragment (not used to find the project — projectID is authoritative)' },
+            phases: { type: 'array', items: { type: 'object', properties: { ref: { type: 'string' }, title: { type: 'string' }, parentRef: { type: 'string' }, description: { type: 'string' } }, required: ['ref', 'title'] } },
+            tasks: { type: 'array', items: { type: 'object', properties: { ref: { type: 'string' }, title: { type: 'string' }, estimatedHours: { type: 'number' }, phaseRef: { type: 'string' }, predecessors: { type: 'array', items: { type: 'string' } }, lagDays: { type: 'number' }, taskType: { type: 'number' }, description: { type: 'string' } }, required: ['ref', 'title'] } }
+          },
+          required: ['name', 'tasks']
+        },
+        dryRun: { type: 'boolean', description: 'Default true — plan only, no writes. Pass false to apply.' }
+      },
+      required: ['projectID', 'plan']
+    },
+    annotations: { title: 'Extend an existing project' }
+  },
+  {
     name: 'autotask_create_project',
     description: 'Create a new project in Autotask',
     inputSchema: {
@@ -5145,7 +5168,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

@@ -1562,10 +1562,40 @@ export class AutotaskService {
       } as Partial<AutotaskProject>);
     }
 
-    // 5b. Existing phases/tasks (for resume) → title→id maps.
+    // 5b–5e: materialize phases/tasks/dependencies (idempotent, title-matched).
+    const applied = await this.applyPlanToProject(projectId, bp, existing?.id != null, errors);
+    return wp.done(applied.errors.length > 0 ? 'built_with_errors' : 'built', {
+      projectId,
+      buildKey,
+      resumed: existing?.id != null,
+      summary: applied.summary,
+      phases: applied.phaseResults,
+      tasks: applied.taskResults,
+      ...(applied.errors.length > 0 ? { errors: applied.errors } : {}),
+    });
+  }
+
+  /**
+   * Shared build-engine step: create the plan's phases (parent-first), tasks, and
+   * dependencies inside `projectId`, idempotently (title-matched → reuse). Used by
+   * both buildProjectFromPlan (§14) and extendProject (§2.4). When `loadExisting`
+   * is true it pre-loads the project's current phases/tasks so nothing duplicates.
+   * Never throws past a single record — per-entity errors accumulate in `errors`.
+   */
+  private async applyPlanToProject(
+    projectId: number,
+    bp: ReturnType<typeof planProjectBuild>,
+    loadExisting: boolean,
+    errors: Array<{ step: string; ref?: string; detail: string }> = [],
+  ): Promise<{
+    summary: Record<string, number>;
+    errors: Array<{ step: string; ref?: string; detail: string }>;
+    phaseResults: Array<{ ref: string; id: number | null; reused: boolean }>;
+    taskResults: Array<{ ref: string; id: number | null; reused: boolean }>;
+  }> {
     const phaseTitleToId = new Map<string, number>();
     const taskTitleToId = new Map<string, number>();
-    if (existing?.id != null) {
+    if (loadExisting) {
       try {
         const [ph, tk] = await Promise.all([
           this.searchPhases(projectId, { pageSize: 500 }),
@@ -1578,7 +1608,7 @@ export class AutotaskService {
       }
     }
 
-    // 5c. Phases (parent-first). refs → real ids.
+    // Phases (parent-first). refs → real ids.
     const phaseRefToId = new Map<string, number>();
     const phaseResults: Array<{ ref: string; id: number | null; reused: boolean }> = [];
     for (const p of bp.orderedPhases) {
@@ -1600,7 +1630,7 @@ export class AutotaskService {
       }
     }
 
-    // 5d. Tasks. refs → real ids.
+    // Tasks. refs → real ids.
     const taskRefToId = new Map<string, number>();
     const taskResults: Array<{ ref: string; id: number | null; reused: boolean }> = [];
     for (const t of bp.tasks) {
@@ -1623,8 +1653,8 @@ export class AutotaskService {
       }
     }
 
-    // 5e. Dependencies. Skip any already present (resume-safe); skip edges whose
-    //     endpoints didn't get created.
+    // Dependencies. Skip any already present (resume-safe); skip edges whose
+    // endpoints didn't get created.
     let depsCreated = 0;
     let depsReused = 0;
     for (const edge of bp.dependencies) {
@@ -1635,7 +1665,7 @@ export class AutotaskService {
         continue;
       }
       try {
-        if (existing?.id != null) {
+        if (loadExisting) {
           const current = await this.listTaskPredecessors(successorId);
           if (current.some((r) => (r as Record<string, any>).predecessorTaskID === predId)) { depsReused++; continue; }
         }
@@ -1654,14 +1684,64 @@ export class AutotaskService {
       dependenciesCreated: depsCreated,
       dependenciesReused: depsReused,
     };
-    return wp.done(errors.length > 0 ? 'built_with_errors' : 'built', {
-      projectId,
-      buildKey,
-      resumed: existing?.id != null,
-      summary,
-      phases: phaseResults,
-      tasks: taskResults,
-      ...(errors.length > 0 ? { errors } : {}),
+    return { summary, errors, phaseResults, taskResults };
+  }
+
+  /**
+   * Project extension (#46 §2.4): add phases / tasks / dependencies to an EXISTING
+   * project by id — a change order, an added phase, a recurring month, a new site,
+   * or extra tasks. SAFE BY DEFAULT (dryRun !== false): reports what WOULD be added
+   * and writes nothing. Idempotent: phases/tasks already present (by title) are
+   * reused, not duplicated, so it's a safe merge. Same write-plan envelope + build
+   * engine as buildProjectFromPlan, but targets a known projectID instead of
+   * creating/finding a project.
+   */
+  async extendProject(params: { projectID: number; plan: ProjectBuildPlan; dryRun?: boolean }): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    if (params.projectID == null) return wp.fail('project', 'projectID is required');
+    const v = validateBuildPlan(params.plan);
+    if (!v.valid) return wp.fail('plan', { errors: v.errors, warnings: v.warnings });
+    wp.ok('plan', { phases: (params.plan.phases ?? []).length, tasks: (params.plan.tasks ?? []).length, warnings: v.warnings });
+
+    const project = await this.getProject(params.projectID);
+    if (!project) return wp.fail('project', `Project ${params.projectID} not found`);
+    wp.ok('project', { id: params.projectID, name: project.projectName });
+
+    const bp = planProjectBuild(params.plan);
+
+    // Determine which phases/tasks are genuinely NEW (title not already present).
+    let existingPhaseTitles = new Set<string>();
+    let existingTaskTitles = new Set<string>();
+    try {
+      const [ph, tk] = await Promise.all([
+        this.searchPhases(params.projectID, { pageSize: 500 }),
+        this.searchTasks({ projectID: params.projectID, pageSize: 500 } as AutotaskQueryOptions),
+      ]);
+      existingPhaseTitles = new Set(ph.items.map((p) => (p.title ?? '').trim()).filter(Boolean));
+      existingTaskTitles = new Set(tk.items.map((t) => (t.title ?? '').trim()).filter(Boolean));
+    } catch (e) {
+      return wp.fail('load-existing', `Could not read project ${params.projectID} structure: ${(e as Error).message}`);
+    }
+    const newPhases = bp.orderedPhases.filter((p) => !existingPhaseTitles.has(p.title.trim()));
+    const newTasks = bp.tasks.filter((t) => !existingTaskTitles.has(t.title.trim()));
+    wp.ok('diff', { newPhases: newPhases.length, newTasks: newTasks.length, reusedPhases: bp.orderedPhases.length - newPhases.length, reusedTasks: bp.tasks.length - newTasks.length });
+
+    if (params.dryRun !== false) {
+      return wp.dryRun({
+        projectId: params.projectID,
+        wouldAddPhases: newPhases.map((p) => p.title),
+        wouldAddTasks: newTasks.map((t) => ({ title: t.title, estimatedHours: t.estimatedHours ?? 0, phaseRef: t.phaseRef ?? null })),
+        plannedDependencies: bp.dependencies.length,
+      });
+    }
+
+    const applied = await this.applyPlanToProject(params.projectID, bp, true);
+    return wp.done(applied.errors.length > 0 ? 'extended_with_errors' : 'extended', {
+      projectId: params.projectID,
+      summary: applied.summary,
+      phases: applied.phaseResults,
+      tasks: applied.taskResults,
+      ...(applied.errors.length > 0 ? { errors: applied.errors } : {}),
     });
   }
 

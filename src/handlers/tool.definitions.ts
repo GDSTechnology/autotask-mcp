@@ -5182,6 +5182,40 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       },
       required: ['method', 'path']
     }
+  },
+  // Webhook management (#23 §16) — read/discovery layer
+  {
+    name: 'autotask_list_webhook_entities',
+    description: "Prerequisite/discovery for webhook management (read-only, no I/O): lists the Autotask entities that support outbound webhooks (tickets, companies, contacts, configurationItems, ticketNotes) and the REST entity names behind each — the parent `<Entity>Webhooks` record and its child collections for monitored fields, UDF fields, and EXCLUDED RESOURCES. The excluded-resources child is the loop-prevention hook: exclude the MCP integration user's resourceID so the MCP's own writes don't trigger the webhook back into itself. Call this first to know which `entity` values the other webhook tools accept.",
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    annotations: { title: 'List webhook-capable entities', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_search_webhooks',
+    description: "List existing webhooks configured on a webhook-capable entity (read-only). Pass `entity` (tickets / companies / contacts / configurationItems / ticketNotes — see autotask_list_webhook_entities). Returns the parent webhook records (name, URL, active flag, event subscriptions). Use activeOnly to see only enabled ones.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Webhook-capable entity key (tickets/companies/contacts/configurationItems/ticketNotes)' },
+        activeOnly: { type: 'boolean', description: 'Only active webhooks' },
+        pageSize: { type: 'number', description: 'Max webhooks to return (default 100, max 500)', minimum: 1, maximum: 500 }
+      },
+      required: ['entity']
+    },
+    annotations: { title: 'Search webhooks', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_get_webhook',
+    description: "Get one webhook with its full configuration (read-only): the parent record plus its monitored standard fields, UDF fields, and EXCLUDED RESOURCES (the resources whose changes don't fire it — the loop-prevention list). Pass `entity` and the webhook `id`.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Webhook-capable entity key (see autotask_list_webhook_entities)' },
+        id: { type: 'number', description: 'Webhook id' }
+      },
+      required: ['entity', 'id']
+    },
+    annotations: { title: 'Get webhook', readOnlyHint: true }
   }
 ];
 
@@ -5237,5 +5271,9 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   company_todos: {
     description: 'Company To-Dos — CRM calendar follow-ups (distinct from tasks, checklist items, time entries, appointments, and service calls)',
     tools: ['autotask_get_company_todo', 'autotask_search_company_todos', 'autotask_create_company_todo', 'autotask_update_company_todo', 'autotask_complete_company_todo', 'autotask_delete_company_todo']
+  },
+  webhooks: {
+    description: 'Autotask outbound webhook management — discover webhook-capable entities and inspect existing webhooks (read/discovery)',
+    tools: ['autotask_list_webhook_entities', 'autotask_search_webhooks', 'autotask_get_webhook']
   }
 };

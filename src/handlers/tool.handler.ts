@@ -17,6 +17,7 @@ import { generateSlaFramework } from '../utils/sla-framework.js';
 import { extractProjectScope } from '../utils/project-scope.js';
 import { computeBomLabor } from '../utils/bom-labor.js';
 import { classifyProject } from '../utils/project-classification.js';
+import { WEBHOOK_ENTITIES } from '../utils/webhook-entities.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1399,6 +1400,30 @@ export class AutotaskToolHandler {
           result: r,
           message: `Classified as "${r.classification}" (${r.confidence} confidence). ${r.rationale}`,
         };
+      }],
+      // Webhook management (#23 §16) — read/discovery layer
+      ['autotask_list_webhook_entities', async () => {
+        // Pure/deterministic — the prerequisite: which entities support webhooks
+        // and the REST entity names behind each (incl. the excluded-resources
+        // child used for loop prevention).
+        const entities = Object.values(WEBHOOK_ENTITIES).map((m) => ({
+          entity: m.key, watches: m.targetEntity, webhookEntity: m.parent,
+          fieldsEntity: m.fields, udfFieldsEntity: m.udfFields, excludedResourcesEntity: m.excludedResources,
+        }));
+        return {
+          result: { entities, loopPreventionNote: 'Exclude the MCP integration user\'s resourceID via the excluded-resources child so the MCP\'s own writes do not trigger the webhook (avoids loops).' },
+          message: `${entities.length} webhook-capable entit(ies): ${entities.map((e) => e.entity).join(', ')}`,
+        };
+      }],
+      ['autotask_search_webhooks', async (a) => {
+        const r = await s.searchWebhooks(a.entity, { activeOnly: a.activeOnly, pageSize: a.pageSize });
+        const active = r.webhooks.filter((w) => w.isActive).length;
+        return { result: r, message: `${r.webhooks.length} webhook(s) on ${r.entity} (${active} active)` };
+      }],
+      ['autotask_get_webhook', async (a) => {
+        const r = await s.getWebhook(a.entity, a.id);
+        if (!r) return { result: null, message: `Webhook ${a.id} not found on ${a.entity}` };
+        return { result: r, message: `Webhook ${a.id} on ${r.entity}: ${(r.fields as any[]).length} field(s), ${(r.excludedResources as any[]).length} excluded resource(s)` };
       }],
       ['autotask_calculate_bom_labor', async (a) => {
         // Pure/deterministic — no Autotask I/O. BOM quantities + caller rate

@@ -47,6 +47,7 @@ import {
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
+import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK } from '../utils/webhook-entities';
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
 import {
   AutotaskCompany,
@@ -5349,6 +5350,42 @@ export class AutotaskService {
     });
     if (tickets.length >= max) result.truncated = true;
     return result;
+  }
+
+  // =====================================================
+  // Webhook management (#23 §16) — read/discovery layer
+  // =====================================================
+
+  /**
+   * List existing webhooks for a webhook-capable entity (tickets / companies /
+   * contacts / configurationItems / ticketNotes). Read-only.
+   */
+  async searchWebhooks(entityKey: string, opts: { activeOnly?: boolean; pageSize?: number } = {}): Promise<{ entity: string; parentEntity: string; webhooks: Record<string, any>[] }> {
+    const map = resolveWebhookEntity(entityKey);
+    if (!map) throw new Error(`Unknown or unsupported webhook entity "${entityKey}". Supported: ${Object.keys(WEBHOOK_ENTITIES).join(', ')}`);
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = opts.activeOnly ? [{ op: 'eq', field: 'isActive', value: true }] : MATCH_ALL;
+    const webhooks = await http.query<Record<string, any>>(map.parent, filters, { maxRecords: Math.min(opts.pageSize ?? 100, 500) });
+    return { entity: map.key, parentEntity: map.parent, webhooks };
+  }
+
+  /**
+   * Get one webhook with its monitored fields, UDF fields, and excluded resources
+   * (the loop-prevention list). Read-only.
+   */
+  async getWebhook(entityKey: string, id: number): Promise<Record<string, any> | null> {
+    const map = resolveWebhookEntity(entityKey);
+    if (!map) throw new Error(`Unknown or unsupported webhook entity "${entityKey}". Supported: ${Object.keys(WEBHOOK_ENTITIES).join(', ')}`);
+    const http = await this.ensureClient();
+    const webhook = await http.get<Record<string, any>>(map.parent, id);
+    if (!webhook) return null;
+    const childFilter: QueryFilter[] = [{ op: 'eq', field: WEBHOOK_PARENT_FK, value: id }];
+    const [fields, udfFields, excludedResources] = await Promise.all([
+      http.query<Record<string, any>>(map.fields, childFilter, { maxRecords: 500 }).catch(() => [] as Record<string, any>[]),
+      http.query<Record<string, any>>(map.udfFields, childFilter, { maxRecords: 500 }).catch(() => [] as Record<string, any>[]),
+      http.query<Record<string, any>>(map.excludedResources, childFilter, { maxRecords: 500 }).catch(() => [] as Record<string, any>[]),
+    ]);
+    return { entity: map.key, parentEntity: map.parent, webhook, fields, udfFields, excludedResources };
   }
 
   /**

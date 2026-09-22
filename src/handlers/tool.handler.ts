@@ -1487,6 +1487,17 @@ export class AutotaskToolHandler {
           : `Build result: ${r.status}`;
         return { result: r, message: msg };
       }],
+      ['autotask_extend_project', async (a) => {
+        const r = await s.extendProject({ projectID: a.projectID, plan: a.plan, dryRun: a.dryRun });
+        const sm = r.summary as Record<string, number> | undefined;
+        const msg =
+          r.status === 'dry_run' ? `Dry run OK — would add ${(r.wouldAddPhases as any[])?.length ?? 0} phase(s), ${(r.wouldAddTasks as any[])?.length ?? 0} task(s) to project ${r.projectId} (${r.plannedDependencies} dependency link(s)); nothing written`
+          : r.status === 'validation_failed' ? `Validation failed at step "${r.step}": ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`
+          : r.status === 'extended' ? `Extended project ${r.projectId}: +${sm?.phasesCreated} phase(s), +${sm?.tasksCreated} task(s), +${sm?.dependenciesCreated} dependency link(s)`
+          : r.status === 'extended_with_errors' ? `Extended project ${r.projectId} with ${(r.errors as any[])?.length} error(s): +${sm?.tasksCreated} task(s), +${sm?.phasesCreated} phase(s) — re-run to complete`
+          : `Extend result: ${r.status}`;
+        return { result: r, message: msg };
+      }],
 
       // Resources
       ['autotask_search_resources', async (a) => {

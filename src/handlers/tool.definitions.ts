@@ -5219,29 +5219,29 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_create_webhook',
-    description: "Create an outbound webhook on a webhook-capable entity (STANDING CONFIGURATION). SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written — it returns the planned webhook, fields, and excluded resources. Creates the parent webhook then its monitored `fields` and `excludedResourceIDs`. IMPORTANT (loop prevention): put the MCP integration user's resourceID in `excludedResourceIDs` so the MCP's own writes don't re-trigger the webhook. Requires name, https webhookUrl, and at least one event subscription. Returns the write-plan envelope (status: dry_run | validation_failed | created | created_with_errors).",
+    description: "Create an outbound webhook on a webhook-capable entity (STANDING CONFIGURATION). SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written — it returns the planned webhook, fields, and excluded resources. Creates the parent webhook then its monitored `fields` and `excludedResourceIDs`. IMPORTANT (loop prevention): put the MCP integration user's resourceID in `excludedResourceIDs` so the MCP's own writes don't re-trigger the webhook. Autotask REQUIRES name, https webhookUrl, https deactivationUrl (called if the webhook auto-deactivates), secretKey (signs the payload), and at least one event subscription. Returns the write-plan envelope (status: dry_run | validation_failed | created | created_with_errors).",
     inputSchema: {
       type: 'object',
       properties: {
         entity: { type: 'string', description: 'Webhook-capable entity key (see autotask_list_webhook_entities)' },
         name: { type: 'string', description: 'Webhook name' },
         webhookUrl: { type: 'string', description: 'The https:// callback URL (e.g. an n8n webhook node)' },
+        deactivationUrl: { type: 'string', description: 'REQUIRED https:// URL Autotask calls if it auto-deactivates the webhook' },
+        secretKey: { type: 'string', description: 'REQUIRED secret used to sign (HMAC) the webhook payload' },
         isActive: { type: 'boolean', description: 'Active on create (default true)' },
         subscribeCreate: { type: 'boolean', description: 'Fire on record create' },
         subscribeUpdate: { type: 'boolean', description: 'Fire on record update' },
         subscribeDelete: { type: 'boolean', description: 'Fire on record delete' },
-        sendThresholdExceededNotification: { type: 'boolean' },
+        sendThresholdExceededNotification: { type: 'boolean', description: 'Default false' },
         notificationEmailAddress: { type: 'string' },
-        ownerResourceID: { type: 'number' },
-        secretKey: { type: 'string', description: 'Optional signing secret for payload HMAC' },
         fields: {
-          type: 'array', description: 'Standard fields to monitor. Each: { fieldID, isSubscribedToDisplayValueChanges?, isDisplayAlwaysField? }.',
-          items: { type: 'object', properties: { fieldID: { type: 'number' }, isSubscribedToDisplayValueChanges: { type: 'boolean' }, isDisplayAlwaysField: { type: 'boolean' } }, required: ['fieldID'] }
+          type: 'array', description: 'Standard fields to monitor. Each: { fieldID, isSubscribedField?, isDisplayAlwaysField? } (isSubscribedField default true).',
+          items: { type: 'object', properties: { fieldID: { type: 'number' }, isSubscribedField: { type: 'boolean' }, isDisplayAlwaysField: { type: 'boolean' } }, required: ['fieldID'] }
         },
         excludedResourceIDs: { type: 'array', items: { type: 'number' }, description: 'Resource ids whose changes do NOT fire the webhook — include the MCP integration user to avoid loops' },
         dryRun: { type: 'boolean', description: 'Default true — plan only, no writes. Pass false to create.' }
       },
-      required: ['entity', 'name', 'webhookUrl']
+      required: ['entity', 'name', 'webhookUrl', 'deactivationUrl', 'secretKey']
     },
     annotations: { title: 'Create webhook' }
   },
@@ -5255,13 +5255,13 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         id: { type: 'number', description: 'Webhook id' },
         name: { type: 'string' },
         webhookUrl: { type: 'string', description: 'New https:// callback URL' },
+        deactivationUrl: { type: 'string', description: 'New https:// auto-deactivation URL' },
         isActive: { type: 'boolean', description: 'Enable/disable the webhook' },
         subscribeCreate: { type: 'boolean' },
         subscribeUpdate: { type: 'boolean' },
         subscribeDelete: { type: 'boolean' },
         sendThresholdExceededNotification: { type: 'boolean' },
         notificationEmailAddress: { type: 'string' },
-        ownerResourceID: { type: 'number' },
         secretKey: { type: 'string' },
         dryRun: { type: 'boolean', description: 'Default true — plan only. Pass false to apply.' }
       },

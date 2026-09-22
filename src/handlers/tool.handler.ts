@@ -1427,10 +1427,10 @@ export class AutotaskToolHandler {
       }],
       ['autotask_create_webhook', async (a) => {
         const r = await s.createWebhook(a.entity, {
-          name: a.name, webhookUrl: a.webhookUrl, isActive: a.isActive,
+          name: a.name, webhookUrl: a.webhookUrl, deactivationUrl: a.deactivationUrl, isActive: a.isActive,
           subscribeCreate: a.subscribeCreate, subscribeUpdate: a.subscribeUpdate, subscribeDelete: a.subscribeDelete,
           sendThresholdExceededNotification: a.sendThresholdExceededNotification, notificationEmailAddress: a.notificationEmailAddress,
-          ownerResourceID: a.ownerResourceID, secretKey: a.secretKey,
+          secretKey: a.secretKey,
           fields: a.fields, excludedResourceIDs: a.excludedResourceIDs, dryRun: a.dryRun,
         });
         const msg = r.status === 'dry_run' ? `Dry run: would create a ${a.entity} webhook → ${a.webhookUrl} with ${(r.plannedFields as any[])?.length ?? 0} field(s), ${(r.plannedExcludedResources as any[])?.length ?? 0} excluded resource(s); nothing written`
@@ -1440,10 +1440,10 @@ export class AutotaskToolHandler {
       }],
       ['autotask_update_webhook', async (a) => {
         const r = await s.updateWebhook(a.entity, a.id, {
-          name: a.name, webhookUrl: a.webhookUrl, isActive: a.isActive,
+          name: a.name, webhookUrl: a.webhookUrl, deactivationUrl: a.deactivationUrl, isActive: a.isActive,
           subscribeCreate: a.subscribeCreate, subscribeUpdate: a.subscribeUpdate, subscribeDelete: a.subscribeDelete,
           sendThresholdExceededNotification: a.sendThresholdExceededNotification, notificationEmailAddress: a.notificationEmailAddress,
-          ownerResourceID: a.ownerResourceID, secretKey: a.secretKey,
+          secretKey: a.secretKey,
         }, a.dryRun);
         const msg = r.status === 'dry_run' ? `Dry run: would update ${a.entity} webhook ${a.id} — ${Object.keys(r.plannedPatch as object).join(', ')}; nothing written`
           : r.status === 'validation_failed' ? `Validation failed: ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`

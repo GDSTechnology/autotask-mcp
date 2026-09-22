@@ -5,23 +5,30 @@ jest.mock('autotask-node', () => ({
   AutotaskClient: { create: jest.fn().mockRejectedValue(new Error('Mock: no API')) },
 }));
 
-import { buildWebhookPayload, validateWebhookCreate } from '../src/utils/webhook-entities';
+import { buildWebhookPayload, validateWebhookCreate, buildWebhookFieldRow } from '../src/utils/webhook-entities';
 import { AutotaskService } from '../src/services/autotask.service';
 import { Logger } from '../src/utils/logger';
 import type { McpServerConfig } from '../src/types/mcp';
 
 describe('webhook payload + validation (pure)', () => {
-  test('buildWebhookPayload maps friendly params → Autotask fields, only provided keys', () => {
-    const p = buildWebhookPayload({ name: 'W', webhookUrl: 'https://x', subscribeCreate: true, subscribeUpdate: false, ownerResourceID: 5 });
-    expect(p).toEqual({ name: 'W', webhookUrl: 'https://x', isSubscribedToCreateEvents: true, isSubscribedToUpdateEvents: false, ownerResourceID: 5 });
+  test('buildWebhookPayload maps friendly params → Autotask fields, only provided keys; no ownerResourceID (read-only)', () => {
+    const p = buildWebhookPayload({ name: 'W', webhookUrl: 'https://x', deactivationUrl: 'https://d', subscribeCreate: true, subscribeUpdate: false });
+    expect(p).toEqual({ name: 'W', webhookUrl: 'https://x', deactivationUrl: 'https://d', isSubscribedToCreateEvents: true, isSubscribedToUpdateEvents: false });
     expect(p).not.toHaveProperty('isSubscribedToDeleteEvents'); // not supplied
   });
 
-  test('validateWebhookCreate enforces name, https url, ≥1 event', () => {
-    expect(validateWebhookCreate({ name: 'W', webhookUrl: 'https://x', subscribeCreate: true })).toEqual([]);
-    expect(validateWebhookCreate({ webhookUrl: 'https://x', subscribeCreate: true })).toContain('name is required');
-    expect(validateWebhookCreate({ name: 'W', webhookUrl: 'http://x', subscribeCreate: true })).toContain('webhookUrl must be an https:// URL');
-    expect(validateWebhookCreate({ name: 'W', webhookUrl: 'https://x' }).some((e) => /at least one event/.test(e))).toBe(true);
+  const ok = { name: 'W', webhookUrl: 'https://x', deactivationUrl: 'https://d', secretKey: 's3cr3t', subscribeCreate: true };
+  test('validateWebhookCreate enforces name, https urls, secretKey, ≥1 event', () => {
+    expect(validateWebhookCreate(ok)).toEqual([]);
+    expect(validateWebhookCreate({ ...ok, name: undefined })).toContain('name is required');
+    expect(validateWebhookCreate({ ...ok, webhookUrl: 'http://x' })).toContain('webhookUrl must be an https:// URL');
+    expect(validateWebhookCreate({ ...ok, deactivationUrl: undefined }).some((e) => /deactivationUrl is required/.test(e))).toBe(true);
+    expect(validateWebhookCreate({ ...ok, secretKey: undefined }).some((e) => /secretKey is required/.test(e))).toBe(true);
+    expect(validateWebhookCreate({ ...ok, subscribeCreate: false }).some((e) => /at least one event/.test(e))).toBe(true);
+  });
+
+  test('buildWebhookFieldRow uses live child field names (isSubscribedField)', () => {
+    expect(buildWebhookFieldRow(7, { fieldID: 3 })).toEqual({ webhookID: 7, fieldID: 3, isSubscribedField: true, isDisplayAlwaysField: false });
   });
 });
 
@@ -29,21 +36,24 @@ describe('service webhook writes', () => {
   const config: McpServerConfig = { name: 't', version: '0', autotask: { username: 'u@e.com', secret: 's', integrationCode: 'ic', apiUrl: 'https://webservices2.autotask.net/ATServicesRest/' } };
   const mk = () => new AutotaskService(config, new Logger('error'));
 
+  const base = { name: 'W', webhookUrl: 'https://n8n/x', deactivationUrl: 'https://n8n/off', secretKey: 's3cr3t' };
+
   test('createWebhook dry-run: nothing written, plan returned', async () => {
     const s = mk();
     const create = jest.fn();
     jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
-    const r = await s.createWebhook('tickets', { name: 'W', webhookUrl: 'https://n8n/x', subscribeUpdate: true, excludedResourceIDs: [30683829] });
+    const r = await s.createWebhook('tickets', { ...base, subscribeUpdate: true, excludedResourceIDs: [30683829] });
     expect(r.status).toBe('dry_run');
     expect(r.plannedExcludedResources).toEqual([30683829]);
+    expect((r.plannedWebhook as any).sendThresholdExceededNotification).toBe(false); // defaulted
     expect(create).not.toHaveBeenCalled();
   });
 
-  test('createWebhook validation_failed on bad input, nothing written', async () => {
+  test('createWebhook validation_failed when required fields missing, nothing written', async () => {
     const s = mk();
     const create = jest.fn();
     jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
-    const r = await s.createWebhook('tickets', { name: '', webhookUrl: 'http://x', dryRun: false });
+    const r = await s.createWebhook('tickets', { name: 'W', webhookUrl: 'https://x', subscribeCreate: true, dryRun: false }); // no deactivationUrl/secretKey
     expect(r.status).toBe('validation_failed');
     expect(create).not.toHaveBeenCalled();
   });
@@ -54,13 +64,13 @@ describe('service webhook writes', () => {
     const create = jest.fn().mockImplementation(async () => ids.shift());
     jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
     const r = await s.createWebhook('tickets', {
-      name: 'W', webhookUrl: 'https://n8n/x', subscribeCreate: true,
+      ...base, subscribeCreate: true,
       fields: [{ fieldID: 3 }], excludedResourceIDs: [30683829], dryRun: false,
     });
     expect(r.status).toBe('created');
     expect(r.webhookID).toBe(900);
-    expect(create).toHaveBeenNthCalledWith(1, 'TicketWebhooks', expect.objectContaining({ name: 'W', isSubscribedToCreateEvents: true, isActive: true }));
-    expect(create).toHaveBeenNthCalledWith(2, 'TicketWebhookFields', expect.objectContaining({ webhookID: 900, fieldID: 3 }));
+    expect(create).toHaveBeenNthCalledWith(1, 'TicketWebhooks', expect.objectContaining({ name: 'W', deactivationUrl: 'https://n8n/off', secretKey: 's3cr3t', isSubscribedToCreateEvents: true, isActive: true, sendThresholdExceededNotification: false }));
+    expect(create).toHaveBeenNthCalledWith(2, 'TicketWebhookFields', { webhookID: 900, fieldID: 3, isSubscribedField: true, isDisplayAlwaysField: false });
     expect(create).toHaveBeenNthCalledWith(3, 'TicketWebhookExcludedResources', { webhookID: 900, resourceID: 30683829 });
   });
 

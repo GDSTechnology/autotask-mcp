@@ -55,31 +55,38 @@ export function resolveWebhookEntity(name: string | undefined | null): WebhookEn
 /** The child-collection foreign key back to the parent webhook. */
 export const WEBHOOK_PARENT_FK = 'webhookID';
 
+// NOTE: field shapes verified against the live Autotask schema 2026-09-22.
+// TicketWebhooks required on create: name, webhookUrl, deactivationUrl, secretKey,
+// isActive, sendThresholdExceededNotification. ownerResourceID is READ-ONLY
+// (Autotask sets it to the API user), so it is NOT writable. Child WebhookFields
+// use isSubscribedField (+ isDisplayAlwaysField), not isSubscribedToDisplayValueChanges.
 export interface WebhookParams {
   name?: string | undefined;
   webhookUrl?: string | undefined;
+  /** URL Autotask calls if it auto-deactivates the webhook — REQUIRED on create */
+  deactivationUrl?: string | undefined;
   isActive?: boolean | undefined;
   subscribeCreate?: boolean | undefined;
   subscribeUpdate?: boolean | undefined;
   subscribeDelete?: boolean | undefined;
   sendThresholdExceededNotification?: boolean | undefined;
   notificationEmailAddress?: string | undefined;
-  ownerResourceID?: number | undefined;
+  /** payload-signing secret — REQUIRED on create */
   secretKey?: string | undefined;
 }
 
 // Friendly param → Autotask field name. Kept in one place so the create/update
-// mapping is testable without hitting the API.
+// mapping is testable without hitting the API. (ownerResourceID omitted — read-only.)
 const FIELD_MAP: Array<[keyof WebhookParams, string]> = [
   ['name', 'name'],
   ['webhookUrl', 'webhookUrl'],
+  ['deactivationUrl', 'deactivationUrl'],
   ['isActive', 'isActive'],
   ['subscribeCreate', 'isSubscribedToCreateEvents'],
   ['subscribeUpdate', 'isSubscribedToUpdateEvents'],
   ['subscribeDelete', 'isSubscribedToDeleteEvents'],
   ['sendThresholdExceededNotification', 'sendThresholdExceededNotification'],
   ['notificationEmailAddress', 'notificationEmailAddress'],
-  ['ownerResourceID', 'ownerResourceID'],
   ['secretKey', 'secretKey'],
 ];
 
@@ -92,14 +99,25 @@ export function buildWebhookPayload(p: WebhookParams): Record<string, any> {
   return out;
 }
 
-/** Validate create params. Returns human-readable errors (empty = valid). */
+const isHttps = (u: string) => /^https:\/\//i.test(u.trim());
+
+/** Validate create params against the live required-field set. Empty = valid. */
 export function validateWebhookCreate(p: WebhookParams): string[] {
   const errors: string[] = [];
   if (!p.name || !p.name.trim()) errors.push('name is required');
   if (!p.webhookUrl || !p.webhookUrl.trim()) errors.push('webhookUrl is required');
-  else if (!/^https:\/\//i.test(p.webhookUrl.trim())) errors.push('webhookUrl must be an https:// URL');
+  else if (!isHttps(p.webhookUrl)) errors.push('webhookUrl must be an https:// URL');
+  if (!p.deactivationUrl || !p.deactivationUrl.trim()) errors.push('deactivationUrl is required (Autotask calls it if the webhook is auto-deactivated)');
+  else if (!isHttps(p.deactivationUrl)) errors.push('deactivationUrl must be an https:// URL');
+  if (!p.secretKey || !p.secretKey.trim()) errors.push('secretKey is required (used to sign the webhook payload)');
   if (!p.subscribeCreate && !p.subscribeUpdate && !p.subscribeDelete) {
     errors.push('subscribe to at least one event (subscribeCreate / subscribeUpdate / subscribeDelete)');
   }
   return errors;
+}
+
+/** Child WebhookField row shape (verified live): isSubscribedField + isDisplayAlwaysField. */
+export interface WebhookFieldSpec { fieldID: number; isSubscribedField?: boolean | undefined; isDisplayAlwaysField?: boolean | undefined }
+export function buildWebhookFieldRow(webhookID: number, f: WebhookFieldSpec): Record<string, any> {
+  return { [WEBHOOK_PARENT_FK]: webhookID, fieldID: f.fieldID, isSubscribedField: f.isSubscribedField ?? true, isDisplayAlwaysField: f.isDisplayAlwaysField ?? false };
 }

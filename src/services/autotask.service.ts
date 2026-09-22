@@ -46,6 +46,7 @@ import {
 } from '../utils/contract-sla';
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
+import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -5179,6 +5180,56 @@ export class AutotaskService {
 
     const result = computeTicketsNeedingScheduling(tickets, serviceCallsByTicket, new Date(), { ...(opts.groupBy ? { groupBy: opts.groupBy } : {}) });
     if (tickets.length >= max) result.truncated = true;
+    return result;
+  }
+
+  /**
+   * Ticket throughput / work-queue KPIs (#100). FLOW over a window (created vs
+   * completed vs completion ratio + net backlog change) plus the current BACKLOG
+   * snapshot (open tickets by age bucket, by status, oldest-open). Optional
+   * grouping by queue/resource/company for per-team throughput. Read-only;
+   * scoped by createDate/completedDate window (default last 30 days) + optional
+   * company/queue. Status labels resolved from the picklist (open/waiting/on-hold
+   * splits stay tenant-specific).
+   */
+  async getTicketThroughput(opts: {
+    from?: string; to?: string; companyID?: number; queueID?: number;
+    agingThresholds?: number[]; groupBy?: 'queue' | 'resource' | 'company'; maxTickets?: number;
+  } = {}): Promise<TicketThroughputResult> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxTickets ?? 5000, 20000);
+    const to = opts.to ?? new Date().toISOString().slice(0, 10);
+    const from = opts.from ?? new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const scope: QueryFilter[] = [];
+    if (opts.companyID != null) scope.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    if (opts.queueID != null) scope.push({ op: 'eq', field: 'queueID', value: opts.queueID });
+    const fields = ['id', 'createDate', 'completedDate', 'status', 'queueID', 'assignedResourceID', 'companyID'];
+
+    const [created, completed, open] = await Promise.all([
+      http.query<any>('Tickets', [...scope, { op: 'gte', field: 'createDate', value: from }, { op: 'lte', field: 'createDate', value: to }], { includeFields: fields, maxRecords: max }),
+      http.query<any>('Tickets', [...scope, { op: 'gte', field: 'completedDate', value: from }, { op: 'lte', field: 'completedDate', value: to }], { includeFields: fields, maxRecords: max }),
+      http.query<any>('Tickets', [...scope, { op: 'noteq', field: 'status', value: 5 }], { includeFields: fields, maxRecords: max }),
+    ]);
+
+    // Resolve status labels for the backlog snapshot (best-effort).
+    const statusLabels = new Map<number, string>();
+    try {
+      const fi = await this.getFieldInfo('Tickets');
+      const sf = fi.find((f) => f.name === 'status');
+      for (const pv of sf?.picklistValues ?? []) { const n = Number(pv.value); if (!Number.isNaN(n)) statusLabels.set(n, pv.label); }
+    } catch { /* labels are optional */ }
+
+    const result = computeTicketThroughput({
+      created, completed, open, from, to,
+      ...(opts.agingThresholds ? { agingThresholds: opts.agingThresholds } : {}),
+      ...(opts.groupBy ? { groupBy: opts.groupBy } : {}),
+      statusLabels,
+    });
+    const trunc: { created?: boolean; completed?: boolean; open?: boolean } = {};
+    if (created.length >= max) trunc.created = true;
+    if (completed.length >= max) trunc.completed = true;
+    if (open.length >= max) trunc.open = true;
+    if (Object.keys(trunc).length) result.truncated = trunc;
     return result;
   }
 

@@ -1576,6 +1576,18 @@ export class AutotaskToolHandler {
           message: `Time entry over ${r.resourcesEvaluated} resource(s), ${r.bucketsCovered.length} ${r.bucket}(s): ${o.totalHours}h logged (${o.billableHours}h billable), ${o.unapprovedHours}h unapproved, ${o.lateEntries} late entr(y/ies); ${r.flagged.length} resource(s) flagged${r.truncated ? ' [truncated]' : ''}`,
         };
       }],
+      ['autotask_report_ticket_throughput', async (a) => {
+        const r = await s.getTicketThroughput({
+          from: a.from, to: a.to, companyID: a.companyID, queueID: a.queueID,
+          agingThresholds: a.agingThresholds, groupBy: a.groupBy, maxTickets: a.maxTickets,
+        });
+        const f = r.flow;
+        const rt = f.completionRatio != null ? `${Math.round(f.completionRatio * 100)}%` : 'n/a';
+        return {
+          result: r,
+          message: `Flow ${r.from}→${r.to}: ${f.created} created / ${f.completed} completed (${rt}), net backlog ${f.netBacklogChange >= 0 ? '+' : ''}${f.netBacklogChange}. Open now: ${r.backlog.open} (oldest ${r.backlog.oldestOpenDays ?? 'n/a'}d)${r.truncated ? ' [truncated]' : ''}`,
+        };
+      }],
       ['autotask_report_tickets_needing_scheduling', async (a) => {
         const r = await s.getTicketsNeedingScheduling({
           companyID: a.companyID, queueID: a.queueID, ticketType: a.ticketType,

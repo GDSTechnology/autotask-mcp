@@ -3559,6 +3559,24 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Tickets needing scheduling', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_ticket_throughput',
+    description: "Ticket throughput / work-queue KPIs (read-only, #100). Two views: FLOW over a window — created vs completed vs completion ratio + net backlog change (is the team keeping up with intake?); and the current BACKLOG snapshot — open tickets by age bucket (default 0-7 / 8-30 / 31-90 / 90+ days), by status (raw value + resolved label; open/waiting/on-hold splits stay tenant-specific), and oldest-open. Optional grouping by queue/resource/company gives per-team throughput (open + created + completed + ratio). Scope by createDate/completedDate window (default last 30 days) + optional company/queue. For n8n/chat dashboards.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Window start (YYYY-MM-DD); bounds created & completed. Default 30 days ago' },
+        to: { type: 'string', description: 'Window end (YYYY-MM-DD); default today' },
+        companyID: { type: 'number', description: 'Limit to one company' },
+        queueID: { type: 'number', description: 'Limit to one queue' },
+        agingThresholds: { type: 'array', items: { type: 'number' }, description: 'Ascending day thresholds for backlog age buckets (default [7,30,90])' },
+        groupBy: { type: 'string', enum: ['queue', 'resource', 'company'], description: 'Per-team throughput breakdown' },
+        maxTickets: { type: 'number', description: 'Cap per query — created/completed/open each (default 5000, max 20000)', minimum: 1, maximum: 20000 }
+      },
+      required: []
+    },
+    annotations: { title: 'Ticket throughput / work-queue KPIs', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_project_pl',
     description: "Profitability (P&L) for a project, task, or ticket, bucketed by week or month — real burden cost vs realized revenue, not assumed margins. COST = every time entry's hoursWorked × the resource's burden (Resources.internalCost), billable or not, posted or not — because paid time is a cost the moment it's worked (non-billable hours drag margin). REVENUE = totalAmount of POSTED billing items only (realized). Also reports pendingBillableHours (approved/posted lag = revenue-in-waiting) and a costCoverage flag (hours whose resource has NO burden set → cost understated; also the HR to-fix list). Give exactly one of projectID / taskId / ticketId. Read-only; for review (n8n/chat).",
     inputSchema: {
@@ -5025,7 +5043,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_report_ticket_throughput', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

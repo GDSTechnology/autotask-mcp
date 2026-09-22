@@ -14,6 +14,7 @@ import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } f
 import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { generateProjectLaborPlan } from '../utils/project-labor-plan.js';
 import { generateSlaFramework } from '../utils/sla-framework.js';
+import { extractProjectScope } from '../utils/project-scope.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1376,6 +1377,16 @@ export class AutotaskToolHandler {
         return {
           result: r,
           message: `Scheduled ${r.taskCount} task(s): ${r.startDate} → ${r.targetCompletionDate} (${r.durationWorkingDays} working days, ${r.totalEstimatedHours}h)${warn}`,
+        };
+      }],
+      ['autotask_extract_project_scope', async (a) => {
+        // Pure/deterministic — no Autotask I/O, no reference-project inference.
+        // Section-parses a SOW into the normalized scope envelope for review.
+        const r = extractProjectScope({ sowText: a.sowText, scope: a.scope, source: a.source, quantityBuckets: a.quantityBuckets });
+        const counts = `${r.included.length} in / ${r.excluded.length} out / ${r.assumptions.length} assumption(s) / ${r.quantities.length} qty`;
+        return {
+          result: r,
+          message: `Scope extracted: ${counts}. ${r.unclassified.length} unclassified; ${r.warnings.length} warning(s) — review before planning.`,
         };
       }],
       ['autotask_generate_project_labor_plan', async (a) => {

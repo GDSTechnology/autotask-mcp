@@ -1353,6 +1353,36 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Calculate project schedule', readOnlyHint: true }
   },
   {
+    name: 'autotask_extract_project_scope',
+    description: "Front of the SOW-to-project pipeline (#46 §8): deterministically parse a Statement of Work into a normalized, reviewable scope envelope — NO Autotask writes, NO AI, and it NEVER infers scope from a reference project (only from what you give it). Section-parses `sowText` into the canonical buckets — included / excluded / byOthers / assumptions / allowances / customerProvided / vendorProvided / dependencies / milestones — using heading detection (markdown headings, 'X:' labels, or known section names like 'Out of Scope', 'By Others', 'Assumptions'). Extracts BOM-style quantities from in-scope lines ('(12) drops', '12x cameras', '48 jacks') into a structured quantities list (feeds §9 BOM → calculated hours). Merges a caller-supplied partial `scope` (e.g. from an LLM) with the parsed text. Anything it can't classify goes to `unclassified` (never dropped), plus data-quality `warnings`. The output scope is the reviewable artifact to approve before generate_project_labor_plan / calculate_project_schedule / build_project_from_plan.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sowText: { type: 'string', description: 'Raw SOW text to section-parse (headings + bullet lines). Optional if `scope` is supplied.' },
+        scope: {
+          type: 'object',
+          description: 'A partial scope to merge with the parsed text (e.g. pre-structured by an LLM caller). Same shape as the output; string[] buckets + milestones[] + quantities[].',
+          properties: {
+            included: { type: 'array', items: { type: 'string' } },
+            excluded: { type: 'array', items: { type: 'string' } },
+            byOthers: { type: 'array', items: { type: 'string' } },
+            assumptions: { type: 'array', items: { type: 'string' } },
+            allowances: { type: 'array', items: { type: 'string' } },
+            customerProvided: { type: 'array', items: { type: 'string' } },
+            vendorProvided: { type: 'array', items: { type: 'string' } },
+            dependencies: { type: 'array', items: { type: 'string' } },
+            milestones: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, date: { type: 'string' } }, required: ['text'] } },
+            quantities: { type: 'array', items: { type: 'object', properties: { item: { type: 'string' }, quantity: { type: 'number' }, unit: { type: 'string' }, source: { type: 'string' } }, required: ['item', 'quantity'] } }
+          }
+        },
+        source: { type: 'string', description: 'Provenance label recorded on the scope (e.g. SOW/quote id or filename)' },
+        quantityBuckets: { type: 'array', items: { type: 'string', enum: ['included', 'excluded', 'byOthers', 'assumptions', 'allowances', 'customerProvided', 'vendorProvided', 'dependencies'] }, description: 'Which buckets to scan for quantities (default ["included"])' }
+      },
+      required: []
+    },
+    annotations: { title: 'Extract project scope from SOW', readOnlyHint: true }
+  },
+  {
     name: 'autotask_generate_project_labor_plan',
     description: "Deterministic labor plan for a project build plan (no Autotask writes, no AI). Compares three views of labor per phase — PLANNED (sum of the plan's task estimatedHours), QUOTED (what was sold, from the SOW/quote — you supply it), and CALCULATED (derived from BOM/scope quantities — you supply it) — and flags phases whose planned hours differ from quoted/calculated by more than the variance threshold (default 15%). Never overwrites quoted labor; it only reports variance for review (flags like over_quoted / under_quoted). Returns per-phase and total hours + deltas. Feed the same `plan` as autotask_calculate_project_schedule.",
     inputSchema: {
@@ -5081,7 +5111,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

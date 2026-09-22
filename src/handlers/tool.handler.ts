@@ -16,6 +16,7 @@ import { generateProjectLaborPlan } from '../utils/project-labor-plan.js';
 import { generateSlaFramework } from '../utils/sla-framework.js';
 import { extractProjectScope } from '../utils/project-scope.js';
 import { computeBomLabor } from '../utils/bom-labor.js';
+import { classifyProject } from '../utils/project-classification.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1388,6 +1389,15 @@ export class AutotaskToolHandler {
         return {
           result: r,
           message: `Scope extracted: ${counts}. ${r.unclassified.length} unclassified; ${r.warnings.length} warning(s) — review before planning.`,
+        };
+      }],
+      ['autotask_classify_project', async (a) => {
+        // Pure/deterministic — no Autotask I/O. Keyword-scores a project/scope
+        // against a caller-provided archetype set; explainable, no AI.
+        const r = classifyProject({ archetypes: a.archetypes, text: a.text, scope: a.scope, minScore: a.minScore, defaultArchetype: a.defaultArchetype });
+        return {
+          result: r,
+          message: `Classified as "${r.classification}" (${r.confidence} confidence). ${r.rationale}`,
         };
       }],
       ['autotask_calculate_bom_labor', async (a) => {

@@ -1383,6 +1383,42 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Extract project scope from SOW', readOnlyHint: true }
   },
   {
+    name: 'autotask_classify_project',
+    description: "Project classification (#46 §7): deterministically map a project/scope to an archetype (e.g. construction/low-voltage, tech deployment, recurring consulting, compliance program, operational onboarding) so the pipeline can pick the right blueprint/defaults. No Autotask writes, no AI — it keyword-scores the supplied text + scope against a CALLER-PROVIDED archetype set (archetypes are tenant-specific, so you define them: name + keywords, optional per-hit weight), ranks them, and returns the top match with a confidence (none/low/medium/high), the full ranked scores, the matched keywords, and a plain rationale (explainable, not a black box). Below the minimum score it stays the default (e.g. 'Unclassified') and says why. Feed it the name/description as `text` and/or the `scope` from autotask_extract_project_scope.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        archetypes: {
+          type: 'array',
+          description: 'Caller-defined archetypes to classify against. Each: { name, keywords[], weight? }.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              keywords: { type: 'array', items: { type: 'string' }, description: 'Case-insensitive substrings that signal this archetype' },
+              weight: { type: 'number', description: 'Per-keyword-hit weight (default 1)', exclusiveMinimum: 0 }
+            },
+            required: ['name', 'keywords']
+          }
+        },
+        text: { type: 'string', description: 'Project name/description or any free text to classify' },
+        scope: {
+          type: 'object',
+          description: 'Scope to mine for signals (from autotask_extract_project_scope): included[], assumptions[], quantities[{item}].',
+          properties: {
+            included: { type: 'array', items: { type: 'string' } },
+            assumptions: { type: 'array', items: { type: 'string' } },
+            quantities: { type: 'array', items: { type: 'object', properties: { item: { type: 'string' } }, required: ['item'] } }
+          }
+        },
+        minScore: { type: 'number', description: 'Minimum top score to accept a classification (default 1)', minimum: 0 },
+        defaultArchetype: { type: 'string', description: 'Name used when nothing reaches minScore (default "Unclassified")' }
+      },
+      required: ['archetypes']
+    },
+    annotations: { title: 'Classify project archetype', readOnlyHint: true }
+  },
+  {
     name: 'autotask_calculate_bom_labor',
     description: "BOM → calculated labor (#46 §9): deterministically turn BOM/scope quantities into CALCULATED labor hours using a caller-provided rate catalog, and normalize the quantities into repeated tasks. No Autotask writes, no AI. Feed it the `quantities` from autotask_extract_project_scope (or supply items directly) plus `rates` (minutes/hours per unit per item type — tenant-specific, so you provide them). For each item it finds the first matching rate (case-insensitive keyword), computes hours = quantity × per-unit × laborMultiplier, and groups into `calculatedHoursByPhase` (ready to pass straight to autotask_generate_project_labor_plan as the CALCULATED view) plus a `tasks` list (title/estimatedHours/phaseRef/quantity) for the build plan. Items matching no rate are flagged in `unmatched` (never guessed) unless you set a defaultHoursPerUnit. This is the bottom-up number that §10 compares against QUOTED and PLANNED — it never overwrites quoted labor.",
     inputSchema: {
@@ -5168,7 +5204,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_classify_project', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

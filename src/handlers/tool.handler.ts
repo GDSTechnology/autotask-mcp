@@ -1576,6 +1576,16 @@ export class AutotaskToolHandler {
           message: `Time entry over ${r.resourcesEvaluated} resource(s), ${r.bucketsCovered.length} ${r.bucket}(s): ${o.totalHours}h logged (${o.billableHours}h billable), ${o.unapprovedHours}h unapproved, ${o.lateEntries} late entr(y/ies); ${r.flagged.length} resource(s) flagged${r.truncated ? ' [truncated]' : ''}`,
         };
       }],
+      ['autotask_report_tickets_needing_scheduling', async (a) => {
+        const r = await s.getTicketsNeedingScheduling({
+          companyID: a.companyID, queueID: a.queueID, ticketType: a.ticketType,
+          requireHoursToSchedule: a.requireHoursToSchedule, groupBy: a.groupBy, maxTickets: a.maxTickets,
+        });
+        return {
+          result: r,
+          message: `${r.needsScheduling.length} of ${r.ticketsEvaluated} open ticket(s) need scheduling (${r.counts.unscheduled} no service call, ${r.counts.pastServiceCall} stale); ${r.totalHoursToSchedule}h to schedule${r.truncated ? ' [truncated]' : ''}`,
+        };
+      }],
       ['autotask_report_sla_coverage', async (a) => {
         const r = await s.getContractSlaCoverage({ companyID: a.companyID, status: a.status, activeOnly: a.activeOnly, maxContracts: a.maxContracts });
         const msg = r.readiness === 'no_sla_definitions'

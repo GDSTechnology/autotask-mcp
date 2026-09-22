@@ -54,3 +54,52 @@ export function resolveWebhookEntity(name: string | undefined | null): WebhookEn
 
 /** The child-collection foreign key back to the parent webhook. */
 export const WEBHOOK_PARENT_FK = 'webhookID';
+
+export interface WebhookParams {
+  name?: string | undefined;
+  webhookUrl?: string | undefined;
+  isActive?: boolean | undefined;
+  subscribeCreate?: boolean | undefined;
+  subscribeUpdate?: boolean | undefined;
+  subscribeDelete?: boolean | undefined;
+  sendThresholdExceededNotification?: boolean | undefined;
+  notificationEmailAddress?: string | undefined;
+  ownerResourceID?: number | undefined;
+  secretKey?: string | undefined;
+}
+
+// Friendly param → Autotask field name. Kept in one place so the create/update
+// mapping is testable without hitting the API.
+const FIELD_MAP: Array<[keyof WebhookParams, string]> = [
+  ['name', 'name'],
+  ['webhookUrl', 'webhookUrl'],
+  ['isActive', 'isActive'],
+  ['subscribeCreate', 'isSubscribedToCreateEvents'],
+  ['subscribeUpdate', 'isSubscribedToUpdateEvents'],
+  ['subscribeDelete', 'isSubscribedToDeleteEvents'],
+  ['sendThresholdExceededNotification', 'sendThresholdExceededNotification'],
+  ['notificationEmailAddress', 'notificationEmailAddress'],
+  ['ownerResourceID', 'ownerResourceID'],
+  ['secretKey', 'secretKey'],
+];
+
+/** Build the Autotask webhook payload from friendly params (only provided keys). */
+export function buildWebhookPayload(p: WebhookParams): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, field] of FIELD_MAP) {
+    if (p[k] !== undefined) out[field] = p[k];
+  }
+  return out;
+}
+
+/** Validate create params. Returns human-readable errors (empty = valid). */
+export function validateWebhookCreate(p: WebhookParams): string[] {
+  const errors: string[] = [];
+  if (!p.name || !p.name.trim()) errors.push('name is required');
+  if (!p.webhookUrl || !p.webhookUrl.trim()) errors.push('webhookUrl is required');
+  else if (!/^https:\/\//i.test(p.webhookUrl.trim())) errors.push('webhookUrl must be an https:// URL');
+  if (!p.subscribeCreate && !p.subscribeUpdate && !p.subscribeDelete) {
+    errors.push('subscribe to at least one event (subscribeCreate / subscribeUpdate / subscribeDelete)');
+  }
+  return errors;
+}

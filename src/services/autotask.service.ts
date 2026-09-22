@@ -47,7 +47,7 @@ import {
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
-import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK } from '../utils/webhook-entities';
+import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhookPayload, validateWebhookCreate, WebhookParams } from '../utils/webhook-entities';
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
 import {
   AutotaskCompany,
@@ -5386,6 +5386,132 @@ export class AutotaskService {
       http.query<Record<string, any>>(map.excludedResources, childFilter, { maxRecords: 500 }).catch(() => [] as Record<string, any>[]),
     ]);
     return { entity: map.key, parentEntity: map.parent, webhook, fields, udfFields, excludedResources };
+  }
+
+  // ---- Webhook writes (guarded; #23 §16 slice 2) --------------------------
+
+  private webhookMapOrThrow(entityKey: string) {
+    const map = resolveWebhookEntity(entityKey);
+    if (!map) throw new Error(`Unknown or unsupported webhook entity "${entityKey}". Supported: ${Object.keys(WEBHOOK_ENTITIES).join(', ')}`);
+    return map;
+  }
+
+  /**
+   * Create a webhook (dry-run-first). Creates the parent webhook, then its
+   * monitored fields and excluded resources. `excludedResourceIDs` should include
+   * the MCP integration user's resourceID to prevent the MCP's own writes from
+   * re-triggering the webhook (loop prevention). Standing config — dryRun defaults ON.
+   */
+  async createWebhook(entityKey: string, params: WebhookParams & {
+    fields?: Array<{ fieldID: number; isSubscribedToDisplayValueChanges?: boolean; isDisplayAlwaysField?: boolean }>;
+    excludedResourceIDs?: number[];
+    dryRun?: boolean;
+  }): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    const map = this.webhookMapOrThrow(entityKey);
+    const errors = validateWebhookCreate(params);
+    if (errors.length) return wp.fail('input', { errors });
+    wp.ok('input', { entity: map.key });
+
+    const payload = buildWebhookPayload({ isActive: params.isActive ?? true, ...params });
+    const fields = params.fields ?? [];
+    const excluded = [...new Set(params.excludedResourceIDs ?? [])];
+    wp.ok('plan', { fields: fields.length, excludedResources: excluded.length });
+
+    if (params.dryRun !== false) {
+      return wp.dryRun({ entity: map.key, plannedWebhook: payload, plannedFields: fields, plannedExcludedResources: excluded });
+    }
+
+    const http = await this.ensureClient();
+    const webhookID = await http.create(map.parent, payload);
+    const childErrors: Array<{ step: string; detail: string }> = [];
+    for (const f of fields) {
+      try { await http.create(map.fields, { [WEBHOOK_PARENT_FK]: webhookID, fieldID: f.fieldID, isSubscribedToDisplayValueChanges: f.isSubscribedToDisplayValueChanges ?? false, isDisplayAlwaysField: f.isDisplayAlwaysField ?? false }); }
+      catch (e) { childErrors.push({ step: `field:${f.fieldID}`, detail: (e as Error).message }); }
+    }
+    for (const rid of excluded) {
+      try { await http.create(map.excludedResources, { [WEBHOOK_PARENT_FK]: webhookID, resourceID: rid }); }
+      catch (e) { childErrors.push({ step: `excludedResource:${rid}`, detail: (e as Error).message }); }
+    }
+    return wp.done(childErrors.length ? 'created_with_errors' : 'created', {
+      entity: map.key, webhookID, fieldsCreated: fields.length - childErrors.filter((e) => e.step.startsWith('field')).length,
+      excludedResourcesCreated: excluded.length - childErrors.filter((e) => e.step.startsWith('excludedResource')).length,
+      ...(childErrors.length ? { errors: childErrors } : {}),
+    });
+  }
+
+  /**
+   * Update a webhook's parent settings (activate/deactivate, URL, event
+   * subscriptions, notifications). Dry-run-first. Child fields/excluded resources
+   * are managed via their own tools.
+   */
+  async updateWebhook(entityKey: string, id: number, patch: WebhookParams, dryRun?: boolean): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    const map = this.webhookMapOrThrow(entityKey);
+    if (id == null) return wp.fail('input', 'webhook id is required');
+    const payload = buildWebhookPayload(patch);
+    if (Object.keys(payload).length === 0) return wp.fail('input', 'no updatable fields supplied');
+    if (payload.webhookUrl && !/^https:\/\//i.test(String(payload.webhookUrl))) return wp.fail('input', 'webhookUrl must be an https:// URL');
+    wp.ok('input', { entity: map.key, id, fields: Object.keys(payload) });
+
+    if (dryRun !== false) return wp.dryRun({ entity: map.key, id, plannedPatch: payload });
+
+    const http = await this.ensureClient();
+    await http.update(map.parent, id, payload);
+    return wp.done('updated', { entity: map.key, id, updated: Object.keys(payload) });
+  }
+
+  /** Delete a webhook (destructive — confirm-gated at the handler). */
+  async deleteWebhook(entityKey: string, id: number): Promise<void> {
+    const map = this.webhookMapOrThrow(entityKey);
+    const http = await this.ensureClient();
+    await http.delete(map.parent, id);
+    this.logger.info(`Deleted ${map.parent} ${id}`);
+  }
+
+  /**
+   * Manage a webhook's excluded resources (loop prevention). mode: 'add' creates
+   * the missing ones, 'remove' deletes matching ones, 'replace' makes the set
+   * exactly match resourceIDs. Dry-run-first.
+   */
+  async setWebhookExcludedResources(entityKey: string, webhookID: number, resourceIDs: number[], mode: 'add' | 'remove' | 'replace' = 'add', dryRun?: boolean): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    const map = this.webhookMapOrThrow(entityKey);
+    if (webhookID == null) return wp.fail('input', 'webhookID is required');
+    const wanted = [...new Set(resourceIDs ?? [])];
+    if (mode !== 'replace' && wanted.length === 0) return wp.fail('input', 'resourceIDs is required for add/remove');
+
+    const http = await this.ensureClient();
+    const existing = await http.query<Record<string, any>>(map.excludedResources, [{ op: 'eq', field: WEBHOOK_PARENT_FK, value: webhookID }], { maxRecords: 500 });
+    const existingByResource = new Map<number, number>(); // resourceID → row id
+    for (const r of existing) if (r.resourceID != null) existingByResource.set(r.resourceID, r.id);
+
+    let toAdd: number[] = [];
+    let toRemove: number[] = []; // row ids
+    if (mode === 'add') toAdd = wanted.filter((rid) => !existingByResource.has(rid));
+    else if (mode === 'remove') toRemove = wanted.filter((rid) => existingByResource.has(rid)).map((rid) => existingByResource.get(rid)!);
+    else { // replace
+      toAdd = wanted.filter((rid) => !existingByResource.has(rid));
+      toRemove = [...existingByResource.entries()].filter(([rid]) => !wanted.includes(rid)).map(([, rowId]) => rowId);
+    }
+    wp.ok('diff', { mode, toAdd: toAdd.length, toRemove: toRemove.length, existing: existing.length });
+
+    if (dryRun !== false) return wp.dryRun({ entity: map.key, webhookID, mode, wouldAddResourceIDs: toAdd, wouldRemoveRowIDs: toRemove });
+
+    const errors: Array<{ step: string; detail: string }> = [];
+    for (const rid of toAdd) {
+      try { await http.create(map.excludedResources, { [WEBHOOK_PARENT_FK]: webhookID, resourceID: rid }); }
+      catch (e) { errors.push({ step: `add:${rid}`, detail: (e as Error).message }); }
+    }
+    for (const rowId of toRemove) {
+      try { await http.delete(map.excludedResources, rowId); }
+      catch (e) { errors.push({ step: `remove:${rowId}`, detail: (e as Error).message }); }
+    }
+    return wp.done(errors.length ? 'updated_with_errors' : 'updated', {
+      entity: map.key, webhookID, added: toAdd.length - errors.filter((e) => e.step.startsWith('add')).length,
+      removed: toRemove.length - errors.filter((e) => e.step.startsWith('remove')).length,
+      ...(errors.length ? { errors } : {}),
+    });
   }
 
   /**

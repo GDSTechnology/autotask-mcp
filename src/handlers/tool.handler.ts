@@ -1425,6 +1425,42 @@ export class AutotaskToolHandler {
         if (!r) return { result: null, message: `Webhook ${a.id} not found on ${a.entity}` };
         return { result: r, message: `Webhook ${a.id} on ${r.entity}: ${(r.fields as any[]).length} field(s), ${(r.excludedResources as any[]).length} excluded resource(s)` };
       }],
+      ['autotask_create_webhook', async (a) => {
+        const r = await s.createWebhook(a.entity, {
+          name: a.name, webhookUrl: a.webhookUrl, isActive: a.isActive,
+          subscribeCreate: a.subscribeCreate, subscribeUpdate: a.subscribeUpdate, subscribeDelete: a.subscribeDelete,
+          sendThresholdExceededNotification: a.sendThresholdExceededNotification, notificationEmailAddress: a.notificationEmailAddress,
+          ownerResourceID: a.ownerResourceID, secretKey: a.secretKey,
+          fields: a.fields, excludedResourceIDs: a.excludedResourceIDs, dryRun: a.dryRun,
+        });
+        const msg = r.status === 'dry_run' ? `Dry run: would create a ${a.entity} webhook → ${a.webhookUrl} with ${(r.plannedFields as any[])?.length ?? 0} field(s), ${(r.plannedExcludedResources as any[])?.length ?? 0} excluded resource(s); nothing written`
+          : r.status === 'validation_failed' ? `Validation failed: ${JSON.stringify(r.errors ?? r.detail)}`
+          : `Created ${a.entity} webhook ${r.webhookID}` + ((r.errors as any[])?.length ? ` with ${(r.errors as any[]).length} child error(s)` : '');
+        return { result: r, message: msg };
+      }],
+      ['autotask_update_webhook', async (a) => {
+        const r = await s.updateWebhook(a.entity, a.id, {
+          name: a.name, webhookUrl: a.webhookUrl, isActive: a.isActive,
+          subscribeCreate: a.subscribeCreate, subscribeUpdate: a.subscribeUpdate, subscribeDelete: a.subscribeDelete,
+          sendThresholdExceededNotification: a.sendThresholdExceededNotification, notificationEmailAddress: a.notificationEmailAddress,
+          ownerResourceID: a.ownerResourceID, secretKey: a.secretKey,
+        }, a.dryRun);
+        const msg = r.status === 'dry_run' ? `Dry run: would update ${a.entity} webhook ${a.id} — ${Object.keys(r.plannedPatch as object).join(', ')}; nothing written`
+          : r.status === 'validation_failed' ? `Validation failed: ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`
+          : `Updated ${a.entity} webhook ${a.id}`;
+        return { result: r, message: msg };
+      }],
+      ['autotask_delete_webhook', async (a) => {
+        await s.deleteWebhook(a.entity, a.id);
+        return { result: undefined, message: `Deleted ${a.entity} webhook ${a.id}` };
+      }],
+      ['autotask_set_webhook_excluded_resources', async (a) => {
+        const r = await s.setWebhookExcludedResources(a.entity, a.webhookID, a.resourceIDs, a.mode, a.dryRun);
+        const msg = r.status === 'dry_run' ? `Dry run (${a.mode ?? 'add'}): would add ${(r.wouldAddResourceIDs as any[])?.length ?? 0}, remove ${(r.wouldRemoveRowIDs as any[])?.length ?? 0} excluded resource(s) on webhook ${a.webhookID}; nothing written`
+          : r.status === 'validation_failed' ? `Validation failed: ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`
+          : `Excluded resources on webhook ${a.webhookID}: +${r.added}/-${r.removed}`;
+        return { result: r, message: msg };
+      }],
       ['autotask_calculate_bom_labor', async (a) => {
         // Pure/deterministic — no Autotask I/O. BOM quantities + caller rate
         // catalog → calculated hours per phase (+ tasks) for the labor plan.

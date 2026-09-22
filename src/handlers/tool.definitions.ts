@@ -5216,6 +5216,87 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['entity', 'id']
     },
     annotations: { title: 'Get webhook', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_create_webhook',
+    description: "Create an outbound webhook on a webhook-capable entity (STANDING CONFIGURATION). SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written — it returns the planned webhook, fields, and excluded resources. Creates the parent webhook then its monitored `fields` and `excludedResourceIDs`. IMPORTANT (loop prevention): put the MCP integration user's resourceID in `excludedResourceIDs` so the MCP's own writes don't re-trigger the webhook. Requires name, https webhookUrl, and at least one event subscription. Returns the write-plan envelope (status: dry_run | validation_failed | created | created_with_errors).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Webhook-capable entity key (see autotask_list_webhook_entities)' },
+        name: { type: 'string', description: 'Webhook name' },
+        webhookUrl: { type: 'string', description: 'The https:// callback URL (e.g. an n8n webhook node)' },
+        isActive: { type: 'boolean', description: 'Active on create (default true)' },
+        subscribeCreate: { type: 'boolean', description: 'Fire on record create' },
+        subscribeUpdate: { type: 'boolean', description: 'Fire on record update' },
+        subscribeDelete: { type: 'boolean', description: 'Fire on record delete' },
+        sendThresholdExceededNotification: { type: 'boolean' },
+        notificationEmailAddress: { type: 'string' },
+        ownerResourceID: { type: 'number' },
+        secretKey: { type: 'string', description: 'Optional signing secret for payload HMAC' },
+        fields: {
+          type: 'array', description: 'Standard fields to monitor. Each: { fieldID, isSubscribedToDisplayValueChanges?, isDisplayAlwaysField? }.',
+          items: { type: 'object', properties: { fieldID: { type: 'number' }, isSubscribedToDisplayValueChanges: { type: 'boolean' }, isDisplayAlwaysField: { type: 'boolean' } }, required: ['fieldID'] }
+        },
+        excludedResourceIDs: { type: 'array', items: { type: 'number' }, description: 'Resource ids whose changes do NOT fire the webhook — include the MCP integration user to avoid loops' },
+        dryRun: { type: 'boolean', description: 'Default true — plan only, no writes. Pass false to create.' }
+      },
+      required: ['entity', 'name', 'webhookUrl']
+    },
+    annotations: { title: 'Create webhook' }
+  },
+  {
+    name: 'autotask_update_webhook',
+    description: "Update a webhook's parent settings — activate/deactivate (isActive), change webhookUrl, toggle event subscriptions, notifications, owner, or secret (STANDING CONFIGURATION). SAFE BY DEFAULT (dryRun:true) — returns the planned patch and writes nothing until dryRun:false. Manage monitored fields / excluded resources with their own tools. Returns the write-plan envelope.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Webhook-capable entity key' },
+        id: { type: 'number', description: 'Webhook id' },
+        name: { type: 'string' },
+        webhookUrl: { type: 'string', description: 'New https:// callback URL' },
+        isActive: { type: 'boolean', description: 'Enable/disable the webhook' },
+        subscribeCreate: { type: 'boolean' },
+        subscribeUpdate: { type: 'boolean' },
+        subscribeDelete: { type: 'boolean' },
+        sendThresholdExceededNotification: { type: 'boolean' },
+        notificationEmailAddress: { type: 'string' },
+        ownerResourceID: { type: 'number' },
+        secretKey: { type: 'string' },
+        dryRun: { type: 'boolean', description: 'Default true — plan only. Pass false to apply.' }
+      },
+      required: ['entity', 'id']
+    },
+    annotations: { title: 'Update webhook' }
+  },
+  {
+    name: 'autotask_delete_webhook',
+    description: "⚠ DESTRUCTIVE: Permanently delete a webhook (STANDING CONFIGURATION — cannot be undone). Requires confirm:true. The callback stops firing immediately for everyone. Prefer autotask_update_webhook with isActive:false to disable without deleting.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Webhook-capable entity key' },
+        id: { type: 'number', description: 'Webhook id to delete' }
+      },
+      required: ['entity', 'id']
+    },
+    annotations: { title: 'Delete webhook', destructiveHint: true }
+  },
+  {
+    name: 'autotask_set_webhook_excluded_resources',
+    description: "Manage a webhook's excluded resources — the loop-prevention list (resources whose changes do NOT fire the webhook). mode: 'add' (create missing), 'remove' (delete matching), or 'replace' (make the set exactly match resourceIDs). SAFE BY DEFAULT (dryRun:true) — returns what would change and writes nothing until dryRun:false. Use this to exclude the MCP integration user so its own writes don't re-trigger the webhook.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Webhook-capable entity key' },
+        webhookID: { type: 'number', description: 'The webhook to modify' },
+        resourceIDs: { type: 'array', items: { type: 'number' }, description: 'Resource ids to add/remove (or the exact set for replace)' },
+        mode: { type: 'string', enum: ['add', 'remove', 'replace'], description: 'Default add' },
+        dryRun: { type: 'boolean', description: 'Default true — plan only. Pass false to apply.' }
+      },
+      required: ['entity', 'webhookID', 'resourceIDs']
+    },
+    annotations: { title: 'Set webhook excluded resources' }
   }
 ];
 
@@ -5274,6 +5355,6 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   webhooks: {
     description: 'Autotask outbound webhook management — discover webhook-capable entities and inspect existing webhooks (read/discovery)',
-    tools: ['autotask_list_webhook_entities', 'autotask_search_webhooks', 'autotask_get_webhook']
+    tools: ['autotask_list_webhook_entities', 'autotask_search_webhooks', 'autotask_get_webhook', 'autotask_create_webhook', 'autotask_update_webhook', 'autotask_delete_webhook', 'autotask_set_webhook_excluded_resources']
   }
 };

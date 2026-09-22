@@ -15,6 +15,7 @@ import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { generateProjectLaborPlan } from '../utils/project-labor-plan.js';
 import { generateSlaFramework } from '../utils/sla-framework.js';
 import { extractProjectScope } from '../utils/project-scope.js';
+import { computeBomLabor } from '../utils/bom-labor.js';
 import { extractCallerContext, stripCallerContext, CallerContext } from '../types/context.js';
 import { emitAudit, AuditEntry } from '../utils/audit.js';
 import { AuditSink, createAuditSink } from '../db/audit-sink.js';
@@ -1387,6 +1388,15 @@ export class AutotaskToolHandler {
         return {
           result: r,
           message: `Scope extracted: ${counts}. ${r.unclassified.length} unclassified; ${r.warnings.length} warning(s) — review before planning.`,
+        };
+      }],
+      ['autotask_calculate_bom_labor', async (a) => {
+        // Pure/deterministic — no Autotask I/O. BOM quantities + caller rate
+        // catalog → calculated hours per phase (+ tasks) for the labor plan.
+        const r = computeBomLabor({ items: a.items, rates: a.rates, defaultHoursPerUnit: a.defaultHoursPerUnit, defaultPhaseRef: a.defaultPhaseRef });
+        return {
+          result: r,
+          message: `Calculated ${r.totalHours}h from ${r.matchedItems}/${r.lines.length} matched item(s) across ${Object.keys(r.byPhase).length} phase(s); ${r.unmatched.length} unmatched${r.warnings.length ? `; ${r.warnings.length} warning(s)` : ''}`,
         };
       }],
       ['autotask_generate_project_labor_plan', async (a) => {

@@ -3577,6 +3577,40 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Ticket throughput / work-queue KPIs', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_request_segmentation',
+    description: "Request segmentation dimension (read-only, #100). The 'what kind of work is this?' lens: split tickets into delivery segments — project / install / recurring (managed) / support (reactive), or any scheme you define — and report per-segment KPIs (volume, open backlog, completed, avg open age, share %). Segment RULES are caller-provided because queues/types are tenant-specific: each rule matches when EVERY criterion it lists is satisfied (OR within each value set), first match wins. With NO rules it falls back to the universal ITIL classification by ticketType (Service Request / Incident / Problem / Change / Alert). Scope by createDate window (default 90 days) or openOnly for the current backlog, + optional company/queue. For n8n/chat dashboards and for reading the other #100 reports through a work-type lens.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Created on/after (YYYY-MM-DD); default 90 days ago (ignored when openOnly)' },
+        to: { type: 'string', description: 'Created on/before (YYYY-MM-DD); default today (ignored when openOnly)' },
+        openOnly: { type: 'boolean', description: 'Segment the current open backlog instead of a created-date window' },
+        companyID: { type: 'number', description: 'Limit to one company' },
+        queueID: { type: 'number', description: 'Limit to one queue' },
+        segments: {
+          type: 'array',
+          description: 'Ordered segment rules (first match wins). Each rule matches when every criterion it specifies is satisfied.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              ticketType: { type: 'array', items: { type: 'number' }, description: '1=Service Request 2=Incident 3=Problem 4=Change 5=Alert' },
+              queueID: { type: 'array', items: { type: 'number' } },
+              priority: { type: 'array', items: { type: 'number' } },
+              issueType: { type: 'array', items: { type: 'number' } },
+              titleContains: { type: 'array', items: { type: 'string' }, description: 'Case-insensitive title substrings (any match)' }
+            },
+            required: ['name']
+          }
+        },
+        defaultSegmentName: { type: 'string', description: 'Name for tickets matching no rule (default "Unsegmented", or "Other" for the ITIL fallback)' },
+        maxTickets: { type: 'number', description: 'Cap on tickets evaluated (default 5000, max 20000)', minimum: 1, maximum: 20000 }
+      },
+      required: []
+    },
+    annotations: { title: 'Request segmentation', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_project_pl',
     description: "Profitability (P&L) for a project, task, or ticket, bucketed by week or month — real burden cost vs realized revenue, not assumed margins. COST = every time entry's hoursWorked × the resource's burden (Resources.internalCost), billable or not, posted or not — because paid time is a cost the moment it's worked (non-billable hours drag margin). REVENUE = totalAmount of POSTED billing items only (realized). Also reports pendingBillableHours (approved/posted lag = revenue-in-waiting) and a costCoverage flag (hours whose resource has NO burden set → cost understated; also the HR to-fix list). Give exactly one of projectID / taskId / ticketId. Read-only; for review (n8n/chat).",
     inputSchema: {
@@ -5043,7 +5077,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_report_ticket_throughput', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

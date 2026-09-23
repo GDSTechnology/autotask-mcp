@@ -1088,7 +1088,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         roleID: {
           type: 'number',
-          description: 'Role ID for the time entry. Auto-filled from the resource\'s defaultServiceDeskRoleID when omitted; pass explicitly to override. Discover roles with autotask_search_roles / autotask_get_resource_roles.'
+          description: 'Role ID for the time entry (required by Autotask for ticket/task time). When omitted it is auto-filled from the resource\'s default service-desk role, or its sole role; if the resource has multiple roles and no single default, the tool returns the role choices (roleID → name) to pick from rather than guessing. Discover roles with autotask_get_resource_roles.'
         },
         category: {
           type: 'string',

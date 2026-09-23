@@ -1220,12 +1220,20 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       properties: {
         id: { type: 'number', description: 'Time entry ID to update' },
         hoursWorked: { type: 'number', description: 'Actual hours worked (fractional allowed)' },
-        startDateTime: { type: 'string', description: 'Start date/time (ISO)' },
-        endDateTime: { type: 'string', description: 'End date/time (ISO)' },
-        summaryNotes: { type: 'string', description: 'Summary notes' },
-        internalNotes: { type: 'string', description: 'Internal notes' },
-        billingCodeID: { type: 'number', description: 'Work type / billing code ID' },
-        showOnInvoice: { type: 'boolean', description: 'Whether the entry appears on the customer invoice' }
+        hoursToBill: { type: 'number', description: 'Billable hours. Note: to make an entry non-billable, set isNonBillable/showOnInvoice — hoursToBill alone is not a reliable non-billable signal.' },
+        offsetHours: { type: 'number', description: 'Billing offset in hours to subtract from worked time (e.g. 0.5 for a 30m lunch).' },
+        dateWorked: { type: 'string', description: 'Date worked (YYYY-MM-DD).' },
+        startDateTime: { type: 'string', description: 'Start date/time. Offset-aware ISO (e.g. 2026-09-23T10:00:00-04:00) is stored as the correct UTC instant. To pass a local time, also send timeZone.' },
+        endDateTime: { type: 'string', description: 'End date/time (see startDateTime).' },
+        timeZone: { type: 'string', description: 'IANA timezone (e.g. "America/New_York") for start/end given as local wall-clock time WITHOUT an offset. Correctly handles DST. Ignored when the timestamp already carries an offset.' },
+        summaryNotes: { type: 'string', description: 'CLIENT/INVOICE-facing summary notes.' },
+        internalNotes: { type: 'string', description: 'INTERNAL-only notes (not shown to client/invoice).' },
+        roleID: { type: 'number', description: 'Role for the entry (ticket/task time).' },
+        billingCodeID: { type: 'number', description: 'Work type / billing code ID (ticket/task time). NOTE: work type does not by itself set billability — use isNonBillable / billingTreatment.' },
+        internalBillingCodeID: { type: 'number', description: 'Internal (Regular Time) category id.' },
+        isNonBillable: { type: 'boolean', description: 'Mark the entry non-billable. Live-test: this (with showOnInvoice=false) is what actually makes an entry non-billable — showOnInvoice=false alone does not.' },
+        showOnInvoice: { type: 'boolean', description: 'Whether the entry appears on the customer invoice.' },
+        billingTreatment: { type: 'string', enum: ['billable', 'non_billable', 'contract_included'], description: 'High-level billing intent — resolves the correct field combo so you do not have to. "non_billable" → isNonBillable=true + showOnInvoice=false; "billable" → isNonBillable=false; "contract_included" → billable but showOnInvoice=false. Explicit isNonBillable/showOnInvoice you also pass take precedence.' }
       },
       required: ['id']
     }

@@ -1910,6 +1910,15 @@ export class AutotaskToolHandler {
       ['autotask_get_task', async (a) => {
         const r = await s.getTask(a.id); return { result: r, message: r ? `Task ${a.id}` : `Task ${a.id} not found` };
       }],
+      ['autotask_get_task_by_number', async (a) => {
+        const r = await s.getTaskByNumber(a.taskNumber);
+        const msg = r.status === 'found'
+          ? `Task ${r.taskNumber} → id ${r.task?.id}`
+          : r.status === 'ambiguous'
+            ? `Multiple tasks match ${r.taskNumber} — pick by id: ${(r.matches || []).map((m) => m.id).join(', ')}`
+            : `No task found with number ${r.taskNumber}`;
+        return { result: r, message: msg };
+      }],
       ['autotask_update_task', async (a) => {
         const { id, ...rest } = a; await s.updateTask(id, rest); return { result: undefined, message: `Successfully updated task ${id}` };
       }],

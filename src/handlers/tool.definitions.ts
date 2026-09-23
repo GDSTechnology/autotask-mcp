@@ -3971,6 +3971,16 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Get task', readOnlyHint: true }
   },
   {
+    name: 'autotask_get_task_by_number',
+    description: 'Look up a project task by its human-facing task number (e.g. "T20260922.0189") and return the FULL task object in one call. Exact match on taskNumber. Returns { status: "found" | "not-found" | "ambiguous", task, matches }. Use this when you have the task number (from a URL, a meeting title, or the user) — it saves a resolve+get round trip and returns every task field (projectID, phaseID, status, assigned resource + role, dates, remainingHours, completedDateTime, etc.). For fuzzy title search use autotask_search_tasks; when the number could be a ticket OR a task use autotask_resolve_record_reference.',
+    inputSchema: {
+      type: 'object',
+      properties: { taskNumber: { type: 'string', description: 'Human-facing task number, e.g. "T20260922.0189"' } },
+      required: ['taskNumber']
+    },
+    annotations: { title: 'Get task by number', readOnlyHint: true }
+  },
+  {
     name: 'autotask_update_task',
     description: 'Update a project task. projectID is required (task update is a child-route PATCH). Only provided fields are changed. Supports moving between phases via phaseID.',
     inputSchema: {
@@ -5478,7 +5488,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_classify_project', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_classify_project', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_get_task_by_number', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

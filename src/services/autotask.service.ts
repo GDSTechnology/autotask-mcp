@@ -3251,6 +3251,45 @@ export class AutotaskService {
     }
   }
 
+  /**
+   * Look up a project task by its human-facing task number (e.g.
+   * "T20260922.0189") and return the FULL task object. Exact match on
+   * `taskNumber`, then a by-id GET for all fields — one call for the caller
+   * instead of resolve-reference (which returns only id/number/title) + get.
+   * A task number should be unique, so >1 hit is surfaced as ambiguous rather
+   * than silently picking the first.
+   */
+  async getTaskByNumber(taskNumber: string): Promise<{
+    status: 'found' | 'not-found' | 'ambiguous';
+    taskNumber: string;
+    task?: AutotaskTask | null;
+    matches?: Array<{ id: number; taskNumber?: string; title?: string }>;
+  }> {
+    const ref = (taskNumber ?? '').trim();
+    if (!ref) return { status: 'not-found', taskNumber: ref };
+    const http = await this.ensureClient();
+    const rows = await http.query<AutotaskTask>(
+      'Tasks',
+      [{ op: 'eq', field: 'taskNumber', value: ref }],
+      { maxRecords: 5, includeFields: ['id', 'taskNumber', 'title'] }
+    );
+    const hits = (rows || []).filter((t) => t.id != null);
+    if (hits.length === 0) return { status: 'not-found', taskNumber: ref };
+    if (hits.length > 1) {
+      return {
+        status: 'ambiguous',
+        taskNumber: ref,
+        matches: hits.map((t) => ({
+          id: t.id as number,
+          ...(t.taskNumber !== undefined ? { taskNumber: t.taskNumber } : {}),
+          ...(t.title !== undefined ? { title: t.title } : {}),
+        })),
+      };
+    }
+    const task = await this.getTask(hits[0].id as number);
+    return { status: 'found', taskNumber: ref, task };
+  }
+
   async searchTasks(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskTask>> {
     try {
       this.logger.debug('Searching tasks with options:', options);

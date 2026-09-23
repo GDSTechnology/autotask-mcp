@@ -1349,6 +1349,16 @@ export class AutotaskToolHandler {
         }
         const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
       }],
+      ['autotask_create_task_time_entries_bulk', async (a) => {
+        if (!a.taskID) return { result: null, message: 'taskID is required.' };
+        if (!a.dateWorked) return { result: null, message: 'dateWorked (YYYY-MM-DD) is required.' };
+        if (!Array.isArray(a.entries) || a.entries.length === 0) return { result: null, message: 'entries[] is required (one per attendee, each with hoursWorked + summaryNotes).' };
+        const dryRun = a.dryRun === undefined ? true : !!a.dryRun; // dry-run first by default
+        const r = await s.createTaskTimeEntriesBulk({ taskID: a.taskID, dateWorked: a.dateWorked, entries: a.entries, dryRun });
+        const verb = r.dryRun ? 'DRY RUN (nothing written)' : (r.written ? 'wrote' : 'NO WRITES — fix the errors and re-run');
+        const msg = `${verb}: of ${r.planned} entr(ies) on task ${r.taskID} (${r.dateWorked}) — ${r.dryRun ? r.wouldCreate + ' would create' : r.created + ' created'}, ${r.duplicates} duplicate, ${r.errors} error(s). ${r.dryRun ? 'Re-run with dryRun:false to commit.' : ''}`.trim();
+        return { result: r, message: msg };
+      }],
       ['autotask_get_time_entry_targets', async (a) => {
         if (a.resourceID == null) return { result: null, message: 'resourceID is required (whose targets to list).' };
         const r = await s.getTimeEntryTargets({ resourceID: a.resourceID, companyID: a.companyID, projectID: a.projectID, searchTerm: a.searchTerm, maxRecords: a.maxRecords });

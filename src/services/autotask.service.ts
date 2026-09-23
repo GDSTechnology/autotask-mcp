@@ -1305,6 +1305,148 @@ export class AutotaskService {
   }
 
   /**
+   * Bulk-create task time entries (one per attendee) for a meeting/task
+   * closeout, in a rerun-safe, validate-all-before-write way (report gap #11).
+   *
+   * Two passes:
+   *  1) Resolve every entry (resourceName -> id, roleID auto-resolve) and probe
+   *     the task+date for an existing matching entry (same guard as
+   *     logTimeIdempotent). Build a plan with per-entry status.
+   *  2) If dryRun, return the plan (nothing written). Otherwise, if ANY entry
+   *     failed resolution/role selection, write NOTHING and return the plan so
+   *     the caller can fix it (atomic validation gate); else write each via the
+   *     idempotent path and report created / duplicate ids.
+   *
+   * The result is verification-shaped (counts + per-entry status), so the caller
+   * can gate a task closeout on "all expected entries present".
+   */
+  async createTaskTimeEntriesBulk(params: {
+    taskID: number;
+    dateWorked: string;
+    entries: Array<{
+      resourceID?: number;
+      resourceName?: string;
+      hoursWorked: number;
+      summaryNotes: string;
+      internalNotes?: string;
+      startDateTime?: string;
+      endDateTime?: string;
+      roleID?: number;
+    }>;
+    dryRun?: boolean;
+  }): Promise<{
+    taskID: number;
+    dateWorked: string;
+    dryRun: boolean;
+    planned: number;
+    wouldCreate: number;
+    duplicates: number;
+    errors: number;
+    created: number;
+    written: boolean;
+    results: Array<{
+      resourceID?: number;
+      resourceName?: string;
+      hoursWorked: number;
+      roleID?: number;
+      status: 'would_create' | 'created' | 'duplicate' | 'error';
+      id?: number;
+      duplicateOf?: number;
+      error?: string;
+      needsSelection?: Array<{ roleID: number; roleName?: string | null; isDefault?: boolean }>;
+    }>;
+  }> {
+    const { taskID, dateWorked, entries, dryRun = false } = params;
+    const http = await this.ensureClient();
+
+    // One read of the task's entries for the day, matched in memory per resource.
+    let dayEntries: Array<Record<string, any>> = [];
+    try {
+      dayEntries = await http.query<Record<string, any>>(
+        'TimeEntries',
+        [{ op: 'eq', field: 'taskID', value: taskID }, { op: 'eq', field: 'dateWorked', value: dateWorked }],
+        { maxRecords: 500, includeFields: ['id', 'resourceID', 'summaryNotes', 'startDateTime'] }
+      );
+    } catch { /* fall through: probe failure should not block, per-entry create still guards */ }
+
+    type Row = Awaited<ReturnType<AutotaskService['createTaskTimeEntriesBulk']>>['results'][number];
+    const plan: Array<{ row: Row; entry: typeof entries[number] }> = [];
+
+    for (const entry of entries) {
+      const row: Row = {
+        hoursWorked: entry.hoursWorked,
+        status: 'would_create',
+        ...(entry.resourceID != null ? { resourceID: entry.resourceID } : {}),
+        ...(entry.resourceName ? { resourceName: entry.resourceName } : {}),
+      };
+
+      // Resolve resource
+      let resourceID = entry.resourceID;
+      if (resourceID == null && entry.resourceName) {
+        const r = await this.resolveResourceByName(entry.resourceName);
+        if (!r) { row.status = 'error'; row.error = `No active resource found matching "${entry.resourceName}"`; plan.push({ row, entry }); continue; }
+        resourceID = r.id;
+        row.resourceID = r.id;
+      }
+      if (resourceID == null) { row.status = 'error'; row.error = 'resourceID or resourceName is required'; plan.push({ row, entry }); continue; }
+
+      // Resolve role (best-effort; a needsSelection is a hard stop for that entry)
+      let roleID = entry.roleID;
+      if (roleID == null) {
+        let rr: Awaited<ReturnType<typeof this.resolveWorkTimeEntryRole>> | null;
+        try { rr = await this.resolveWorkTimeEntryRole(resourceID); } catch { rr = null; }
+        if (rr && 'error' in rr) { row.status = 'error'; row.error = rr.error; plan.push({ row, entry }); continue; }
+        if (rr && 'needsSelection' in rr) { row.status = 'error'; row.error = 'Resource has multiple roles and no default — set roleID'; row.needsSelection = rr.needsSelection; plan.push({ row, entry }); continue; }
+        if (rr && 'roleID' in rr) roleID = rr.roleID;
+      }
+      if (roleID != null) row.roleID = roleID;
+
+      // Duplicate probe (mirror logTimeIdempotent's summary guard)
+      const want = String(entry.summaryNotes).trim().toLowerCase();
+      const dup = dayEntries.find((e) => e.resourceID === resourceID && String(e.summaryNotes ?? '').trim().toLowerCase() === want);
+      if (dup?.id != null) { row.status = 'duplicate'; row.duplicateOf = dup.id; }
+
+      plan.push({ row, entry });
+    }
+
+    const hasErrors = plan.some((p) => p.row.status === 'error');
+
+    // Write pass: only when not dry-run AND no resolution errors (validate-all-before-write)
+    if (!dryRun && !hasErrors) {
+      for (const p of plan) {
+        if (p.row.status !== 'would_create') continue; // skip duplicates
+        const res = await this.logTimeIdempotent({
+          resourceID: p.row.resourceID as number,
+          dateWorked,
+          taskID,
+          summaryNotes: p.entry.summaryNotes,
+          hoursWorked: p.entry.hoursWorked,
+          ...(p.row.roleID != null ? { roleID: p.row.roleID } : {}),
+          ...(p.entry.internalNotes ? { internalNotes: p.entry.internalNotes } : {}),
+          ...(p.entry.startDateTime ? { startDateTime: p.entry.startDateTime } : {}),
+          ...(p.entry.endDateTime ? { endDateTime: p.entry.endDateTime } : {}),
+        } as any);
+        if (res.created) { p.row.status = 'created'; p.row.id = res.id; }
+        else { p.row.status = 'duplicate'; p.row.duplicateOf = res.duplicateOf ?? res.id; p.row.id = res.id; }
+      }
+    }
+
+    const results = plan.map((p) => p.row);
+    return {
+      taskID,
+      dateWorked,
+      dryRun,
+      planned: results.length,
+      wouldCreate: results.filter((r) => r.status === 'would_create').length,
+      duplicates: results.filter((r) => r.status === 'duplicate').length,
+      errors: results.filter((r) => r.status === 'error').length,
+      created: results.filter((r) => r.status === 'created').length,
+      written: !dryRun && !hasErrors,
+      results,
+    };
+  }
+
+  /**
    * Resolve a resource by full/partial name via POST /Resources/query.
    * Returns the first match, or null.
    */

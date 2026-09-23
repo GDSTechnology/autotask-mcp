@@ -1962,12 +1962,22 @@ export class AutotaskToolHandler {
         if (a.publish === undefined || a.publish === null) {
           throw new Error('publish is required and security-sensitive (controls client visibility). Picklist values are tenant-specific — call autotask_get_field_info with entityType "TicketNotes" and fieldName "publish" to discover the correct ID.');
         }
-        const id = await s.createTicketNote(a.ticketId, {
+        const noteBody = {
           title: a.title || 'Note',
           description: a.description,
           noteType: a.noteType,
           publish: a.publish
-        });
+        };
+        if (a.idempotencyKey) {
+          const r = await s.createTicketNoteIdempotent(a.ticketId, noteBody, a.idempotencyKey);
+          return {
+            result: r,
+            message: r.created
+              ? `Successfully created ticket note with ID: ${r.noteId}`
+              : `Ticket note already exists for key "${a.idempotencyKey}" (ID: ${r.noteId}) — not duplicated`
+          };
+        }
+        const id = await s.createTicketNote(a.ticketId, noteBody);
         return { result: id, message: `Successfully created ticket note with ID: ${id}` };
       }],
       // Ticket Checklist Items

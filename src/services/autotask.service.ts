@@ -3498,6 +3498,38 @@ export class AutotaskService {
     return this.createNoteImpl('ticketId', ticketId, note as Record<string, any>);
   }
 
+  /**
+   * Create a ticket note idempotently so a re-run of a workflow (e.g. meeting
+   * closeout touch-points) does not duplicate notes. A deterministic marker
+   * `[MCP-ID:<key>]` is appended to the note body; before creating, existing
+   * notes on the ticket are scanned for that marker and the prior note is
+   * returned instead. TicketNotes have no native externalID, hence the marker.
+   * Keep the note internal (publish) if the key should not be client-visible.
+   * A blank key falls through to a plain create (no dedup).
+   */
+  async createTicketNoteIdempotent(
+    ticketId: number,
+    note: Partial<AutotaskTicketNote>,
+    idempotencyKey: string
+  ): Promise<{ created: boolean; noteId: number; idempotencyKey?: string }> {
+    const key = (idempotencyKey ?? '').trim();
+    if (!key) {
+      const id = await this.createTicketNote(ticketId, note);
+      return { created: true, noteId: id };
+    }
+    const marker = `[MCP-ID:${key}]`;
+    const existing = await this.searchTicketNotes(ticketId, { pageSize: 100 });
+    const hit = (existing || []).find(
+      (n) => typeof n.description === 'string' && n.description.includes(marker)
+    );
+    if (hit && hit.id != null) {
+      return { created: false, noteId: hit.id, idempotencyKey: key };
+    }
+    const description = `${note.description ?? ''}\n\n${marker}`.trim();
+    const id = await this.createTicketNote(ticketId, { ...note, description });
+    return { created: true, noteId: id, idempotencyKey: key };
+  }
+
   async getProjectNote(projectId: number, noteId: number): Promise<AutotaskProjectNote | null> {
     return this.getNoteImpl('projectId', projectId, noteId);
   }

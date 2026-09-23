@@ -1305,6 +1305,106 @@ export class AutotaskService {
   }
 
   /**
+   * Log collaboration on a ticket (#10) — the "capture the Teams thread" primitive:
+   * from one call, create a time entry for EACH tech who contributed (the primary
+   * plus everyone who chimed in) and optionally a ticket note with the narrative,
+   * so the work, the time, and the how-we-got-there all land in Autotask instead of
+   * living only in Teams. SAFE BY DEFAULT (dryRun !== false → nothing written).
+   * Idempotent per tech (logTimeIdempotent), roles auto-resolved, participants that
+   * need a role choice or can't be resolved are reported as issues, not guessed.
+   */
+  async logTicketCollaboration(params: {
+    ticketID: number;
+    dateWorked?: string;
+    participants: Array<{ resourceID?: number; email?: string; hoursWorked: number; roleID?: number; summaryNotes?: string; internalNotes?: string; offsetHours?: number; startDateTime?: string; endDateTime?: string }>;
+    sharedSummaryNotes?: string;
+    sharedInternalNotes?: string;
+    ticketNote?: { description: string; title?: string; internalOnly?: boolean; noteType?: number };
+    dryRun?: boolean;
+  }): Promise<WritePlanResult> {
+    const wp = new WritePlan();
+    if (params.ticketID == null) return wp.fail('input', 'ticketID is required');
+    const participants = params.participants ?? [];
+    if (participants.length === 0) return wp.fail('input', 'at least one participant is required');
+    const dateWorked = params.dateWorked && /^\d{4}-\d{2}-\d{2}/.test(params.dateWorked)
+      ? params.dateWorked.slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+    const ticket = await this.getTicket(params.ticketID) as Record<string, any> | null;
+    if (!ticket) return wp.fail('ticket', `Ticket ${params.ticketID} not found`);
+    wp.ok('ticket', { id: params.ticketID, ticketNumber: ticket.ticketNumber });
+
+    const http = await this.ensureClient();
+    const planned: Array<Record<string, any>> = [];
+    const issues: Array<Record<string, any>> = [];
+    for (let i = 0; i < participants.length; i++) {
+      const p = participants[i];
+      let resourceID = p.resourceID;
+      if (resourceID == null && p.email) {
+        const rows = await http.query<Record<string, any>>('Resources', [{ op: 'eq', field: 'email', value: p.email }, { op: 'eq', field: 'isActive', value: true }], { includeFields: ['id', 'email'], maxRecords: 5 }).catch(() => [] as Record<string, any>[]);
+        resourceID = rows[0]?.id;
+        if (resourceID == null) { issues.push({ index: i, email: p.email, issue: 'no active resource found for email' }); continue; }
+      }
+      if (resourceID == null) { issues.push({ index: i, issue: 'resourceID or email required' }); continue; }
+      if (!(Number(p.hoursWorked) > 0)) { issues.push({ index: i, resourceID, issue: 'hoursWorked must be > 0' }); continue; }
+      const summaryNotes = p.summaryNotes ?? params.sharedSummaryNotes;
+      if (!summaryNotes || !String(summaryNotes).trim()) { issues.push({ index: i, resourceID, issue: 'summaryNotes required (participant or sharedSummaryNotes)' }); continue; }
+      let roleID = p.roleID;
+      if (roleID == null) {
+        const rr = await this.resolveWorkTimeEntryRole(resourceID).catch(() => null);
+        if (rr && 'roleID' in rr) roleID = rr.roleID;
+        else if (rr && 'needsSelection' in rr) { issues.push({ index: i, resourceID, issue: 'multiple roles — specify roleID', choices: rr.needsSelection }); continue; }
+        else if (rr && 'error' in rr) { issues.push({ index: i, resourceID, issue: rr.error }); continue; }
+      }
+      planned.push({
+        index: i, resourceID, roleID, hoursWorked: p.hoursWorked, dateWorked, summaryNotes,
+        internalNotes: p.internalNotes ?? params.sharedInternalNotes,
+        ...(p.offsetHours != null ? { offsetHours: p.offsetHours } : {}),
+        ...(p.startDateTime ? { startDateTime: p.startDateTime } : {}),
+        ...(p.endDateTime ? { endDateTime: p.endDateTime } : {}),
+      });
+    }
+    wp.ok('participants', { planned: planned.length, issues: issues.length });
+    if (planned.length === 0) return wp.fail('participants', { message: 'no loggable participants', issues });
+
+    const plannedNote = params.ticketNote ? { title: params.ticketNote.title ?? 'Triage collaboration', internalOnly: params.ticketNote.internalOnly !== false } : null;
+    if (params.dryRun !== false) {
+      return wp.dryRun({ ticketID: params.ticketID, dateWorked, plannedTimeEntries: planned, plannedNote, issues });
+    }
+
+    const results: Array<Record<string, any>> = [];
+    const errors: Array<Record<string, any>> = [];
+    for (const pl of planned) {
+      try {
+        const r = await this.logTimeIdempotent({
+          ticketID: params.ticketID, resourceID: pl.resourceID, roleID: pl.roleID, hoursWorked: pl.hoursWorked,
+          dateWorked, summaryNotes: pl.summaryNotes, internalNotes: pl.internalNotes,
+          offsetHours: pl.offsetHours, startDateTime: pl.startDateTime, endDateTime: pl.endDateTime,
+        } as any);
+        results.push({ resourceID: pl.resourceID, ...r });
+      } catch (e) { errors.push({ resourceID: pl.resourceID, detail: (e as Error).message }); }
+    }
+    let noteId: number | null = null;
+    if (params.ticketNote?.description) {
+      try {
+        noteId = await this.createTicketNote(params.ticketID, {
+          title: params.ticketNote.title ?? 'Triage collaboration',
+          description: params.ticketNote.description,
+          noteType: params.ticketNote.noteType ?? 1,
+          isVisibleToClientPortal: params.ticketNote.internalOnly === false,
+        } as Partial<AutotaskTicketNote>);
+      } catch (e) { errors.push({ step: 'ticketNote', detail: (e as Error).message }); }
+    }
+    return wp.done(errors.length ? 'logged_with_errors' : 'logged', {
+      ticketID: params.ticketID, dateWorked,
+      timeEntries: results,
+      created: results.filter((r) => r.created).length,
+      duplicates: results.filter((r) => !r.created).length,
+      noteId, issues,
+      ...(errors.length ? { errors } : {}),
+    });
+  }
+
+  /**
    * Resolve a resource by full/partial name via POST /Resources/query.
    * Returns the first match, or null.
    */

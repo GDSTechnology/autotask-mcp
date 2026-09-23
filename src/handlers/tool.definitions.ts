@@ -1057,6 +1057,51 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 
   // Time entry tools
   {
+    name: 'autotask_log_ticket_collaboration',
+    description: "Capture collaboration on a ticket in ONE call — the fix for triage/blocker work that happens in Teams but never reaches Autotask. Creates a time entry for EACH tech who contributed (primary + everyone who chimed in) and, optionally, a ticket note with the narrative, so the work, the time, AND the how-we-got-there all land on the ticket. SAFE BY DEFAULT: unless dryRun:false, nothing is written and it returns the plan. Idempotent per tech (safe to re-run on a schedule). Each participant is identified by resourceID or email (Teams user → Autotask resource); roleID auto-resolves (a tech needing a role choice, or an unresolvable email, is reported in `issues`, never guessed). summaryNotes is client/invoice-facing; internalNotes is internal — set per-participant or via sharedSummaryNotes/sharedInternalNotes. Supports offset + start/stop per tech. Attach Teams photos/files separately with autotask_create_ticket_attachment.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'The ticket the collaboration was about' },
+        dateWorked: { type: 'string', description: 'Date the work happened (YYYY-MM-DD); defaults to today' },
+        participants: {
+          type: 'array',
+          description: 'Each tech who contributed. Identify by resourceID or email. Each: { resourceID|email, hoursWorked, roleID?, summaryNotes?, internalNotes?, offsetHours?, startDateTime?, endDateTime? }.',
+          items: {
+            type: 'object',
+            properties: {
+              resourceID: { type: 'number' },
+              email: { type: 'string', description: 'Teams/AD email → resolved to an active Autotask resource' },
+              hoursWorked: { type: 'number' },
+              roleID: { type: 'number', description: 'Optional; auto-resolved from the resource default when omitted' },
+              summaryNotes: { type: 'string', description: 'Client-facing summary for this tech (else sharedSummaryNotes)' },
+              internalNotes: { type: 'string', description: 'Internal notes for this tech (else sharedInternalNotes)' },
+              offsetHours: { type: 'number', description: 'Billing offset (e.g. 0.5 lunch)' },
+              startDateTime: { type: 'string' },
+              endDateTime: { type: 'string' }
+            },
+            required: ['hoursWorked']
+          }
+        },
+        sharedSummaryNotes: { type: 'string', description: 'Client-facing summary applied to participants without their own' },
+        sharedInternalNotes: { type: 'string', description: 'Internal narrative applied to participants without their own' },
+        ticketNote: {
+          type: 'object',
+          description: 'Optional ticket note capturing the thread narrative. internalOnly defaults true (keep triage chatter off the client portal).',
+          properties: {
+            description: { type: 'string' },
+            title: { type: 'string' },
+            internalOnly: { type: 'boolean' },
+            noteType: { type: 'number' }
+          },
+          required: ['description']
+        },
+        dryRun: { type: 'boolean', description: 'Default true — plan only. Pass false to write.' }
+      },
+      required: ['ticketID', 'participants']
+    }
+  },
+  {
     name: 'autotask_get_time_entry_targets',
     description: "Time-entry target discovery (read-only) for EOD/backfill automation: given a resource, returns the valid things they can log time against — OPEN project tasks (completed tasks are excluded, since Autotask rejects time on a completed task) and non-complete assigned tickets — in one call, so the bot doesn't run several broad searches to answer 'where does this work go?'. Tasks include projectID + resolved projectName, phaseID, remainingHours, dates. Scope with companyID / projectID / searchTerm (matches task/ticket title, and ticket number).",
     inputSchema: {
@@ -5438,7 +5483,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_log_ticket_collaboration', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

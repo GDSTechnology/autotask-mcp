@@ -1349,6 +1349,18 @@ export class AutotaskToolHandler {
         }
         const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
       }],
+      ['autotask_log_ticket_collaboration', async (a) => {
+        const r = await s.logTicketCollaboration({
+          ticketID: a.ticketID, dateWorked: a.dateWorked, participants: a.participants,
+          sharedSummaryNotes: a.sharedSummaryNotes, sharedInternalNotes: a.sharedInternalNotes,
+          ticketNote: a.ticketNote, dryRun: a.dryRun,
+        });
+        const iss = (r.issues as any[])?.length ? `; ${(r.issues as any[]).length} participant issue(s)` : '';
+        const msg = r.status === 'dry_run' ? `Dry run: would log time for ${(r.plannedTimeEntries as any[])?.length ?? 0} tech(s) on ticket ${a.ticketID}${r.plannedNote ? ' + a ticket note' : ''}${iss}; nothing written`
+          : r.status === 'validation_failed' ? `Validation failed at "${r.step}": ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`
+          : `Logged ${r.created} new time entr(y/ies) (${r.duplicates} already existed) on ticket ${a.ticketID}${r.noteId ? `; note ${r.noteId}` : ''}${iss}`;
+        return { result: r, message: msg };
+      }],
       ['autotask_get_time_entry_targets', async (a) => {
         if (a.resourceID == null) return { result: null, message: 'resourceID is required (whose targets to list).' };
         const r = await s.getTimeEntryTargets({ resourceID: a.resourceID, companyID: a.companyID, projectID: a.projectID, searchTerm: a.searchTerm, maxRecords: a.maxRecords });

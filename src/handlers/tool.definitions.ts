@@ -1117,15 +1117,23 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         summaryNotes: {
           type: 'string',
-          description: 'Summary notes for the time entry'
+          description: 'CLIENT-FACING and INVOICE-FACING summary of the work performed — the customer sees this, so keep it clean and concise (what was done, in plain terms). Required.'
         },
         internalNotes: {
           type: 'string',
-          description: 'Internal notes for the time entry'
+          description: 'INTERNAL-ONLY notes for the team (never shown to the client or on invoices). Lets ONE time entry carry both a client-facing summary and private team notes — no need for a separate ticket note.'
         },
         billingCodeID: {
           type: 'number',
           description: 'Work type / billing code ID. Note: billable status also depends on contract config, so a work type alone does not guarantee the entry is billable.'
+        },
+        offsetHours: {
+          type: 'number',
+          description: 'Billing offset in hours to subtract from worked time — e.g. a 30-minute lunch on an 8h ticket = 0.5. Billable (hoursToBill) becomes hoursWorked − offsetHours. Lets one entry capture worked-vs-billable instead of splitting it.'
+        },
+        hoursToBill: {
+          type: 'number',
+          description: 'Billable hours. Optional — if omitted and offsetHours is given, it is computed as hoursWorked − offsetHours.'
         },
         showOnInvoice: {
           type: 'boolean',
@@ -1161,12 +1169,15 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         hoursWorked: { type: 'number', description: 'Hours worked (or provide startDateTime/endDateTime)' },
         startDateTime: { type: 'string', description: 'Start time (ISO 8601); alternative to hoursWorked' },
         endDateTime: { type: 'string', description: 'End time (ISO 8601); alternative to hoursWorked' },
-        summaryNotes: { type: 'string', description: 'What was done — also the idempotency signal (same summary on the same day/ticket = duplicate)' },
+        summaryNotes: { type: 'string', description: 'CLIENT- and INVOICE-facing summary — clean and concise. Also the idempotency signal (same summary on the same day/ticket/category = duplicate).' },
+        internalNotes: { type: 'string', description: 'INTERNAL-only notes for the team (not shown to client/invoice) — carry both on one entry.' },
         resourceID: { type: 'number', description: 'Log as this resource. Omit to log as the calling user (currentUser).' },
         currentUser: { type: 'boolean', description: 'Log as the calling user (default when resourceID is omitted).' },
-        roleID: { type: 'number', description: 'Role for the entry. Auto-filled from the user\'s default role when omitted.' },
-        billingCodeID: { type: 'number', description: 'Work type / billing code' },
-        category: { type: 'string', description: 'Category for Regular Time (no ticket/task), e.g. "Internal Meeting"' }
+        roleID: { type: 'number', description: 'Role for the entry. Auto-filled from the user\'s default (or sole) role when omitted; multiple roles → returns choices.' },
+        billingCodeID: { type: 'number', description: 'Work type / billing code (ticket/task time)' },
+        offsetHours: { type: 'number', description: 'Billing offset to subtract from worked time (e.g. 0.5 for a 30m lunch); hoursToBill = hoursWorked − offset.' },
+        hoursToBill: { type: 'number', description: 'Billable hours (optional; computed from offsetHours when omitted).' },
+        category: { type: 'string', description: 'Category for Regular Time (no ticket/task), e.g. "Internal Meeting" (from autotask_list_regular_time_categories)' }
       },
       required: ['summaryNotes']
     }

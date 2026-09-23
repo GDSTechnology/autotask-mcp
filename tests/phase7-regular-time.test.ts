@@ -98,6 +98,32 @@ describe('ticket/task time start-stop derivation', () => {
     expect(body.startDateTime).toBeUndefined();
     expect(body.endDateTime).toBeUndefined();
   });
+
+  test('full span given, hoursWorked omitted → derives worked hours from the span', async () => {
+    const s = mk();
+    const create = jest.fn().mockResolvedValue(1);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
+    await s.createTimeEntry({ ticketID: 1, resourceID: 1, roleID: 5, dateWorked: '2026-09-22', startDateTime: '2026-09-22T01:46:00', endDateTime: '2026-09-22T09:46:00', summaryNotes: 'x' } as any);
+    expect(create.mock.calls[0][1].hoursWorked).toBe(8);
+  });
+
+  test('billing offset (lunch) → hoursToBill = worked − offset', async () => {
+    const s = mk();
+    const create = jest.fn().mockResolvedValue(1);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
+    await s.createTimeEntry({ ticketID: 1, resourceID: 1, roleID: 5, dateWorked: '2026-09-22', hoursWorked: 8, offsetHours: 0.5, summaryNotes: 'x' } as any);
+    expect(create.mock.calls[0][1].hoursToBill).toBe(7.5);
+  });
+
+  test('hours-only span rolls past midnight to the next day', async () => {
+    const s = mk();
+    const create = jest.fn().mockResolvedValue(1);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
+    await s.createTimeEntry({ ticketID: 1, resourceID: 1, roleID: 5, dateWorked: '2026-09-22', hoursWorked: 18, summaryNotes: 'x' } as any);
+    const body = create.mock.calls[0][1];
+    expect(body.startDateTime).toBe('2026-09-22T09:00:00');
+    expect(body.endDateTime).toBe('2026-09-23T03:00:00'); // 09:00 + 18h → next day 03:00
+  });
 });
 
 describe('logTimeIdempotent scoping', () => {

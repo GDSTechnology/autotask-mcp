@@ -1052,17 +1052,34 @@ export class AutotaskService {
       }
       // Service-desk ticket time (and task time) requires a start AND stop time —
       // Autotask rejects hours-only with "Service tickets require a start and stop
-      // time." If the caller gave hours but no span, derive one on the work date so
-      // the create doesn't 500. Calendar-derived entries pass real start/end and
-      // skip this. Naive local datetime strings (no Z) to avoid a TZ date shift.
-      if ((body.ticketID != null || body.taskID != null) && body.hoursWorked != null
-          && !body.startDateTime && !body.endDateTime && body.dateWorked) {
-        const d = String(body.dateWorked).slice(0, 10);
-        const startMin = 9 * 60; // default 09:00
-        const endMin = startMin + Math.max(0, Math.round(Number(body.hoursWorked) * 60));
-        const hhmm = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-        body.startDateTime = `${d}T09:00:00`;
-        body.endDateTime = `${d}T${hhmm(endMin)}:00`;
+      // time." Reconcile the span so a caller can log ONE entry (a full day, a
+      // billing offset for lunch, or a span across midnight) instead of splitting.
+      // Naive local datetime strings (no Z) to avoid a TZ date shift.
+      if (body.ticketID != null || body.taskID != null) {
+        const addDaysISO = (d: string, n: number): string => {
+          if (!n) return d;
+          const dt = new Date(`${d}T00:00:00Z`); dt.setUTCDate(dt.getUTCDate() + n);
+          return dt.toISOString().slice(0, 10);
+        };
+        const startMs = body.startDateTime ? Date.parse(String(body.startDateTime)) : NaN;
+        const endMs = body.endDateTime ? Date.parse(String(body.endDateTime)) : NaN;
+        // Full span given → derive hoursWorked (total span) when the caller omitted it.
+        if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs && body.hoursWorked == null) {
+          body.hoursWorked = Math.round(((endMs - startMs) / 3_600_000) * 100) / 100;
+        }
+        // Only hours given → derive a span on the work date, rolling past midnight.
+        if ((!body.startDateTime || !body.endDateTime) && body.hoursWorked != null && body.dateWorked) {
+          const d = String(body.dateWorked).slice(0, 10);
+          const startMin = 9 * 60; // default 09:00
+          const endTotal = startMin + Math.max(0, Math.round(Number(body.hoursWorked) * 60));
+          const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+          body.startDateTime = `${d}T09:00:00`;
+          body.endDateTime = `${addDaysISO(d, Math.floor(endTotal / 1440))}T${hhmm(endTotal % 1440)}:00`;
+        }
+        // Billable = worked minus the offset (e.g. a 30m lunch) when not set explicitly.
+        if (body.offsetHours != null && body.hoursToBill == null && body.hoursWorked != null) {
+          body.hoursToBill = Math.max(0, Math.round((Number(body.hoursWorked) - Math.abs(Number(body.offsetHours))) * 100) / 100);
+        }
       }
       const id = await http.create('TimeEntries', body);
       this.logger.info(`Time entry created with ID: ${id}`);

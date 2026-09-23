@@ -1057,8 +1057,13 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 
   // Time entry tools
   {
+    name: 'autotask_list_regular_time_categories',
+    description: "List the Regular Time categories (read-only) — the internal, non-ticket/non-task time categories from Autotask's Timesheet UI (e.g. Internal Meeting, Office Management, HR/Recruiting, Quote building, Research, Travel Time, Sick Time, Phone Call, Non-billable Meeting, Training). These are BillingCodes with useType=3 (Internal Allocation Code) — a DIFFERENT set from ticket/task WORK TYPES (Onsite Support, Remote Support, …). Use this to pick a categoryName for a Regular Time entry via autotask_create_time_entry / autotask_log_my_time. Returns { id, name, active }.",
+    inputSchema: { type: 'object', properties: {}, required: [] }
+  },
+  {
     name: 'autotask_create_time_entry',
-    description: 'Create a time entry in Autotask. Can be tied to a ticket, task, or project, OR created as "Regular Time" (no parent) for meetings, admin work, etc. For Regular Time, specify a category like "Internal Meeting", "Office Management", "Training", etc.',
+    description: 'Create a time entry in Autotask. Three workflows: (1) TICKET time — pass ticketID (roleID auto-resolved); (2) project TASK time — pass taskID (project work is logged against a TASK, never a project directly); (3) REGULAR time — omit ticketID/taskID and pass a Regular Time category (e.g. "Internal Meeting", "Quote building") from autotask_list_regular_time_categories. Regular Time needs no ticket/task and sets timeEntryType=Activity automatically. Service-desk TICKET time requires a start+stop time — pass startDateTime/endDateTime (e.g. from the calendar event) to preserve the real span; if you give only hoursWorked, a span is derived on the work date so the create still succeeds. Task time on a COMPLETED task is rejected by Autotask (log against an open task).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1112,15 +1117,23 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         summaryNotes: {
           type: 'string',
-          description: 'Summary notes for the time entry'
+          description: 'CLIENT-FACING and INVOICE-FACING summary of the work performed — the customer sees this, so keep it clean and concise (what was done, in plain terms). Required.'
         },
         internalNotes: {
           type: 'string',
-          description: 'Internal notes for the time entry'
+          description: 'INTERNAL-ONLY notes for the team (never shown to the client or on invoices). Lets ONE time entry carry both a client-facing summary and private team notes — no need for a separate ticket note.'
         },
         billingCodeID: {
           type: 'number',
           description: 'Work type / billing code ID. Note: billable status also depends on contract config, so a work type alone does not guarantee the entry is billable.'
+        },
+        offsetHours: {
+          type: 'number',
+          description: 'Billing offset in hours to subtract from worked time — e.g. a 30-minute lunch on an 8h ticket = 0.5. Billable (hoursToBill) becomes hoursWorked − offsetHours. Lets one entry capture worked-vs-billable instead of splitting it.'
+        },
+        hoursToBill: {
+          type: 'number',
+          description: 'Billable hours. Optional — if omitted and offsetHours is given, it is computed as hoursWorked − offsetHours.'
         },
         showOnInvoice: {
           type: 'boolean',
@@ -1156,12 +1169,15 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         hoursWorked: { type: 'number', description: 'Hours worked (or provide startDateTime/endDateTime)' },
         startDateTime: { type: 'string', description: 'Start time (ISO 8601); alternative to hoursWorked' },
         endDateTime: { type: 'string', description: 'End time (ISO 8601); alternative to hoursWorked' },
-        summaryNotes: { type: 'string', description: 'What was done — also the idempotency signal (same summary on the same day/ticket = duplicate)' },
+        summaryNotes: { type: 'string', description: 'CLIENT- and INVOICE-facing summary — clean and concise. Also the idempotency signal (same summary on the same day/ticket/category = duplicate).' },
+        internalNotes: { type: 'string', description: 'INTERNAL-only notes for the team (not shown to client/invoice) — carry both on one entry.' },
         resourceID: { type: 'number', description: 'Log as this resource. Omit to log as the calling user (currentUser).' },
         currentUser: { type: 'boolean', description: 'Log as the calling user (default when resourceID is omitted).' },
-        roleID: { type: 'number', description: 'Role for the entry. Auto-filled from the user\'s default role when omitted.' },
-        billingCodeID: { type: 'number', description: 'Work type / billing code' },
-        category: { type: 'string', description: 'Category for Regular Time (no ticket/task), e.g. "Internal Meeting"' }
+        roleID: { type: 'number', description: 'Role for the entry. Auto-filled from the user\'s default (or sole) role when omitted; multiple roles → returns choices.' },
+        billingCodeID: { type: 'number', description: 'Work type / billing code (ticket/task time)' },
+        offsetHours: { type: 'number', description: 'Billing offset to subtract from worked time (e.g. 0.5 for a 30m lunch); hoursToBill = hoursWorked − offset.' },
+        hoursToBill: { type: 'number', description: 'Billable hours (optional; computed from offsetHours when omitted).' },
+        category: { type: 'string', description: 'Category for Regular Time (no ticket/task), e.g. "Internal Meeting" (from autotask_list_regular_time_categories)' }
       },
       required: ['summaryNotes']
     }
@@ -5407,7 +5423,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

@@ -4017,6 +4017,43 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_verify_task_time_entries',
+    description: 'Read-only check of the time entries logged against a project TASK on a given day. With expectedResourceIDs, reports how many of the expected resources have an entry (found/expected), which are missing, and which have more than one entry (duplicate). Without it, summarizes all entries on the task that day. Use this to gate a meeting-task closeout on "everyone\'s time is in".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskID: { type: 'number', description: 'The project task to check.' },
+        dateWorked: { type: 'string', description: 'Day to check (YYYY-MM-DD).' },
+        expectedResourceIDs: { type: 'array', items: { type: 'number' }, description: 'Resource IDs expected to have logged time (the meeting attendees). Omit to just list what is there.' }
+      },
+      required: ['taskID', 'dateWorked']
+    },
+    annotations: { title: 'Verify task time entries', readOnlyHint: true }
+  },
+  {
+    name: 'autotask_close_meeting_task',
+    description: 'Finalize a meeting/closeout TASK safely — verify the downstream work, then mark the task complete. Does NOT create tickets itself; the caller supplies the verified outputs. DRY-RUN FIRST: without dryRun:false it reports what it would do and every blocker, changing nothing; re-run with dryRun:false to act. REFUSES to close (status "blocked") when: requireTimeEntries is set and any expectedResourceIDs lack an entry that day; a duplicate time entry is detected; requireCloseoutNote is set and no closeoutNote is given; or any relatedTicketIDs cannot be found. An already-complete task is recognized safely (status "already_complete", no-op) so re-runs are safe. When it acts it optionally writes a closeout note to the task (idempotent) and completes it, then reads it back.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskID: { type: 'number', description: 'The meeting/closeout task to finalize.' },
+        projectID: { type: 'number', description: 'Optional — looked up from the task if omitted (needed for the completion PATCH).' },
+        dryRun: { type: 'boolean', description: 'Default TRUE — report the plan + blockers without changing anything. Set false to write the note and complete the task.' },
+        dateWorked: { type: 'string', description: 'Day the time entries should exist on (YYYY-MM-DD). Required with expectedResourceIDs for the time-entry gate.' },
+        expectedResourceIDs: { type: 'array', items: { type: 'number' }, description: 'Attendee resource IDs that must have logged time (the closeout gate).' },
+        requireTimeEntries: { type: 'boolean', description: 'When true, refuse to close if any expected resource is missing an entry.' },
+        relatedTicketIDs: { type: 'array', items: { type: 'number' }, description: 'Follow-up ticket IDs that must exist; missing ones block the close.' },
+        closeoutNote: { type: 'string', description: 'Closeout note body to write to the task before completing (referencing time posted, tickets touched/created, deferred items).' },
+        closeoutNoteTitle: { type: 'string', description: 'Optional title for the closeout note (default "Meeting Closeout").' },
+        closeoutNoteType: { type: 'number', description: 'Optional TaskNotes noteType picklist id (tenant-specific — see autotask_get_field_info).' },
+        closeoutNotePublish: { type: 'number', description: 'Optional TaskNotes publish/visibility picklist id (tenant-specific; controls client visibility).' },
+        requireCloseoutNote: { type: 'boolean', description: 'When true, refuse to close unless a closeoutNote is supplied.' }
+      },
+      required: ['taskID']
+    },
+    annotations: { title: 'Close meeting task (verified)' }
+  },
+  {
     name: 'autotask_list_task_resources',
     description: 'List the secondary (additional crew) resources on a task, with their roles. The primary assignee is the task\'s assignedResourceID.',
     inputSchema: { type: 'object', properties: { taskID: { type: 'number', description: 'Task ID' } }, required: ['taskID'] },
@@ -5488,7 +5525,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_classify_project', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_get_task_by_number', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_classify_project', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_get_task_by_number', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_verify_task_time_entries', 'autotask_close_meeting_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',

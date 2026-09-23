@@ -49,6 +49,8 @@ import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, Servic
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
 import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhookPayload, validateWebhookCreate, buildWebhookFieldRow, WebhookParams, WebhookFieldSpec } from '../utils/webhook-entities';
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
+import { normalizeTimestamp } from '../utils/timezone';
+import { windowsToIana } from '../utils/windows-timezones';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1031,7 +1033,40 @@ export class AutotaskService {
   // Time Entries
   // =====================================================
 
-  async createTimeEntry(timeEntry: Partial<AutotaskTimeEntry>): Promise<number> {
+  /**
+   * Resolve a resource's IANA timezone, mirroring how the Autotask UI applies
+   * the user's location timezone: Resource has no direct tz — it carries a
+   * locationID → InternalLocation.timeZone (a Windows/.NET name) → IANA.
+   * Cached per resource (locations are few and stable). Returns undefined when
+   * the resource, location, or mapping can't be resolved (caller then leaves
+   * the timestamp naive).
+   */
+  private resourceTimeZoneCache = new Map<number, string | null>();
+  async resolveResourceTimeZone(resourceID: number): Promise<string | undefined> {
+    if (this.resourceTimeZoneCache.has(resourceID)) {
+      return this.resourceTimeZoneCache.get(resourceID) ?? undefined;
+    }
+    let iana: string | null = null;
+    try {
+      const http = await this.ensureClient();
+      const resource = await http.get<Record<string, any>>('Resources', resourceID);
+      const locationID = resource?.locationID;
+      if (locationID != null) {
+        const locs = await http.query<Record<string, any>>(
+          'InternalLocations',
+          [{ op: 'eq', field: 'id', value: locationID }],
+          { maxRecords: 1, includeFields: ['id', 'timeZone'] }
+        );
+        iana = windowsToIana(locs?.[0]?.timeZone);
+      }
+    } catch (e) {
+      this.logger.debug(`resolveResourceTimeZone(${resourceID}) failed, leaving naive:`, e);
+    }
+    this.resourceTimeZoneCache.set(resourceID, iana);
+    return iana ?? undefined;
+  }
+
+  async createTimeEntry(timeEntry: Partial<AutotaskTimeEntry> & { timeZone?: string }): Promise<number> {
     const http = await this.ensureClient();
     try {
       this.logger.debug('Creating time entry:', timeEntry);
@@ -1043,12 +1078,23 @@ export class AutotaskService {
       // but has NO `projectID` field — project work is logged against a project
       // TASK (taskID), not the project directly — so projectID is dropped and a
       // project-only request is rejected with a clear message.
-      const { projectID, ...body } = timeEntry as Record<string, any>;
+      // `timeZone` is an INPUT hint (IANA or Windows name), never an Autotask
+      // field — strip it from the body regardless of how timestamps resolve.
+      const { projectID, timeZone, ...body } = timeEntry as Record<string, any>;
       if (projectID != null && body.ticketID == null && body.taskID == null) {
         throw new Error(
           'Autotask time entries attach to a ticket or a project TASK, not a project directly — ' +
           'pass taskID (a task on the project) or ticketID instead of projectID.'
         );
+      }
+      // Timezone context (opt-in): explicit timeZone wins, else the resource's
+      // location timezone (mirrors the UI). Only used to convert LOCAL (offset-
+      // less) timestamps; offset-aware timestamps already pin the instant, and
+      // when neither a tz nor an offset is present we keep the naive string
+      // (unchanged legacy behavior — no surprise shifts).
+      let effectiveTz: string | undefined = timeZone;
+      if (!effectiveTz && body.resourceID != null) {
+        effectiveTz = await this.resolveResourceTimeZone(body.resourceID);
       }
       // Service-desk ticket time (and task time) requires a start AND stop time —
       // Autotask rejects hours-only with "Service tickets require a start and stop
@@ -1076,6 +1122,13 @@ export class AutotaskService {
           body.startDateTime = `${d}T09:00:00`;
           body.endDateTime = `${addDaysISO(d, Math.floor(endTotal / 1440))}T${hhmm(endTotal % 1440)}:00`;
         }
+        // Timezone-normalize provided/derived timestamps to a UTC instant:
+        //  - offset-aware (…-04:00 / …Z) -> that exact instant as UTC
+        //  - local + a known tz (explicit, else the resource's location tz) ->
+        //    converted to UTC (DST-correct), matching how the UI interprets time
+        //  - local with no resolvable tz -> left naive (legacy behavior)
+        if (body.startDateTime) body.startDateTime = normalizeTimestamp(String(body.startDateTime), effectiveTz);
+        if (body.endDateTime) body.endDateTime = normalizeTimestamp(String(body.endDateTime), effectiveTz);
         // Billable = worked minus the offset (e.g. a 30m lunch) when not set explicitly.
         if (body.offsetHours != null && body.hoursToBill == null && body.hoursWorked != null) {
           body.hoursToBill = Math.max(0, Math.round((Number(body.hoursWorked) - Math.abs(Number(body.offsetHours))) * 100) / 100);

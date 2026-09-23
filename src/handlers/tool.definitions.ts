@@ -1153,6 +1153,19 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         showOnInvoice: {
           type: 'boolean',
           description: 'Whether the entry appears on the customer invoice.'
+        },
+        isNonBillable: {
+          type: 'boolean',
+          description: 'Mark the entry non-billable. Live-test: this (with showOnInvoice=false) is what makes an entry non-billable — a Sales/etc. work type alone does not.'
+        },
+        billingTreatment: {
+          type: 'string',
+          enum: ['billable', 'non_billable', 'contract_included'],
+          description: 'High-level billing intent — resolves the field combo so you do not have to. "non_billable" → isNonBillable=true + showOnInvoice=false; "billable" → isNonBillable=false; "contract_included" → billable but not separately invoiced (showOnInvoice=false). Any explicit isNonBillable/showOnInvoice you also pass take precedence.'
+        },
+        timeZone: {
+          type: 'string',
+          description: 'IANA ("America/New_York") or Windows ("Eastern Standard Time") timezone for start/end given as LOCAL wall-clock time without an offset — converted to the correct UTC instant (DST-aware). Ignored when the timestamp already has an offset. If omitted, the resource\'s own location timezone is used (mirrors the Autotask UI). Offset-aware timestamps from a calendar source are always safest.'
         }
       },
       required: ['dateWorked', 'hoursWorked', 'summaryNotes']

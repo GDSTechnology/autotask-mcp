@@ -1329,6 +1329,20 @@ export class AutotaskToolHandler {
             delete a.category;
           }
         }
+        // Ticket/task time entries require a roleID. Use the resource's default
+        // when it has one; otherwise surface a pick rather than guessing. Best-
+        // effort: if the role lookup itself fails, let the create proceed (Autotask
+        // still enforces the requirement) rather than hard-blocking.
+        if ((a.ticketID || a.taskID) && a.roleID == null) {
+          let rr: Awaited<ReturnType<typeof s.resolveWorkTimeEntryRole>> | null;
+          try { rr = await s.resolveWorkTimeEntryRole(a.resourceID); } catch { rr = null; }
+          if (rr && 'error' in rr) return { result: null, message: rr.error };
+          if (rr && 'needsSelection' in rr) {
+            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}`).join(', ');
+            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — re-run with roleID set to one of: ${opts}.` };
+          }
+          if (rr && 'roleID' in rr) a.roleID = rr.roleID;
+        }
         const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
       }],
       ['autotask_get_my_day', async (a) => {
@@ -1359,6 +1373,18 @@ export class AutotaskToolHandler {
           }
         }
         delete a.category;
+        // Ticket/task time entries require a roleID — default, else pick (no guess).
+        // Best-effort: a role-lookup failure doesn't block the log.
+        if ((a.ticketID || a.taskID) && a.roleID == null) {
+          let rr: Awaited<ReturnType<typeof s.resolveWorkTimeEntryRole>> | null;
+          try { rr = await s.resolveWorkTimeEntryRole(a.resourceID); } catch { rr = null; }
+          if (rr && 'error' in rr) return { result: null, message: rr.error };
+          if (rr && 'needsSelection' in rr) {
+            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}`).join(', ');
+            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — re-run with roleID set to one of: ${opts}.` };
+          }
+          if (rr && 'roleID' in rr) a.roleID = rr.roleID;
+        }
         const dateWorked = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked)
           ? a.dateWorked.slice(0, 10)
           : new Date().toISOString().slice(0, 10);

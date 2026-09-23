@@ -2037,6 +2037,30 @@ export class AutotaskService {
     }
   }
 
+  /**
+   * Resolve the roleID for a ticket/task time entry (Autotask requires one).
+   * Uses the resource's DEFAULT service-desk role when it has one, or its sole
+   * role when there's only one — otherwise returns the resource's roles as a
+   * SELECTION list (roleID → canonical name) so the caller can pick, rather than
+   * guessing/matching a role that isn't theirs. Never invents a role.
+   */
+  async resolveWorkTimeEntryRole(
+    resourceID: number
+  ): Promise<{ roleID: number } | { needsSelection: Array<{ roleID: number; roleName: string | null; isDefault: boolean }> } | { error: string }> {
+    const roles = await this.getResourceRoles(resourceID);
+    if (!roles.length) {
+      return { error: `Resource ${resourceID} has no roles assigned — ticket/task time entries require a role. Assign one in Autotask, or pass roleID explicitly.` };
+    }
+    const def = roles.find((r) => r.isDefaultServiceDeskRole && r.roleID != null);
+    if (def) return { roleID: Number(def.roleID) };
+    if (roles.length === 1 && roles[0].roleID != null) return { roleID: Number(roles[0].roleID) };
+    return {
+      needsSelection: roles
+        .filter((r) => r.roleID != null)
+        .map((r) => ({ roleID: Number(r.roleID), roleName: r.roleName ?? null, isDefault: !!r.isDefaultServiceDeskRole })),
+    };
+  }
+
   async searchResources(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskResource>> {
     try {
       this.logger.debug('Searching resources with options:', options);

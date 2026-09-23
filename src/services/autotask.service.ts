@@ -1050,6 +1050,20 @@ export class AutotaskService {
           'pass taskID (a task on the project) or ticketID instead of projectID.'
         );
       }
+      // Service-desk ticket time (and task time) requires a start AND stop time —
+      // Autotask rejects hours-only with "Service tickets require a start and stop
+      // time." If the caller gave hours but no span, derive one on the work date so
+      // the create doesn't 500. Calendar-derived entries pass real start/end and
+      // skip this. Naive local datetime strings (no Z) to avoid a TZ date shift.
+      if ((body.ticketID != null || body.taskID != null) && body.hoursWorked != null
+          && !body.startDateTime && !body.endDateTime && body.dateWorked) {
+        const d = String(body.dateWorked).slice(0, 10);
+        const startMin = 9 * 60; // default 09:00
+        const endMin = startMin + Math.max(0, Math.round(Number(body.hoursWorked) * 60));
+        const hhmm = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+        body.startDateTime = `${d}T09:00:00`;
+        body.endDateTime = `${d}T${hhmm(endMin)}:00`;
+      }
       const id = await http.create('TimeEntries', body);
       this.logger.info(`Time entry created with ID: ${id}`);
       return id;

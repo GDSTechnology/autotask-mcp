@@ -1063,7 +1063,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_create_time_entry',
-    description: 'Create a time entry in Autotask. Three workflows: (1) TICKET time — pass ticketID (roleID auto-resolved); (2) project TASK time — pass taskID (project work is logged against a TASK, never a project directly); (3) REGULAR time — omit ticketID/taskID and pass a Regular Time category (e.g. "Internal Meeting", "Quote building") from autotask_list_regular_time_categories. Regular Time needs no ticket/task and sets timeEntryType=Activity automatically. Preserves startDateTime/endDateTime when supplied (do not collapse a timed entry to hours only).',
+    description: 'Create a time entry in Autotask. Three workflows: (1) TICKET time — pass ticketID (roleID auto-resolved); (2) project TASK time — pass taskID (project work is logged against a TASK, never a project directly); (3) REGULAR time — omit ticketID/taskID and pass a Regular Time category (e.g. "Internal Meeting", "Quote building") from autotask_list_regular_time_categories. Regular Time needs no ticket/task and sets timeEntryType=Activity automatically. Service-desk TICKET time requires a start+stop time — pass startDateTime/endDateTime (e.g. from the calendar event) to preserve the real span; if you give only hoursWorked, a span is derived on the work date so the create still succeeds. Task time on a COMPLETED task is rejected by Autotask (log against an open task).',
     inputSchema: {
       type: 'object',
       properties: {

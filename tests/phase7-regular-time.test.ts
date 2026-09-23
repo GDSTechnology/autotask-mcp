@@ -68,6 +68,38 @@ describe('get_my_day splits the three time types', () => {
   });
 });
 
+describe('ticket/task time start-stop derivation', () => {
+  test('ticket time with hours but no span derives start/stop on the work date', async () => {
+    const s = mk();
+    const create = jest.fn().mockResolvedValue(1);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
+    await s.createTimeEntry({ ticketID: 204722, resourceID: 1, roleID: 5, dateWorked: '2026-09-22', hoursWorked: 0.25, summaryNotes: 'x' } as any);
+    const body = create.mock.calls[0][1];
+    expect(body.startDateTime).toBe('2026-09-22T09:00:00');
+    expect(body.endDateTime).toBe('2026-09-22T09:15:00'); // 09:00 + 0.25h
+  });
+
+  test('caller-supplied start/stop is preserved (calendar-derived)', async () => {
+    const s = mk();
+    const create = jest.fn().mockResolvedValue(1);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
+    await s.createTimeEntry({ ticketID: 204722, resourceID: 1, roleID: 5, dateWorked: '2026-09-22', hoursWorked: 1, startDateTime: '2026-09-22T16:00:00', endDateTime: '2026-09-22T17:00:00', summaryNotes: 'x' } as any);
+    const body = create.mock.calls[0][1];
+    expect(body.startDateTime).toBe('2026-09-22T16:00:00');
+    expect(body.endDateTime).toBe('2026-09-22T17:00:00');
+  });
+
+  test('regular time (no ticket/task) is NOT given a derived span', async () => {
+    const s = mk();
+    const create = jest.fn().mockResolvedValue(1);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
+    await s.createTimeEntry({ internalBillingCodeID: 9, resourceID: 1, dateWorked: '2026-09-22', hoursWorked: 1, summaryNotes: 'x' } as any);
+    const body = create.mock.calls[0][1];
+    expect(body.startDateTime).toBeUndefined();
+    expect(body.endDateTime).toBeUndefined();
+  });
+});
+
 describe('logTimeIdempotent scoping', () => {
   test('regular time: same category + summary + start = duplicate (not re-created)', async () => {
     const s = mk();

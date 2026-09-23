@@ -1323,11 +1323,15 @@ export class AutotaskToolHandler {
             const billingCode = await s.resolveInternalBillingCodeByName(a.category);
             if (!billingCode) {
               const categories = await s.getInternalBillingCodeNames();
-              throw new Error(`No category found matching "${a.category}". Available categories: ${categories.join(', ')}`);
+              throw new Error(`No Regular Time category matching "${a.category}". Categories (exact, case-insensitive): ${categories.join(', ')}`);
             }
             a.internalBillingCodeID = billingCode.id;
             delete a.category;
           }
+          // Regular Time entries carry no ticket/task; set the entry type so
+          // Autotask doesn't try to resolve a ticket/task reference (the cause of
+          // the "Error finding reference Task/Ticket" 500). 5 = Activity.
+          if (a.timeEntryType == null) a.timeEntryType = 5;
         }
         // Ticket/task time entries require a roleID. Use the resource's default
         // when it has one; otherwise surface a pick rather than guessing. Best-
@@ -1344,6 +1348,11 @@ export class AutotaskToolHandler {
           if (rr && 'roleID' in rr) a.roleID = rr.roleID;
         }
         const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
+      }],
+      ['autotask_list_regular_time_categories', async () => {
+        const r = await s.getRegularTimeCategories();
+        const active = r.filter((c) => c.active);
+        return { result: r, message: `${active.length} active Regular Time categor(y/ies): ${active.map((c) => c.name).join(', ')}` };
       }],
       ['autotask_get_my_day', async (a) => {
         if (a.resourceID == null) {
@@ -1371,6 +1380,8 @@ export class AutotaskToolHandler {
             const cats = await s.getInternalBillingCodeNames();
             return { result: null, message: `Regular Time (no ticket/task) needs a category. Available categories: ${cats.join(', ')}` };
           }
+          // Regular Time entry type so Autotask doesn't expect a ticket/task (5 = Activity).
+          if (a.timeEntryType == null) a.timeEntryType = 5;
         }
         delete a.category;
         // Ticket/task time entries require a roleID — default, else pick (no guess).

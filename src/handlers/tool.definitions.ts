@@ -1057,8 +1057,13 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 
   // Time entry tools
   {
+    name: 'autotask_list_regular_time_categories',
+    description: "List the Regular Time categories (read-only) — the internal, non-ticket/non-task time categories from Autotask's Timesheet UI (e.g. Internal Meeting, Office Management, HR/Recruiting, Quote building, Research, Travel Time, Sick Time, Phone Call, Non-billable Meeting, Training). These are BillingCodes with useType=3 (Internal Allocation Code) — a DIFFERENT set from ticket/task WORK TYPES (Onsite Support, Remote Support, …). Use this to pick a categoryName for a Regular Time entry via autotask_create_time_entry / autotask_log_my_time. Returns { id, name, active }.",
+    inputSchema: { type: 'object', properties: {}, required: [] }
+  },
+  {
     name: 'autotask_create_time_entry',
-    description: 'Create a time entry in Autotask. Can be tied to a ticket, task, or project, OR created as "Regular Time" (no parent) for meetings, admin work, etc. For Regular Time, specify a category like "Internal Meeting", "Office Management", "Training", etc.',
+    description: 'Create a time entry in Autotask. Three workflows: (1) TICKET time — pass ticketID (roleID auto-resolved); (2) project TASK time — pass taskID (project work is logged against a TASK, never a project directly); (3) REGULAR time — omit ticketID/taskID and pass a Regular Time category (e.g. "Internal Meeting", "Quote building") from autotask_list_regular_time_categories. Regular Time needs no ticket/task and sets timeEntryType=Activity automatically. Preserves startDateTime/endDateTime when supplied (do not collapse a timed entry to hours only).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -5407,7 +5412,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

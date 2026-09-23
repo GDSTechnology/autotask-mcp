@@ -1143,17 +1143,34 @@ export class AutotaskService {
     ]);
 
     const entries = timeEntries ?? [];
-    const hoursLogged = entries.reduce((s, e: any) => s + (Number(e.hoursWorked) || 0), 0);
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const hrs = (e: any) => Number(e.hoursWorked) || 0;
+    // Split by the three Autotask time-entry workflows so an EOD readback never
+    // reports "0 hours" when ticket time is 0 but Regular Time exists.
+    const ticketTime = entries.filter((e: any) => e.ticketID != null);
+    const taskTime = entries.filter((e: any) => e.ticketID == null && e.taskID != null);
+    const regularTime = entries.filter((e: any) => e.ticketID == null && e.taskID == null);
+    const hoursLogged = entries.reduce((s, e: any) => s + hrs(e), 0);
+    const billableHours = entries.filter((e: any) => !e.isNonBillable).reduce((s, e: any) => s + hrs(e), 0);
+    const nonBillableHours = entries.filter((e: any) => e.isNonBillable).reduce((s, e: any) => s + hrs(e), 0);
     return {
       resourceID,
       date: day,
       assignedTickets: assignedTickets ?? [],
       timeEntries: entries,
+      ticketTime,
+      taskTime,
+      regularTime,
       openTasks: tasks ?? [],
       totals: {
         assignedTickets: (assignedTickets ?? []).length,
         timeEntries: entries.length,
-        hoursLogged: Math.round(hoursLogged * 100) / 100,
+        hoursLogged: r2(hoursLogged),
+        ticketHours: r2(ticketTime.reduce((s, e: any) => s + hrs(e), 0)),
+        taskHours: r2(taskTime.reduce((s, e: any) => s + hrs(e), 0)),
+        regularHours: r2(regularTime.reduce((s, e: any) => s + hrs(e), 0)),
+        billableHours: r2(billableHours),
+        nonBillableHours: r2(nonBillableHours),
       },
       ...(errors.length ? { errors } : {}),
     };
@@ -1178,12 +1195,23 @@ export class AutotaskService {
     ];
     if (entry.ticketID != null) filters.push({ op: 'eq', field: 'ticketID', value: entry.ticketID });
     if (entry.taskID != null) filters.push({ op: 'eq', field: 'taskID', value: entry.taskID });
+    // Regular Time: scope the guard to the same category too, so two different
+    // internal categories with a similar summary aren't treated as duplicates.
+    const e2 = entry as Record<string, any>;
+    if (e2.internalBillingCodeID != null) filters.push({ op: 'eq', field: 'internalBillingCodeID', value: e2.internalBillingCodeID });
     let existing: Array<Record<string, any>> = [];
     try {
       existing = await http.query<Record<string, any>>('TimeEntries', filters, { maxRecords: 200 });
     } catch { /* if the guard read fails, fall through to create rather than block logging */ }
     const want = String(entry.summaryNotes).trim().toLowerCase();
-    const dup = existing.find((e) => String(e.summaryNotes ?? '').trim().toLowerCase() === want);
+    const wantStart = e2.startDateTime ? String(e2.startDateTime) : null;
+    const dup = existing.find((e) => {
+      const sameSummary = String(e.summaryNotes ?? '').trim().toLowerCase() === want;
+      // When both sides carry a start time, it must match too — distinct meetings
+      // on the same day/category with the same summary stay distinct.
+      const sameStart = wantStart == null || e.startDateTime == null || String(e.startDateTime) === wantStart;
+      return sameSummary && sameStart;
+    });
     if (dup?.id != null) {
       this.logger.info(`Skipping duplicate time entry (matches ${dup.id})`);
       return { created: false, id: dup.id, duplicateOf: dup.id };
@@ -1255,43 +1283,49 @@ export class AutotaskService {
     }
   }
 
-  /**
-   * Return the list of internal (non-customer-facing) billing code names.
-   * Queries BillingCodes with useType = 1 (Internal Allocation Code).
-   */
-  async getInternalBillingCodeNames(): Promise<string[]> {
+  // Regular Time categories are BillingCodes with useType = 3 (Internal Allocation
+  // Code) — verified live 2026-09-23: Internal Meeting, Office Management,
+  // HR/Recruiting, Quote building, Research, Travel Time, Sick Time, etc. This is a
+  // DIFFERENT set from work types (useType 1 = General Allocation Code: Onsite
+  // Support, Remote Support, …), which are for TICKET/TASK time — never mix them.
+  private readonly REGULAR_TIME_USE_TYPE = 3;
+
+  /** Structured Regular Time categories: { id, name, active }. Read-only. */
+  async getRegularTimeCategories(): Promise<Array<{ id: number; name: string; active: boolean }>> {
     const http = await this.ensureClient();
+    const codes = await http.query<Record<string, any>>(
+      'BillingCodes',
+      [{ op: 'eq', field: 'useType', value: this.REGULAR_TIME_USE_TYPE }],
+      { maxRecords: 500, includeFields: ['id', 'name', 'isActive', 'useType'] }
+    );
+    return codes
+      .filter((c) => c.name != null)
+      .map((c) => ({ id: c.id, name: String(c.name), active: c.isActive !== false }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** Names of active Regular Time categories (for prompts). */
+  async getInternalBillingCodeNames(): Promise<string[]> {
     try {
-      const codes = await http.query<{ name: string }>(
-        'BillingCodes',
-        [
-          { op: 'eq', field: 'useType', value: 1 },
-          { op: 'eq', field: 'isActive', value: true }
-        ],
-        { maxRecords: 500 }
-      );
-      return codes.map(bc => bc.name).filter((n): n is string => typeof n === 'string');
+      return (await this.getRegularTimeCategories()).filter((c) => c.active).map((c) => c.name);
     } catch (error) {
-      this.logger.error('Failed to get internal billing codes:', error);
+      this.logger.error('Failed to get regular time categories:', error);
       throw error;
     }
   }
 
+  /**
+   * Resolve a Regular Time category by name — case-insensitive, exact match only
+   * (never fuzzy across materially different categories like Internal Meeting vs
+   * Non-billable Meeting). Ambiguous/none returns null; callers list choices.
+   */
   async resolveInternalBillingCodeByName(name: string): Promise<{ id: number; name: string } | null> {
-    const http = await this.ensureClient();
     try {
-      const results = await http.query<{ id: number; name: string }>(
-        'BillingCodes',
-        [
-          { op: 'eq', field: 'useType', value: 1 },
-          { op: 'eq', field: 'isActive', value: true },
-          { op: 'eq', field: 'name', value: name }
-        ],
-        { maxRecords: 5 }
-      );
-      return results[0] || null;
+      const want = String(name).trim().toLowerCase();
+      const exact = (await this.getRegularTimeCategories()).filter((c) => c.active && c.name.toLowerCase() === want);
+      return exact.length === 1 ? { id: exact[0].id, name: exact[0].name } : null;
     } catch (error) {
-      this.logger.error(`Failed to resolve billing code "${name}":`, error);
+      this.logger.error(`Failed to resolve regular time category "${name}":`, error);
       throw error;
     }
   }

@@ -4808,6 +4808,100 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
 
+  // ServiceCallTask tools — attach a service call to a PROJECT TASK so scheduled
+  // work (e.g. a recurring meeting task) carries its resources onto the calendar.
+  {
+    name: 'autotask_search_service_call_tasks',
+    description: 'Search service-call ↔ project-task associations. Use to find which service call schedules a task, or which task a service call is for.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        serviceCallId: { type: 'number', description: 'Filter by service call ID' },
+        taskId: { type: 'number', description: 'Filter by project task ID' },
+        pageSize: { type: 'number', description: 'Number of results to return (default: 25)', minimum: 1, maximum: 100 }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_create_service_call_task',
+    description: 'Link a PROJECT TASK to a service call — the task equivalent of autotask_create_service_call_ticket. This schedules the task on the Autotask dispatch calendar so its assigned resources (added via autotask_create_service_call_task_resource) appear there. Lets scheduled project work (e.g. a recurring meeting task) go on the calendar directly, without a placeholder scheduling ticket.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        serviceCallID: { type: 'number', description: 'The service call ID to link the task to' },
+        taskID: { type: 'number', description: 'The project task ID to link to the service call' }
+      },
+      required: ['serviceCallID', 'taskID']
+    }
+  },
+  {
+    name: 'autotask_delete_service_call_task',
+    description:
+      '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently removes a task association from a ' +
+      'service call. This action cannot be undone. Confirm with the user before invoking.',
+    annotations: {
+      title: 'Delete service call task association (irreversible)',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        serviceCallTaskId: { type: 'number', description: 'The service call task record ID to delete' }
+      },
+      required: ['serviceCallTaskId']
+    }
+  },
+  {
+    name: 'autotask_search_service_call_task_resources',
+    description: 'Search for resource (technician/attendee) assignments on service-call tasks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        serviceCallTaskId: { type: 'number', description: 'Filter by service call task ID' },
+        resourceId: { type: 'number', description: 'Filter by resource ID' },
+        pageSize: { type: 'number', description: 'Number of results to return (default: 25)', minimum: 1, maximum: 100 }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_create_service_call_task_resource',
+    description: 'Assign a resource (technician/attendee) to a service-call task — the task equivalent of autotask_create_service_call_ticket_resource. Repeat to put multiple resources (e.g. all four meeting attendees) on the calendar for the scheduled task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        serviceCallTaskID: { type: 'number', description: 'The service call task ID to assign the resource to' },
+        resourceID: { type: 'number', description: 'The resource ID to assign' },
+        roleID: { type: 'number', description: 'The role ID for the resource on this service call (optional)' }
+      },
+      required: ['serviceCallTaskID', 'resourceID']
+    }
+  },
+  {
+    name: 'autotask_delete_service_call_task_resource',
+    description:
+      '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently removes a resource assignment from a ' +
+      'service call task. This action cannot be undone. Confirm with the user before invoking.',
+    annotations: {
+      title: 'Delete service call task resource assignment (irreversible)',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        serviceCallTaskResourceId: { type: 'number', description: 'The service call task resource record ID to delete' }
+      },
+      required: ['serviceCallTaskResourceId']
+    }
+  },
+
   // Company To-Dos (CRM calendar follow-ups) — brief §4.1
   {
     name: 'autotask_get_company_todo',
@@ -5347,7 +5441,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   service_calls: {
     description: 'Service call dispatching, ticket linking, and resource assignments',
-    tools: ['autotask_reconcile_service_call', 'autotask_report_service_call_leakage', 'autotask_report_tickets_needing_scheduling', 'autotask_search_service_calls', 'autotask_get_service_call', 'autotask_create_service_call', 'autotask_update_service_call', 'autotask_delete_service_call', 'autotask_search_service_call_tickets', 'autotask_create_service_call_ticket', 'autotask_delete_service_call_ticket', 'autotask_search_service_call_ticket_resources', 'autotask_create_service_call_ticket_resource', 'autotask_delete_service_call_ticket_resource']
+    tools: ['autotask_reconcile_service_call', 'autotask_report_service_call_leakage', 'autotask_report_tickets_needing_scheduling', 'autotask_search_service_calls', 'autotask_get_service_call', 'autotask_create_service_call', 'autotask_update_service_call', 'autotask_delete_service_call', 'autotask_search_service_call_tickets', 'autotask_create_service_call_ticket', 'autotask_delete_service_call_ticket', 'autotask_search_service_call_ticket_resources', 'autotask_create_service_call_ticket_resource', 'autotask_delete_service_call_ticket_resource', 'autotask_search_service_call_tasks', 'autotask_create_service_call_task', 'autotask_delete_service_call_task', 'autotask_search_service_call_task_resources', 'autotask_create_service_call_task_resource', 'autotask_delete_service_call_task_resource']
   },
   company_todos: {
     description: 'Company To-Dos — CRM calendar follow-ups (distinct from tasks, checklist items, time entries, appointments, and service calls)',

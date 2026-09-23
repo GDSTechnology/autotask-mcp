@@ -1239,6 +1239,34 @@ export class AutotaskToolHandler {
         return { result: a.serviceCallTicketResourceId, message: `Successfully removed resource from service call ticket` };
       }],
 
+      // ServiceCallTasks (schedule a project task onto the Autotask calendar)
+      ['autotask_search_service_call_tasks', async (a) => {
+        const r = await s.searchServiceCallTasks(a);
+        return { result: r, message: `Found ${r.length} service call task(s)` };
+      }],
+      ['autotask_create_service_call_task', async (a) => {
+        const id = await s.createServiceCallTask(a);
+        return { result: id, message: `Successfully linked task to service call, record ID: ${id}` };
+      }],
+      ['autotask_delete_service_call_task', async (a) => {
+        await s.deleteServiceCallTask(a.serviceCallTaskId);
+        return { result: a.serviceCallTaskId, message: `Successfully removed task from service call` };
+      }],
+
+      // ServiceCallTaskResources
+      ['autotask_search_service_call_task_resources', async (a) => {
+        const r = await s.searchServiceCallTaskResources(a);
+        return { result: r, message: `Found ${r.length} service call task resource(s)` };
+      }],
+      ['autotask_create_service_call_task_resource', async (a) => {
+        const id = await s.createServiceCallTaskResource(a);
+        return { result: id, message: `Successfully assigned resource to service call task, record ID: ${id}` };
+      }],
+      ['autotask_delete_service_call_task_resource', async (a) => {
+        await s.deleteServiceCallTaskResource(a.serviceCallTaskResourceId);
+        return { result: a.serviceCallTaskResourceId, message: `Successfully removed resource from service call task` };
+      }],
+
       // Company To-Dos (CRM calendar follow-ups)
       ['autotask_get_company_todo', async (a) => {
         const r = await s.getCompanyToDo(a.id);

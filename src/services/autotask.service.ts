@@ -91,6 +91,8 @@ import {
   AutotaskServiceCall,
   AutotaskServiceCallTicket,
   AutotaskServiceCallTicketResource,
+  AutotaskServiceCallTask,
+  AutotaskServiceCallTaskResource,
   AutotaskPhase
 } from '../types/autotask';
 import { McpServerConfig } from '../types/mcp';
@@ -5945,6 +5947,131 @@ export class AutotaskService {
       this.logger.info(`Service call ticket resource ${id} deleted`);
     } catch (error) {
       this.logger.error(`Failed to delete service call ticket resource ${id}:`, error);
+      throw error;
+    }
+  }
+
+  // ---- Service calls on TASKS (parallel to the ticket side) ---------------
+  // Lets a service call attach to a PROJECT TASK so scheduled work (e.g. a
+  // recurring meeting task) carries its resources onto the Autotask calendar —
+  // no scheduling-ticket workaround needed.
+
+  async searchServiceCallTasks(options: AutotaskQueryOptionsExtended = {}): Promise<AutotaskServiceCallTask[]> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug('Searching service call tasks with options:', options);
+      const filters: QueryFilter[] = [];
+      if ((options as any).serviceCallId !== undefined) {
+        filters.push({ op: 'eq', field: 'serviceCallID', value: (options as any).serviceCallId });
+      }
+      if ((options as any).taskId !== undefined) {
+        filters.push({ op: 'eq', field: 'taskID', value: (options as any).taskId });
+      }
+      const pageSize = Math.min(options.pageSize || 25, 200);
+      const items = await http.query<AutotaskServiceCallTask>(
+        'ServiceCallTasks',
+        filters.length > 0 ? filters : MATCH_ALL,
+        { maxRecords: pageSize }
+      );
+      this.logger.info(`Retrieved ${items.length} service call tasks`);
+      return items;
+    } catch (error) {
+      this.logger.error('Failed to search service call tasks:', error);
+      throw error;
+    }
+  }
+
+  async createServiceCallTask(data: Partial<AutotaskServiceCallTask>): Promise<number> {
+    const http = await this.ensureClient();
+    // Root POST /ServiceCallTasks does not exist. The link is created under the
+    // parent service call: POST /ServiceCalls/{serviceCallID}/Tasks.
+    const serviceCallID = (data as Record<string, any>).serviceCallID;
+    if (serviceCallID === undefined || serviceCallID === null) {
+      throw new Error(
+        'Cannot link task to service call: serviceCallID is required (created via the ' +
+        'ServiceCalls/{serviceCallID}/Tasks child route).'
+      );
+    }
+    try {
+      this.logger.debug('Creating service call task:', data);
+      const id = await http.childCreate('ServiceCalls', serviceCallID, 'Tasks', data);
+      this.logger.info(`Service call task created with ID: ${id}`);
+      return id;
+    } catch (error) {
+      this.logger.error('Failed to create service call task:', error);
+      throw error;
+    }
+  }
+
+  async deleteServiceCallTask(id: number): Promise<void> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Deleting service call task ${id}`);
+      await http.delete('ServiceCallTasks', id);
+      this.logger.info(`Service call task ${id} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete service call task ${id}:`, error);
+      throw error;
+    }
+  }
+
+  async searchServiceCallTaskResources(
+    options: AutotaskQueryOptionsExtended = {}
+  ): Promise<AutotaskServiceCallTaskResource[]> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug('Searching service call task resources with options:', options);
+      const filters: QueryFilter[] = [];
+      if ((options as any).serviceCallTaskId !== undefined) {
+        filters.push({ op: 'eq', field: 'serviceCallTaskID', value: (options as any).serviceCallTaskId });
+      }
+      if ((options as any).resourceId !== undefined) {
+        filters.push({ op: 'eq', field: 'resourceID', value: (options as any).resourceId });
+      }
+      const pageSize = Math.min(options.pageSize || 25, 200);
+      const items = await http.query<AutotaskServiceCallTaskResource>(
+        'ServiceCallTaskResources',
+        filters.length > 0 ? filters : MATCH_ALL,
+        { maxRecords: pageSize }
+      );
+      this.logger.info(`Retrieved ${items.length} service call task resources`);
+      return items;
+    } catch (error) {
+      this.logger.error('Failed to search service call task resources:', error);
+      throw error;
+    }
+  }
+
+  async createServiceCallTaskResource(data: Partial<AutotaskServiceCallTaskResource>): Promise<number> {
+    const http = await this.ensureClient();
+    // Root POST /ServiceCallTaskResources does not exist. Created under the parent
+    // service-call task: POST /ServiceCallTasks/{serviceCallTaskID}/Resources.
+    const serviceCallTaskID = (data as Record<string, any>).serviceCallTaskID;
+    if (serviceCallTaskID === undefined || serviceCallTaskID === null) {
+      throw new Error(
+        'Cannot assign resource to service call task: serviceCallTaskID is required ' +
+        '(created via the ServiceCallTasks/{serviceCallTaskID}/Resources child route).'
+      );
+    }
+    try {
+      this.logger.debug('Creating service call task resource:', data);
+      const id = await http.childCreate('ServiceCallTasks', serviceCallTaskID, 'Resources', data);
+      this.logger.info(`Service call task resource created with ID: ${id}`);
+      return id;
+    } catch (error) {
+      this.logger.error('Failed to create service call task resource:', error);
+      throw error;
+    }
+  }
+
+  async deleteServiceCallTaskResource(id: number): Promise<void> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Deleting service call task resource ${id}`);
+      await http.delete('ServiceCallTaskResources', id);
+      this.logger.info(`Service call task resource ${id} deleted`);
+    } catch (error) {
+      this.logger.error(`Failed to delete service call task resource ${id}:`, error);
       throw error;
     }
   }

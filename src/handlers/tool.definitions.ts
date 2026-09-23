@@ -1884,6 +1884,10 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         publish: {
           type: 'number',
           description: 'Publish/visibility picklist ID. Tenant-specific and security-sensitive (controls whether the note is visible to clients). Call autotask_get_field_info with entityType "TicketNotes" and fieldName "publish" to discover the exact label-to-ID mapping before calling this tool. Never guess — the wrong value can expose internal notes to clients.'
+        },
+        idempotencyKey: {
+          type: 'string',
+          description: 'Optional dedup key so a re-run does not duplicate this note (e.g. "RPO-MTG:T20260922.0189:PARKWOOD-IPAD"). When set, a deterministic marker [MCP-ID:<key>] is appended to the note body; before creating, the ticket\'s existing notes are scanned for that marker and the prior note is returned instead of a second copy. Keep the note internal (publish) if the key should not be client-visible. Use a stable key per logical note.'
         }
       },
       required: ['ticketId', 'description', 'noteType', 'publish']

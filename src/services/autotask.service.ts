@@ -3439,6 +3439,185 @@ export class AutotaskService {
     await this.updateTask(id, { projectID, status: statusId, completedDateTime: opts.completedDateTime ?? new Date().toISOString() } as any);
   }
 
+  /**
+   * Read-only verification of the time entries logged on a task for a day
+   * (report gap #6). When expectedResourceIDs is given, reports which are
+   * missing and which have more than one entry (duplicate). Used as the gate
+   * before closing a meeting task.
+   */
+  async verifyTaskTimeEntries(
+    taskID: number,
+    dateWorked: string,
+    expectedResourceIDs?: number[]
+  ): Promise<{
+    taskID: number;
+    dateWorked: string;
+    expected: number;
+    found: number;
+    missingResourceIDs: number[];
+    duplicateResourceIDs: number[];
+    entries: Array<Record<string, any>>;
+  }> {
+    const http = await this.ensureClient();
+    const rows = await http.query<Record<string, any>>(
+      'TimeEntries',
+      [{ op: 'eq', field: 'taskID', value: taskID }, { op: 'eq', field: 'dateWorked', value: dateWorked }],
+      { maxRecords: 500, includeFields: ['id', 'resourceID', 'hoursWorked', 'summaryNotes'] }
+    );
+    const counts = new Map<number, number>();
+    for (const r of rows) {
+      if (r.resourceID != null) counts.set(r.resourceID, (counts.get(r.resourceID) ?? 0) + 1);
+    }
+    const expected = expectedResourceIDs ?? [];
+    const missingResourceIDs = expected.filter((id) => !counts.has(id));
+    const duplicateResourceIDs = [...counts.entries()]
+      .filter(([id, c]) => c > 1 && (expected.length === 0 || expected.includes(id)))
+      .map(([id]) => id);
+    return {
+      taskID,
+      dateWorked,
+      expected: expected.length,
+      found: expected.length ? expected.filter((id) => counts.has(id)).length : counts.size,
+      missingResourceIDs,
+      duplicateResourceIDs,
+      entries: rows,
+    };
+  }
+
+  /**
+   * Meeting-task closeout orchestrator (report gap #7). Finalizes a meeting
+   * task only after the caller-supplied downstream work is verified — it does
+   * NOT create downstream tickets itself. Dry-run first: reports what it would
+   * do and every blocker without changing anything; re-run with dryRun:false
+   * to act. Refuses to close (status 'blocked') if:
+   *   - requireTimeEntries and any expected resource has no entry that day
+   *   - a duplicate time entry is detected for an expected resource
+   *   - requireCloseoutNote and no closeoutNote was supplied
+   *   - any relatedTicketIDs cannot be found
+   * An already-complete task is recognized safely (status 'already_complete',
+   * no-op) so a re-run is safe.
+   */
+  async closeMeetingTask(params: {
+    taskID: number;
+    projectID?: number;
+    dateWorked?: string;
+    expectedResourceIDs?: number[];
+    requireTimeEntries?: boolean;
+    relatedTicketIDs?: number[];
+    closeoutNote?: string;
+    closeoutNoteTitle?: string;
+    closeoutNoteType?: number;
+    closeoutNotePublish?: number;
+    requireCloseoutNote?: boolean;
+    dryRun?: boolean;
+  }): Promise<{
+    status: 'dry_run' | 'closed' | 'blocked' | 'already_complete' | 'error';
+    taskID: number;
+    wouldClose?: boolean;
+    blockers: string[];
+    verification?: Awaited<ReturnType<AutotaskService['verifyTaskTimeEntries']>>;
+    missingRelatedTicketIDs?: number[];
+    noteId?: number;
+    task?: AutotaskTask | null;
+    error?: string;
+  }> {
+    const { taskID, dryRun = true } = params;
+    const blockers: string[] = [];
+
+    const task = await this.getTask(taskID);
+    if (!task) return { status: 'error', taskID, blockers: ['task not found'], error: `Task ${taskID} not found` };
+    if ((task as any).completedDateTime != null) {
+      return { status: 'already_complete', taskID, blockers: [], task };
+    }
+
+    // Time-entry verification
+    let verification: Awaited<ReturnType<AutotaskService['verifyTaskTimeEntries']>> | undefined;
+    if (params.dateWorked && params.expectedResourceIDs?.length) {
+      verification = await this.verifyTaskTimeEntries(taskID, params.dateWorked, params.expectedResourceIDs);
+      if (params.requireTimeEntries && verification.missingResourceIDs.length) {
+        blockers.push(`missing time entries for resource(s): ${verification.missingResourceIDs.join(', ')}`);
+      }
+      if (verification.duplicateResourceIDs.length) {
+        blockers.push(`duplicate time entries for resource(s): ${verification.duplicateResourceIDs.join(', ')}`);
+      }
+    } else if (params.requireTimeEntries) {
+      blockers.push('requireTimeEntries is set but dateWorked/expectedResourceIDs were not provided');
+    }
+
+    // Closeout note requirement
+    if (params.requireCloseoutNote && !params.closeoutNote) {
+      blockers.push('requireCloseoutNote is set but no closeoutNote was supplied');
+    }
+
+    // Related-ticket existence
+    let missingRelatedTicketIDs: number[] | undefined;
+    if (params.relatedTicketIDs?.length) {
+      const http = await this.ensureClient();
+      const found = await http.query<Record<string, any>>(
+        'Tickets',
+        [{ op: 'in', field: 'id', value: params.relatedTicketIDs }],
+        { maxRecords: 500, includeFields: ['id'] }
+      );
+      const foundIds = new Set(found.map((t) => t.id));
+      missingRelatedTicketIDs = params.relatedTicketIDs.filter((id) => !foundIds.has(id));
+      if (missingRelatedTicketIDs.length) blockers.push(`related tickets not found: ${missingRelatedTicketIDs.join(', ')}`);
+    }
+
+    if (dryRun) {
+      return {
+        status: 'dry_run',
+        taskID,
+        wouldClose: blockers.length === 0,
+        blockers,
+        ...(verification ? { verification } : {}),
+        ...(missingRelatedTicketIDs ? { missingRelatedTicketIDs } : {}),
+        task,
+      };
+    }
+    if (blockers.length) {
+      return {
+        status: 'blocked',
+        taskID,
+        blockers,
+        ...(verification ? { verification } : {}),
+        ...(missingRelatedTicketIDs ? { missingRelatedTicketIDs } : {}),
+        task,
+      };
+    }
+
+    // Act: closeout note (idempotent via marker) then complete.
+    let noteId: number | undefined;
+    if (params.closeoutNote) {
+      const marker = `[MCP-ID:CLOSEOUT:${taskID}]`;
+      const existingNotes = await this.searchTaskNotes(taskID, { pageSize: 100 });
+      const prior = (existingNotes || []).find(
+        (n) => typeof n.description === 'string' && n.description.includes(marker)
+      );
+      if (prior?.id != null) {
+        noteId = prior.id;
+      } else {
+        const noteBody: Record<string, any> = {
+          title: params.closeoutNoteTitle ?? 'Meeting Closeout',
+          description: `${params.closeoutNote}\n\n${marker}`,
+        };
+        if (params.closeoutNoteType != null) noteBody.noteType = params.closeoutNoteType;
+        if (params.closeoutNotePublish != null) noteBody.publish = params.closeoutNotePublish;
+        noteId = await this.createTaskNote(taskID, noteBody);
+      }
+    }
+
+    await this.completeTask(taskID, params.projectID != null ? { projectID: params.projectID } : {});
+    const readBack = await this.getTask(taskID);
+    return {
+      status: 'closed',
+      taskID,
+      blockers: [],
+      ...(verification ? { verification } : {}),
+      ...(noteId != null ? { noteId } : {}),
+      task: readBack,
+    };
+  }
+
   // Task secondary resources (§5.4) — the primary resource is the task's
   // assignedResourceID; additional crew are TaskSecondaryResources rows.
   async listTaskResources(taskID: number): Promise<Array<Record<string, any>>> {

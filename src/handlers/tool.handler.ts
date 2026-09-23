@@ -1926,6 +1926,40 @@ export class AutotaskToolHandler {
         await s.completeTask(a.id, { projectID: a.projectID, statusId: a.statusId });
         return { result: undefined, message: `Task ${a.id} marked complete` };
       }],
+      ['autotask_verify_task_time_entries', async (a) => {
+        if (!a.taskID) return { result: null, message: 'taskID is required.' };
+        if (!a.dateWorked) return { result: null, message: 'dateWorked (YYYY-MM-DD) is required.' };
+        const r = await s.verifyTaskTimeEntries(a.taskID, a.dateWorked, a.expectedResourceIDs);
+        const msg = a.expectedResourceIDs?.length
+          ? `Task ${a.taskID} (${a.dateWorked}): ${r.found}/${r.expected} expected present, ${r.missingResourceIDs.length} missing, ${r.duplicateResourceIDs.length} duplicate`
+          : `Task ${a.taskID} (${a.dateWorked}): ${r.entries.length} entr(ies) across ${r.found} resource(s)`;
+        return { result: r, message: msg };
+      }],
+      ['autotask_close_meeting_task', async (a) => {
+        if (!a.taskID) return { result: null, message: 'taskID is required.' };
+        const dryRun = a.dryRun === undefined ? true : !!a.dryRun; // dry-run first by default
+        const r = await s.closeMeetingTask({
+          taskID: a.taskID,
+          projectID: a.projectID,
+          dateWorked: a.dateWorked,
+          expectedResourceIDs: a.expectedResourceIDs,
+          requireTimeEntries: a.requireTimeEntries,
+          relatedTicketIDs: a.relatedTicketIDs,
+          closeoutNote: a.closeoutNote,
+          closeoutNoteTitle: a.closeoutNoteTitle,
+          closeoutNoteType: a.closeoutNoteType,
+          closeoutNotePublish: a.closeoutNotePublish,
+          requireCloseoutNote: a.requireCloseoutNote,
+          dryRun,
+        });
+        let msg: string;
+        if (r.status === 'dry_run') msg = r.wouldClose ? `DRY RUN: task ${r.taskID} would close (no blockers). Re-run with dryRun:false to close.` : `DRY RUN: task ${r.taskID} would be BLOCKED — ${r.blockers.join('; ')}`;
+        else if (r.status === 'blocked') msg = `BLOCKED — not closed: ${r.blockers.join('; ')}`;
+        else if (r.status === 'already_complete') msg = `Task ${r.taskID} is already complete — nothing to do.`;
+        else if (r.status === 'closed') msg = `Task ${r.taskID} closed${r.noteId ? ` (closeout note ${r.noteId})` : ''}.`;
+        else msg = r.error || 'error';
+        return { result: r, message: msg };
+      }],
       ['autotask_list_task_resources', async (a) => {
         const r = await s.listTaskResources(a.taskID); return { result: r, message: `${r.length} secondary resource(s) on task ${a.taskID}` };
       }],

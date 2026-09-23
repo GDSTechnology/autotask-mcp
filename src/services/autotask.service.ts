@@ -2888,6 +2888,16 @@ export class AutotaskService {
     }
   }
 
+  // Invoice fields the read optimizer must NOT strip (verified live 2026-09-23).
+  // Includes the QuickBooks-sync markers the dashboard billing-gap rule needs:
+  // invoiceNumber (blank = never synced), webServiceDate (QBO), paidDate, isVoided.
+  // Timestamps are exposed over booleans on purpose (voidedDate/paidDate/webServiceDate).
+  private readonly INVOICE_FIELDS = [
+    'id', 'invoiceNumber', 'batchID', 'invoiceDateTime', 'dueDate', 'fromDate', 'toDate',
+    'invoiceTotal', 'totalTaxValue', 'isVoided', 'voidedDate', 'paidDate', 'webServiceDate',
+    'orderNumber', 'invoiceStatus', 'paymentTerm', 'comments', 'companyID', 'createDateTime', 'creatorResourceID',
+  ];
+
   async searchInvoices(options: AutotaskQueryOptions = {}): Promise<AutotaskInvoice[]> {
     const http = await this.ensureClient();
     try {
@@ -2899,13 +2909,20 @@ export class AutotaskService {
       pushEq(filters, 'companyID', o.companyID);
       pushEq(filters, 'invoiceNumber', o.invoiceNumber);
       pushEq(filters, 'isVoided', o.isVoided);
+      pushEq(filters, 'batchID', o.batchID);
+      // "Never synced to QuickBooks" = invoiceNumber is null (blank). The dashboard
+      // billing-gap rule keys on this. Voids legitimately have no number, so callers
+      // typically pair unsyncedOnly with isVoided:false.
+      if (o.unsyncedOnly === true) filters.push({ op: 'notExist', field: 'invoiceNumber' });
+      if (o.fromDate) filters.push({ op: 'gte', field: 'invoiceDateTime', value: o.fromDate });
+      if (o.toDate) filters.push({ op: 'lte', field: 'invoiceDateTime', value: o.toDate });
       mergeFilterEscapeHatch(filters, options.filter);
 
       const pageSize = Math.min(options.pageSize || 25, 500);
       return await http.query<AutotaskInvoice>(
         'Invoices',
         filters.length > 0 ? filters : MATCH_ALL,
-        { maxRecords: pageSize }
+        { maxRecords: pageSize, includeFields: this.INVOICE_FIELDS }
       );
     } catch (error) {
       this.logger.error('Failed to search invoices:', error);
@@ -2933,7 +2950,7 @@ export class AutotaskService {
         lineItems = await http.query<AutotaskBillingItem>(
           'BillingItems',
           [{ op: 'eq', field: 'invoiceID', value: id }],
-          { maxRecords: 500 }
+          { maxRecords: 500, includeFields: ['id', 'invoiceID', 'ticketID', 'taskID', 'projectID', 'ticketChargeID', 'itemName', 'lineItemFullDescription', 'itemDate', 'nonBillable', 'billingItemType'] }
         );
       } catch (biErr) {
         this.logger.warn(
@@ -2941,7 +2958,18 @@ export class AutotaskService {
         );
       }
 
-      return { ...invoice, lineItems };
+      // Invoice → work linkage: which tickets/projects/tasks this invoice billed
+      // (from its BillingItems) — so a finding can name the job, not just a value.
+      const distinct = (field: 'ticketID' | 'projectID' | 'taskID'): number[] =>
+        [...new Set(lineItems.map((li) => (li as Record<string, any>)[field]).filter((v): v is number => typeof v === 'number' && v > 0))];
+
+      return {
+        ...invoice,
+        lineItems,
+        linkedTicketIDs: distinct('ticketID'),
+        linkedProjectIDs: distinct('projectID'),
+        linkedTaskIDs: distinct('taskID'),
+      };
     } catch (error) {
       this.logger.error(`Failed to get invoice details ${id}:`, error);
       throw error;

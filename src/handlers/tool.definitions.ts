@@ -3754,35 +3754,25 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   // Invoice tools
   {
     name: 'autotask_search_invoices',
-    description: 'Search for invoices in Autotask with optional filters',
+    description: "Search Autotask invoices (the Invoice Batch screen). Returns the QuickBooks-sync markers a billing-gap check needs: invoiceNumber (blank = never synced to QuickBooks), batchID, invoiceDateTime, invoiceTotal, isVoided + voidedDate, paidDate, webServiceDate (QuickBooks Online sync), orderNumber (free-text PO), dueDate, fromDate/toDate (billing period), invoiceStatus, comments. Missing values come back null (never coerced to 0/false) — treat null as 'unknown'. Use unsyncedOnly (typically with isVoided:false) to find invoices Autotask billed but QuickBooks never received. For the work an invoice covers, call autotask_get_invoice_details (returns linkedTicketIDs/ProjectIDs/TaskIDs).",
     inputSchema: {
       type: 'object',
       properties: {
-        companyID: {
-          type: 'number',
-          description: 'Filter by company ID'
-        },
-        invoiceNumber: {
-          type: 'string',
-          description: 'Filter by invoice number'
-        },
-        isVoided: {
-          type: 'boolean',
-          description: 'Filter by voided status'
-        },
-        pageSize: {
-          type: 'number',
-          description: 'Number of results to return (default: 25, max: 500)',
-          minimum: 1,
-          maximum: 500
-        }
+        companyID: { type: 'number', description: 'Filter by company ID' },
+        invoiceNumber: { type: 'string', description: 'Filter by invoice number' },
+        isVoided: { type: 'boolean', description: 'Filter by voided status (voids legitimately have no invoiceNumber)' },
+        batchID: { type: 'number', description: 'Filter to one invoice batch' },
+        unsyncedOnly: { type: 'boolean', description: 'Only invoices with a blank invoiceNumber (never synced to QuickBooks). Pair with isVoided:false to exclude voids.' },
+        fromDate: { type: 'string', description: 'invoiceDateTime on/after (YYYY-MM-DD) — how long it has been sitting' },
+        toDate: { type: 'string', description: 'invoiceDateTime on/before (YYYY-MM-DD)' },
+        pageSize: { type: 'number', description: 'Number of results to return (default: 25, max: 500)', minimum: 1, maximum: 500 }
       },
       required: []
     }
   },
   {
     name: 'autotask_get_invoice_details',
-    description: 'Get a single Autotask invoice with its nested line items (billing items posted to the invoice). Use for finance workflows that need to see exactly what an invoice contains.',
+    description: "Get a single Autotask invoice with its full field set (sync/paid/void markers, billing period, totals) plus its line items (BillingItems posted to it) and the WORK it billed: linkedTicketIDs, linkedProjectIDs, linkedTaskIDs (distinct, derived from the line items) — so an unsynced-invoice finding can name the job, not just a dollar value. Missing values are null, not 0/false.",
     inputSchema: {
       type: 'object',
       properties: {

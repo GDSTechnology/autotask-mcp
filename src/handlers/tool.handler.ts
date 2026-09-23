@@ -1867,7 +1867,8 @@ export class AutotaskToolHandler {
       ['autotask_get_invoice_details', async (a) => {
         const r = await s.getInvoiceDetails(a.invoiceId);
         const count = r?.lineItems?.length ?? 0;
-        return { result: r, message: r ? `Invoice ${a.invoiceId} retrieved with ${count} line items` : `Invoice ${a.invoiceId} not found` };
+        const tix = r?.linkedTicketIDs?.length ?? 0;
+        return { result: r, message: r ? `Invoice ${a.invoiceId}: ${count} line item(s), ${tix} linked ticket(s)` : `Invoice ${a.invoiceId} not found` };
       }],
 
       // Tasks

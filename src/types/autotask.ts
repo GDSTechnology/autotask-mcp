@@ -160,17 +160,35 @@ export interface AutotaskContract {
 export interface AutotaskInvoice {
   id?: number;
   companyID?: number;
-  invoiceNumber?: string;
-  invoiceDate?: string;
-  totalAmount?: number;
-  paidAmount?: number;
-  isVoided?: boolean;
+  // QuickBooks sync markers — a blank invoiceNumber means "never synced". These
+  // stay null when Autotask doesn't know them (null must survive — never coerce a
+  // missing sync/paid/void date to a boolean or 0).
+  invoiceNumber?: string | null;
+  batchID?: number | null;
+  invoiceDateTime?: string | null;
+  dueDate?: string | null;
+  fromDate?: string | null;   // billing period start
+  toDate?: string | null;     // billing period end
+  invoiceTotal?: number | null;
+  totalTaxValue?: number | null;
+  isVoided?: boolean | null;
+  voidedDate?: string | null;
+  paidDate?: string | null;         // control group: paid ⇒ definitely synced
+  webServiceDate?: string | null;   // QuickBooks Online sync timestamp (blank on Desktop)
+  orderNumber?: string | null;      // free-text PO/order (doc called it purchaseOrderNumber)
+  invoiceStatus?: number | null;
+  paymentTerm?: number | null;
+  comments?: string | null;
+  createDateTime?: string | null;
+  creatorResourceID?: number | null;
   /**
-   * Composed by getInvoiceDetails() — populated via the
-   * Invoices GET endpoint using `includeItemsAndExpenses=true`
-   * (or a fallback billing-items query by invoiceID).
+   * Composed by getInvoiceDetails() — line items from BillingItems filtered by
+   * invoiceID, plus the distinct tickets/projects/tasks this invoice billed.
    */
   lineItems?: AutotaskBillingItem[];
+  linkedTicketIDs?: number[];
+  linkedProjectIDs?: number[];
+  linkedTaskIDs?: number[];
   [key: string]: any;
 }
 

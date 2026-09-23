@@ -11,6 +11,8 @@ import { PagedResult } from '../types/autotask.js';
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
+import { applyBillingTreatment } from '../utils/billing-treatment.js';
+import { normalizeTimestamp, durationHours } from '../utils/timezone.js';
 import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { generateProjectLaborPlan } from '../utils/project-labor-plan.js';
 import { generateSlaFramework } from '../utils/sla-framework.js';
@@ -2489,9 +2491,20 @@ export class AutotaskToolHandler {
         return { result: r, message: 'Time entry retrieved successfully' };
       }],
       ['autotask_update_time_entry', async (a) => {
-        const { id, ...updates } = a;
+        const { id, billingTreatment, timeZone, ...updates } = a;
+        // Timezone-normalize any local start/end (offset-aware or missing tz = passthrough).
+        if (updates.startDateTime) updates.startDateTime = normalizeTimestamp(updates.startDateTime, timeZone);
+        if (updates.endDateTime) updates.endDateTime = normalizeTimestamp(updates.endDateTime, timeZone);
+        // High-level billing intent -> Autotask field combo (explicit fields win).
+        applyBillingTreatment(updates, billingTreatment);
+        // Warn (do not block) when a supplied start/end span disagrees with hoursWorked.
+        const warnings: string[] = [];
+        const span = durationHours(updates.startDateTime, updates.endDateTime);
+        if (span != null && updates.hoursWorked != null && Math.abs(span - updates.hoursWorked) > 0.02) {
+          warnings.push(`hoursWorked=${updates.hoursWorked} does not match the ${span.toFixed(4)}h start/end interval`);
+        }
         await s.updateTimeEntry(id, updates);
-        return { result: id, message: `Successfully updated time entry ${id}` };
+        return { result: warnings.length ? { id, warnings } : id, message: `Successfully updated time entry ${id}${warnings.length ? ` (warning: ${warnings.join('; ')})` : ''}` };
       }],
 
       // Meta-tools for progressive discovery

@@ -1159,6 +1159,38 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_create_task_time_entries_bulk',
+    description: 'Create one time entry PER ATTENDEE against a single project TASK for the same day — built for meeting/closeout logging (e.g. an RPO meeting task with five GDS attendees). DRY-RUN FIRST: without dryRun:false it only returns a plan (resolves each resource + role, flags existing duplicates), writing nothing. Re-run with dryRun:false to commit. Rerun-safe: each write goes through the idempotent path (same resource + day + task + summary is not double-posted). Validate-all-before-write: if ANY entry fails to resolve a resource or needs a role choice, NOTHING is written — fix and re-run. Result is verification-shaped (planned / created / duplicates / errors + per-entry status) so a caller can gate a task closeout on all expected entries being present. For a single entry use autotask_log_my_time / autotask_create_time_entry.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskID: { type: 'number', description: 'The project TASK all entries are logged against (e.g. the meeting task).' },
+        dateWorked: { type: 'string', description: 'Date worked for all entries (YYYY-MM-DD).' },
+        dryRun: { type: 'boolean', description: 'Default TRUE — return a plan without writing. Set false to actually create the entries.' },
+        entries: {
+          type: 'array',
+          description: 'One item per attendee.',
+          items: {
+            type: 'object',
+            properties: {
+              resourceID: { type: 'number', description: 'Resource (tech) ID. Provide this or resourceName.' },
+              resourceName: { type: 'string', description: 'Resource name (e.g. "Jonathan Fitzgerald") — resolved to an active resource. Alternative to resourceID.' },
+              hoursWorked: { type: 'number', description: 'Hours this attendee spent on the call.' },
+              summaryNotes: { type: 'string', description: 'CLIENT/INVOICE-facing summary of this attendee\'s side of the call. Also the idempotency signal (same summary + resource + day + task = duplicate).' },
+              internalNotes: { type: 'string', description: 'INTERNAL-only notes for this attendee (not client/invoice-visible).' },
+              startDateTime: { type: 'string', description: 'Optional start (ISO 8601); a span is derived from hoursWorked when omitted.' },
+              endDateTime: { type: 'string', description: 'Optional end (ISO 8601).' },
+              roleID: { type: 'number', description: 'Optional role; auto-resolved from the resource\'s default when omitted (multiple roles with no default → that entry errors asking for roleID).' }
+            },
+            required: ['hoursWorked', 'summaryNotes']
+          }
+        }
+      },
+      required: ['taskID', 'dateWorked', 'entries']
+    },
+    annotations: { title: 'Bulk task time entries (attendees)' }
+  },
+  {
     name: 'autotask_get_my_day',
     description: 'The acting user\'s working picture for a date (default today): tickets assigned to them, the time they have already logged that day, and their open tasks. Built for a scheduled assistant to see what already exists and backfill only the gaps. Acts as the caller by default (currentUser) — or pass resourceID. Read-only.',
     inputSchema: {
@@ -5442,7 +5474,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

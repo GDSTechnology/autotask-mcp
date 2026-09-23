@@ -502,6 +502,21 @@ export interface AutotaskServiceCallTicketResource {
   [key: string]: any;
 }
 
+export interface AutotaskServiceCallTask {
+  id?: number;
+  serviceCallID?: number;
+  taskID?: number;
+  [key: string]: any;
+}
+
+export interface AutotaskServiceCallTaskResource {
+  id?: number;
+  serviceCallTaskID?: number;
+  resourceID?: number;
+  roleID?: number;
+  [key: string]: any;
+}
+
 export interface AutotaskCompanyLocation {
   id?: number;
   companyID?: number;

@@ -1208,6 +1208,59 @@ export class AutotaskService {
   }
 
   /**
+   * Time-entry TARGETS for a resource (#5): the valid things they can log time
+   * against — OPEN project tasks (completedDateTime is null; logging on a
+   * completed task is rejected by Autotask) and non-complete assigned tickets.
+   * Scope by company/project and a title searchTerm. Read-only; one call so the
+   * EOD bot doesn't run several broad searches to answer "where does this go?".
+   */
+  async getTimeEntryTargets(opts: {
+    resourceID: number; companyID?: number; projectID?: number; searchTerm?: string; maxRecords?: number;
+  }): Promise<Record<string, any>> {
+    const http = await this.ensureClient();
+    const max = Math.min(opts.maxRecords ?? 100, 500);
+    const term = opts.searchTerm ? String(opts.searchTerm).toLowerCase() : null;
+
+    const taskFilters: QueryFilter[] = [
+      { op: 'eq', field: 'assignedResourceID', value: opts.resourceID },
+      { op: 'noteq', field: 'status', value: 5 },            // 5 = Complete
+      { op: 'notExist', field: 'completedDateTime' },          // belt-and-suspenders: exclude completed
+    ];
+    if (opts.projectID != null) taskFilters.push({ op: 'eq', field: 'projectID', value: opts.projectID });
+
+    const ticketFilters: QueryFilter[] = [
+      { op: 'eq', field: 'assignedResourceID', value: opts.resourceID },
+      { op: 'noteq', field: 'status', value: 5 },            // 5 = Complete
+    ];
+    if (opts.companyID != null) ticketFilters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+
+    const [tasks, tickets] = await Promise.all([
+      http.query<Record<string, any>>('Tasks', taskFilters, { includeFields: ['id', 'title', 'projectID', 'phaseID', 'status', 'startDateTime', 'endDateTime', 'estimatedHours', 'remainingHours', 'assignedResourceID'], maxRecords: max }).catch(() => [] as Record<string, any>[]),
+      http.query<Record<string, any>>('Tickets', ticketFilters, { includeFields: ['id', 'ticketNumber', 'title', 'status', 'companyID', 'queueID', 'priority'], maxRecords: max }).catch(() => [] as Record<string, any>[]),
+    ]);
+
+    // Resolve project names for the open tasks (batched, best-effort).
+    const projectIds = [...new Set(tasks.map((t) => t.projectID).filter((x): x is number => typeof x === 'number'))];
+    const projectName = new Map<number, string>();
+    for (let i = 0; i < projectIds.length; i += 200) {
+      try {
+        const rows = await http.query<Record<string, any>>('Projects', [{ op: 'in', field: 'id', value: projectIds.slice(i, i + 200) }], { includeFields: ['id', 'projectName'], maxRecords: 500 });
+        for (const r of rows) projectName.set(r.id, r.projectName);
+      } catch { /* names are a nicety */ }
+    }
+
+    const matchTerm = (s: unknown) => term == null || String(s ?? '').toLowerCase().includes(term);
+    const taskRows = tasks
+      .filter((t) => matchTerm(t.title))
+      .map((t) => ({ taskID: t.id, title: t.title ?? null, projectID: t.projectID ?? null, projectName: projectName.get(t.projectID) ?? null, phaseID: t.phaseID ?? null, status: t.status ?? null, remainingHours: t.remainingHours ?? null, startDate: t.startDateTime ?? null, endDate: t.endDateTime ?? null }));
+    const ticketRows = tickets
+      .filter((t) => matchTerm(t.title) || matchTerm(t.ticketNumber))
+      .map((t) => ({ ticketID: t.id, ticketNumber: t.ticketNumber ?? null, title: t.title ?? null, status: t.status ?? null, companyID: t.companyID ?? null, queueID: t.queueID ?? null }));
+
+    return { resourceID: opts.resourceID, tasks: taskRows, tickets: ticketRows, counts: { tasks: taskRows.length, tickets: ticketRows.length } };
+  }
+
+  /**
    * Create a time entry idempotently (#42 slice 3): if the resource already has
    * an entry on the same day against the same ticket/task with the same summary,
    * skip and report the existing one instead of double-posting. This is the

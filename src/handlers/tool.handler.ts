@@ -1349,6 +1349,11 @@ export class AutotaskToolHandler {
         }
         const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
       }],
+      ['autotask_get_time_entry_targets', async (a) => {
+        if (a.resourceID == null) return { result: null, message: 'resourceID is required (whose targets to list).' };
+        const r = await s.getTimeEntryTargets({ resourceID: a.resourceID, companyID: a.companyID, projectID: a.projectID, searchTerm: a.searchTerm, maxRecords: a.maxRecords });
+        return { result: r, message: `Targets for resource ${a.resourceID}: ${r.counts.tasks} open task(s), ${r.counts.tickets} open ticket(s)` };
+      }],
       ['autotask_list_regular_time_categories', async () => {
         const r = await s.getRegularTimeCategories();
         const active = r.filter((c) => c.active);

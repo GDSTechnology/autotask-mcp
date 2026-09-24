@@ -52,6 +52,7 @@ import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } fr
 import { normalizeTimestamp } from '../utils/timezone';
 import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, classifyTimesheetStatusLabel, lockReason } from '../utils/timesheet-lock';
+import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1236,11 +1237,29 @@ export class AutotaskService {
     return { locked: false, state: 'unknown' };
   }
 
-  /** DELETE a time entry (top-level entity). Lock errors are re-thrown as-is for the caller to map. */
-  async deleteTimeEntry(id: number): Promise<void> {
+  /**
+   * DELETE a time entry (top-level entity). Autotask permits a time entry to be
+   * deleted only BY THE RESOURCE WHO OWNS IT — even an admin/API user cannot
+   * delete another user's time directly (confirmed in the UI). So when
+   * `asResourceID` is given we tunnel the delete via native impersonation
+   * (ImpersonationResourceId = the owner) for the duration of the call. Requires
+   * the API user's security level to allow impersonation and the owner to be an
+   * ACTIVE, non-API, non-system resource. Lock errors are re-thrown for the
+   * caller to map.
+   */
+  async deleteTimeEntry(id: number, opts?: { asResourceID?: number }): Promise<void> {
     const http = await this.ensureClient();
-    await http.delete('TimeEntries', id);
-    this.logger.info(`Time entry ${id} deleted`);
+    const run = () => http.delete('TimeEntries', id);
+    if (opts?.asResourceID != null) {
+      const origin = getRequestOrigin();
+      await runWithRequestContext(
+        { impersonationResourceId: opts.asResourceID, ...(origin ? { origin } : {}) },
+        run
+      );
+    } else {
+      await run();
+    }
+    this.logger.info(`Time entry ${id} deleted${opts?.asResourceID != null ? ` (as resource ${opts.asResourceID})` : ''}`);
   }
 
   /** DELETE a project task via the child route (needs projectID, like update/complete). */

@@ -1285,7 +1285,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_delete_time_entry',
-    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently delete one time entry. DRY-RUN FIRST (default): reads the entry + lock state, deletes nothing; to delete pass dryRun:false AND confirm:true. Refuses locked time with a clear reason — posted/billing-approved (incl. contract auto-approve; allowApproved:true to attempt) or a locked timesheet (waiting-for-approval / approved). Idempotent (missing id → "already_deleted"); verifies the entry is gone.',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently delete one time entry. DRY-RUN FIRST (default): reads the entry + lock state, deletes nothing; to delete pass dryRun:false AND confirm:true. Refuses locked time with a clear reason — posted/billing-approved (incl. contract auto-approve; allowApproved:true to attempt) or a locked timesheet (waiting-for-approval / approved). Runs AS the entry\'s owner (impersonation) — Autotask lets only the owner delete their time, even for an admin. Idempotent (missing id → "already_deleted"); verifies the entry is gone.',
     inputSchema: {
       type: 'object',
       properties: {

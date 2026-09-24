@@ -2605,7 +2605,8 @@ export class AutotaskToolHandler {
         if (blockedByTimesheet) return { result: { status: 'blocked', timeEntryId: a.id, lock }, message: `Not deleted — ${lock.reason}` };
         if (blockedByApproval) return { result: { status: 'blocked', timeEntryId: a.id, lock }, message: `Not deleted — ${lock.reason} Pass allowApproved:true to attempt anyway (Autotask may still refuse).` };
         try {
-          await s.deleteTimeEntry(a.id);
+          // Autotask lets only the OWNER delete their time — impersonate them.
+          await s.deleteTimeEntry(a.id, entry.resourceID != null ? { asResourceID: entry.resourceID } : undefined);
         } catch (e) {
           const ls = classifyLockError(e instanceof Error ? e.message : String(e));
           if (ls) return { result: { status: 'blocked', timeEntryId: a.id, lock: { locked: true, state: ls, reason: lockReason(ls) } }, message: `Not deleted — ${lockReason(ls)}` };
@@ -2663,7 +2664,7 @@ export class AutotaskToolHandler {
         if (!canDelete) return { result: { status: 'blocked', ...base, blockers: { lockedTimeEntries: lockedTE.map((t) => ({ id: t.id, reason: t.lock.reason })), ...otherBlockers } }, message: 'Not deleted — locked time entries or other attached records present.' };
         const timeEntryResults: Array<Record<string, any>> = [];
         for (const t of teAssess) {
-          try { await s.deleteTimeEntry(t.id); timeEntryResults.push({ id: t.id, status: 'deleted' }); }
+          try { await s.deleteTimeEntry(t.id, t.resource != null ? { asResourceID: t.resource } : undefined); timeEntryResults.push({ id: t.id, status: 'deleted' }); }
           catch (e) { const ls = classifyLockError(e instanceof Error ? e.message : String(e)); timeEntryResults.push({ id: t.id, status: 'error', reason: ls ? lockReason(ls) : (e instanceof Error ? e.message : String(e)) }); }
         }
         const failed = timeEntryResults.filter((r) => r.status === 'error');

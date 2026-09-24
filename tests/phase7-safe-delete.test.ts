@@ -85,8 +85,20 @@ describe('delete_time_entry', () => {
     const del = jest.spyOn(svc, 'deleteTimeEntry').mockResolvedValue();
     const handler = new AutotaskToolHandler(svc, logger);
     const r = await handler.callTool('autotask_delete_time_entry', { id: 54827, dryRun: false, confirm: true });
-    expect(del).toHaveBeenCalledWith(54827);
+    expect(del).toHaveBeenCalledWith(54827, { asResourceID: 1 }); // as the owner
     expect(textOf(r)).toContain('Deleted time entry 54827');
+  });
+
+  test("deletes AS the entry's owner (impersonation) — Autotask allows only the owner", async () => {
+    const svc = new AutotaskService(config, logger);
+    jest.spyOn(svc, 'getTimeEntry').mockResolvedValueOnce({ id: 54827, resourceID: 30683880, dateWorked: '2026-08-12' } as any).mockResolvedValueOnce(null);
+    jest.spyOn(svc, 'assessTimeEntryLock').mockResolvedValue({ locked: false, state: 'open' });
+    // Capture the impersonation context active during the delete.
+    let impersonatedAs: number | undefined;
+    jest.spyOn(svc, 'deleteTimeEntry').mockImplementation(async (_id: number, opts?: { asResourceID?: number }) => { impersonatedAs = opts?.asResourceID; });
+    const handler = new AutotaskToolHandler(svc, logger);
+    await handler.callTool('autotask_delete_time_entry', { id: 54827, dryRun: false, confirm: true });
+    expect(impersonatedAs).toBe(30683880); // the owner, not the caller
   });
 
   test('maps a timesheet-lock error thrown by Autotask at delete time', async () => {

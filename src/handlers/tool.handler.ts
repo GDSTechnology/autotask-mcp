@@ -11,6 +11,16 @@ import { PagedResult } from '../types/autotask.js';
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
+import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
+
+// Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
+// confirm gate treats an omitted dryRun as a dry-run (plan only, no confirm),
+// and only requires confirm:true on the actual execution (dryRun:false).
+const DRY_RUN_FIRST_TOOLS = new Set<string>([
+  'autotask_delete_time_entry',
+  'autotask_delete_task',
+  'autotask_delete_task_with_time',
+]);
 import { applyBillingTreatment } from '../utils/billing-treatment.js';
 import { normalizeTimestamp, durationHours } from '../utils/timezone.js';
 import { calculateProjectSchedule } from '../utils/project-schedule.js';
@@ -2571,6 +2581,101 @@ export class AutotaskToolHandler {
         await s.updateTimeEntry(id, updates);
         return { result: warnings.length ? { id, warnings } : id, message: `Successfully updated time entry ${id}${warnings.length ? ` (warning: ${warnings.join('; ')})` : ''}` };
       }],
+      ['autotask_delete_time_entry', async (a) => {
+        const dryRun = a.dryRun !== false; // default true
+        const allowApproved = a.allowApproved === true;
+        const entry = await s.getTimeEntry(a.id);
+        if (!entry) return { result: { status: 'already_deleted', timeEntryId: a.id }, message: `Time entry ${a.id} not found (already deleted).` };
+        const lock = await s.assessTimeEntryLock(entry);
+        const target = {
+          id: entry.id, resourceID: entry.resourceID, dateWorked: entry.dateWorked, hoursWorked: entry.hoursWorked,
+          hoursToBill: (entry as any).hoursToBill, ticketID: entry.ticketID, taskID: entry.taskID, billingCodeID: (entry as any).billingCodeID,
+          isNonBillable: (entry as any).isNonBillable, showOnInvoice: (entry as any).showOnInvoice,
+          billingApprovalDateTime: (entry as any).billingApprovalDateTime, summaryNotes: entry.summaryNotes, internalNotes: entry.internalNotes,
+        };
+        const blockedByApproval = lock.state === 'billing_posted' && !allowApproved;
+        const blockedByTimesheet = lock.state === 'timesheet_pending_approval' || lock.state === 'timesheet_approved';
+        if (dryRun) {
+          const canDelete = !blockedByTimesheet && !blockedByApproval;
+          return {
+            result: { status: 'dry_run', timeEntry: target, lock, canDelete, ...(canDelete ? {} : { blockedReason: lock.reason }) },
+            message: canDelete ? `DRY RUN: time entry ${a.id} can be deleted. Re-run with dryRun:false and confirm:true.` : `DRY RUN: time entry ${a.id} is BLOCKED — ${lock.reason}`,
+          };
+        }
+        if (blockedByTimesheet) return { result: { status: 'blocked', timeEntryId: a.id, lock }, message: `Not deleted — ${lock.reason}` };
+        if (blockedByApproval) return { result: { status: 'blocked', timeEntryId: a.id, lock }, message: `Not deleted — ${lock.reason} Pass allowApproved:true to attempt anyway (Autotask may still refuse).` };
+        try {
+          await s.deleteTimeEntry(a.id);
+        } catch (e) {
+          const ls = classifyLockError(e instanceof Error ? e.message : String(e));
+          if (ls) return { result: { status: 'blocked', timeEntryId: a.id, lock: { locked: true, state: ls, reason: lockReason(ls) } }, message: `Not deleted — ${lockReason(ls)}` };
+          throw e;
+        }
+        const after = await s.getTimeEntry(a.id).catch(() => null);
+        return { result: { status: 'deleted', timeEntryId: a.id, verification: { exists: !!after } }, message: `Deleted time entry ${a.id}.` };
+      }],
+      ['autotask_delete_task', async (a) => {
+        const dryRun = a.dryRun !== false;
+        const inv = await s.inspectTaskForDelete(a.id);
+        if (!inv.task) return { result: { status: 'already_deleted', taskId: a.id }, message: `Task ${a.id} not found (already deleted).` };
+        const projectID = a.projectID ?? (inv.task as any).projectID;
+        const blockers = {
+          timeEntries: inv.timeEntries.map((t) => t.id), notes: inv.notes.map((n) => n.id),
+          attachments: inv.attachments.map((x) => x.id), secondaryResources: inv.secondaryResources.map((r) => r.id),
+          dependencies: inv.dependencies.map((d) => d.id),
+        };
+        const hasBlockers = Object.values(blockers).some((arr) => arr.length > 0);
+        const base = { taskId: a.id, taskNumber: (inv.task as any).taskNumber, title: inv.task.title, projectId: projectID };
+        if (hasBlockers) return { result: { status: 'blocked', ...base, blockers }, message: `Task ${a.id} has attached records — not deleted (no cascade). Remove them first, or use autotask_delete_task_with_time for the time entries. Blockers: ${JSON.stringify(blockers)}` };
+        if (dryRun) return { result: { status: 'dry_run', ...base, blockers, canDelete: true, plannedActions: [`Delete task ${a.id}`, `Verify task ${a.id} no longer exists`] }, message: `DRY RUN: task ${a.id} has no attached records and can be deleted. Re-run with dryRun:false and confirm:true.` };
+        if (projectID == null) return { result: null, message: `projectID could not be determined for task ${a.id}; pass projectID.` };
+        await s.deleteTaskById(a.id, projectID);
+        const after = await s.getTask(a.id).catch(() => null);
+        return { result: { status: 'deleted', ...base, verification: { exists: !!after } }, message: `Deleted task ${a.id}.` };
+      }],
+      ['autotask_delete_task_with_time', async (a) => {
+        const taskId = a.taskId ?? a.id;
+        const dryRun = a.dryRun !== false;
+        const allowApproved = a.allowApproved === true;
+        const inv = await s.inspectTaskForDelete(taskId);
+        if (!inv.task) return { result: { status: 'already_deleted', taskId }, message: `Task ${taskId} not found (already deleted).` };
+        const projectID = a.projectID ?? (inv.task as any).projectID;
+        const base = { taskId, taskNumber: (inv.task as any).taskNumber, title: inv.task.title, projectId: projectID };
+        // Assess each time entry's lock state.
+        const teAssess = await Promise.all(inv.timeEntries.map(async (t) => {
+          const full = await s.getTimeEntry(t.id).catch(() => null);
+          const lock = full ? await s.assessTimeEntryLock(full) : { locked: false, state: 'unknown' as const };
+          const blocked = lock.state === 'timesheet_pending_approval' || lock.state === 'timesheet_approved' || (lock.state === 'billing_posted' && !allowApproved);
+          return { id: t.id, resource: t.resourceID, dateWorked: t.dateWorked, hoursWorked: t.hoursWorked, lock, blocked };
+        }));
+        // Other attached records block the TASK (never cascade-deleted here).
+        const otherBlockers = { notes: inv.notes.map((n) => n.id), attachments: inv.attachments.map((x) => x.id), secondaryResources: inv.secondaryResources.map((r) => r.id), dependencies: inv.dependencies.map((d) => d.id) };
+        const hasOther = Object.values(otherBlockers).some((arr) => arr.length > 0);
+        const lockedTE = teAssess.filter((t) => t.blocked);
+        const canDelete = lockedTE.length === 0 && !hasOther;
+        const plannedActions = [...teAssess.map((t) => `Delete time entry ${t.id}`), 'Verify task has no remaining time entries', `Delete task ${taskId}`, `Verify task ${taskId} no longer exists`];
+        if (dryRun) {
+          return {
+            result: { status: 'dry_run', ...base, timeEntries: teAssess, ...otherBlockers, canDelete, ...(canDelete ? {} : { blockers: { lockedTimeEntries: lockedTE.map((t) => ({ id: t.id, reason: t.lock.reason })), ...otherBlockers } }), plannedActions },
+            message: canDelete ? `DRY RUN: would delete ${teAssess.length} time entr(ies) then task ${taskId}. Re-run with dryRun:false and confirm:true.` : `DRY RUN: cannot proceed — ${lockedTE.length} locked time entr(ies)${hasOther ? ' + other attached records' : ''}.`,
+          };
+        }
+        if (!canDelete) return { result: { status: 'blocked', ...base, blockers: { lockedTimeEntries: lockedTE.map((t) => ({ id: t.id, reason: t.lock.reason })), ...otherBlockers } }, message: 'Not deleted — locked time entries or other attached records present.' };
+        const timeEntryResults: Array<Record<string, any>> = [];
+        for (const t of teAssess) {
+          try { await s.deleteTimeEntry(t.id); timeEntryResults.push({ id: t.id, status: 'deleted' }); }
+          catch (e) { const ls = classifyLockError(e instanceof Error ? e.message : String(e)); timeEntryResults.push({ id: t.id, status: 'error', reason: ls ? lockReason(ls) : (e instanceof Error ? e.message : String(e)) }); }
+        }
+        const failed = timeEntryResults.filter((r) => r.status === 'error');
+        if (failed.length) return { result: { status: 'stopped', ...base, timeEntryResults }, message: `Stopped: ${failed.length} time entr(y/ies) could not be deleted; task ${taskId} NOT deleted.` };
+        // Confirm no time remains before deleting the task.
+        const recheck = await s.inspectTaskForDelete(taskId);
+        if (recheck.timeEntries.length) return { result: { status: 'stopped', ...base, timeEntryResults, remaining: recheck.timeEntries.map((t) => t.id) }, message: `Stopped: time still attached to task ${taskId} after deletes; task NOT deleted.` };
+        if (projectID == null) return { result: { status: 'stopped', ...base, timeEntryResults }, message: `Time deleted, but projectID unknown for task ${taskId} — pass projectID to delete the task.` };
+        await s.deleteTaskById(taskId, projectID);
+        const after = await s.getTask(taskId).catch(() => null);
+        return { result: { status: 'deleted', ...base, timeEntryResults, verification: { exists: !!after } }, message: `Deleted ${timeEntryResults.length} time entr(ies) and task ${taskId}.` };
+      }],
 
       // Meta-tools for progressive discovery
       ['autotask_list_categories', async () => {
@@ -2829,7 +2934,13 @@ export class AutotaskToolHandler {
       // Risk-based confirmation gate (§4.3): destructive / financial / inventory
       // mutations require an explicit confirm:true before running. Read-only and
       // routine reversible updates pass through. `confirm` never reaches the tool.
-      if (requiresExplicitConfirmation(risk) && args.confirm !== true) {
+      // A dry-run mutates nothing, so it never needs confirm — this lets a
+      // destructive tool (e.g. delete_*) return its plan freely; only the real
+      // execution (dryRun:false) hits the confirm gate. The delete_* tools
+      // DEFAULT to dry-run when dryRun is omitted, so treat omitted as dry-run
+      // for them; every other destructive tool still requires confirm as before.
+      const isDryRunCall = args.dryRun === true || (DRY_RUN_FIRST_TOOLS.has(name) && args.dryRun !== false);
+      if (requiresExplicitConfirmation(risk) && args.confirm !== true && !isDryRunCall) {
         const cr = buildConfirmationRequired(name, risk);
         this.recordAudit(ctx, { tool: name, outcome: 'confirmation-required', durationMs: Date.now() - startedAt });
         return { content: [{ type: 'text', text: JSON.stringify({ message: cr.message, data: cr }) }] };

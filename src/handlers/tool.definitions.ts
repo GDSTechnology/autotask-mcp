@@ -1283,6 +1283,20 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['id']
     }
   },
+  {
+    name: 'autotask_delete_time_entry',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently delete one time entry. DRY-RUN FIRST (default): reads the entry + lock state, deletes nothing; to delete pass dryRun:false AND confirm:true. Refuses locked time with a clear reason — posted/billing-approved (incl. contract auto-approve; allowApproved:true to attempt) or a locked timesheet (waiting-for-approval / approved). Idempotent (missing id → "already_deleted"); verifies the entry is gone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Time entry ID to delete.' },
+        dryRun: { type: 'boolean', description: 'Default TRUE — inspect + return the plan without deleting. Set false (with confirm:true) to delete.' },
+        allowApproved: { type: 'boolean', description: 'Attempt deletion even when the entry is posted/billing-approved. Default false. Autotask may still refuse.' }
+      },
+      required: ['id']
+    },
+    annotations: { title: 'Delete time entry', readOnlyHint: false, destructiveHint: true }
+  },
 
   // Project tools
   {
@@ -4030,6 +4044,35 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_delete_task',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently delete ONE project task. Does NOT cascade: if the task has attached records (time entries, notes, attachments, secondary resources, or predecessor dependencies) it returns status "blocked" with the blockers and deletes nothing — clear them first (use autotask_delete_task_with_time for the time entries). DRY-RUN FIRST: without dryRun:false it inventories the task and returns the plan. To delete an unattached task pass BOTH dryRun:false AND confirm:true. Idempotent: a missing id returns "already_deleted". Verifies the task is gone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Task ID to delete.' },
+        projectID: { type: 'number', description: 'Optional — looked up from the task if omitted (needed for the child-route DELETE).' },
+        dryRun: { type: 'boolean', description: 'Default TRUE — inventory + plan without deleting. Set false (with confirm:true) to delete.' }
+      },
+      required: ['id']
+    },
+    annotations: { title: 'Delete task', readOnlyHint: false, destructiveHint: true }
+  },
+  {
+    name: 'autotask_delete_task_with_time',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Guarded cleanup: delete a task AND its time entries. Does NOT remove notes/attachments/secondary-resources/dependencies — refuses if any exist. DRY-RUN FIRST (default): inventories the task, assesses each entry\'s lock, returns the ordered plan; to execute pass dryRun:false AND confirm:true. Deletes each entry (stop-on-failure; skips locked/posted unless allowApproved), verifies no time remains, then deletes the task. Never deletes the task after only partial time removal.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'number', description: 'Task ID to clean up.' },
+        projectID: { type: 'number', description: 'Optional; looked up if omitted.' },
+        dryRun: { type: 'boolean', description: 'Default TRUE. Set false + confirm:true to execute.' },
+        allowApproved: { type: 'boolean', description: 'Attempt posted/approved entries. Default false.' }
+      },
+      required: ['taskId']
+    },
+    annotations: { title: 'Delete task with time', readOnlyHint: false, destructiveHint: true }
+  },
+  {
     name: 'autotask_verify_task_time_entries',
     description: 'Read-only check of the time entries logged against a project TASK on a given day. With expectedResourceIDs, reports how many of the expected resources have an entry (found/expected), which are missing, and which have more than one entry (duplicate). Without it, summarizes all entries on the task that day. Use this to gate a meeting-task closeout on "everyone\'s time is in".',
     inputSchema: {
@@ -5538,11 +5581,11 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_classify_project', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_get_task_by_number', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_verify_task_time_entries', 'autotask_close_meeting_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
+    tools: ['autotask_search_projects', 'autotask_get_project', 'autotask_update_project', 'autotask_get_project_structure', 'autotask_get_complete_project_context', 'autotask_get_project_labor_summary', 'autotask_export_project_blueprint', 'autotask_calculate_project_schedule', 'autotask_extract_project_scope', 'autotask_classify_project', 'autotask_calculate_bom_labor', 'autotask_generate_project_labor_plan', 'autotask_build_project_from_plan', 'autotask_extend_project', 'autotask_create_project', 'autotask_link_project_commercial', 'autotask_search_tasks', 'autotask_get_task', 'autotask_get_task_by_number', 'autotask_create_task', 'autotask_update_task', 'autotask_complete_task', 'autotask_delete_task', 'autotask_delete_task_with_time', 'autotask_verify_task_time_entries', 'autotask_close_meeting_task', 'autotask_list_task_resources', 'autotask_add_task_resource', 'autotask_remove_task_resource', 'autotask_list_task_predecessors', 'autotask_add_task_predecessor', 'autotask_remove_task_predecessor', 'autotask_get_task_predecessor', 'autotask_search_task_predecessors', 'autotask_update_task_predecessor', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_phase', 'autotask_update_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note', 'autotask_get_task_note', 'autotask_search_task_notes', 'autotask_create_task_note', 'autotask_search_project_attachments', 'autotask_search_task_attachments', 'autotask_get_project_attachment', 'autotask_create_project_attachment', 'autotask_get_task_attachment', 'autotask_create_task_attachment']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

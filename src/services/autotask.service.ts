@@ -51,6 +51,8 @@ import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhook
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
 import { normalizeTimestamp } from '../utils/timezone';
 import { windowsToIana } from '../utils/windows-timezones';
+import { TimeEntryLockState, classifyTimesheetStatusLabel, lockReason } from '../utils/timesheet-lock';
+import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1172,6 +1174,127 @@ export class AutotaskService {
       this.logger.error(`Failed to get time entry ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Best-effort read-only check of whether a resource's timesheet is locked for
+   * a given work date. Degrades to 'unknown' on any lookup failure (the
+   * authoritative gate is Autotask's own error on write/delete, mapped via
+   * classifyLockError). No timesheet row for the week => 'open'.
+   */
+  async getTimesheetLockState(
+    resourceID: number,
+    dateWorked: string
+  ): Promise<{ state: 'open' | 'timesheet_pending_approval' | 'timesheet_approved' | 'unknown'; timesheetId?: number; statusLabel?: string }> {
+    try {
+      const http = await this.ensureClient();
+      const d = String(dateWorked).slice(0, 10);
+      const rows = await http.query<Record<string, any>>(
+        'TimeSheets',
+        [
+          { op: 'eq', field: 'resourceID', value: resourceID },
+          { op: 'lte', field: 'startDate', value: `${d}T00:00:00` },
+          { op: 'gte', field: 'endDate', value: `${d}T00:00:00` },
+        ],
+        { maxRecords: 3, includeFields: ['id', 'startDate', 'endDate', 'status'] }
+      );
+      const t = (rows || [])[0];
+      if (!t || t.status == null) return { state: t ? 'unknown' : 'open' };
+      let label: string | undefined;
+      try {
+        const fi = await this.getFieldInfo('TimeSheets');
+        label = fi.find((f) => f.name === 'status')?.picklistValues?.find((v) => String(v.value) === String(t.status))?.label;
+      } catch { /* label unresolved -> classify by 'unknown' below */ }
+      const state = label ? classifyTimesheetStatusLabel(label) : 'unknown';
+      return { state, timesheetId: t.id, ...(label ? { statusLabel: label } : {}) };
+    } catch (e) {
+      this.logger.debug(`getTimesheetLockState(${resourceID}, ${dateWorked}) failed:`, e);
+      return { state: 'unknown' };
+    }
+  }
+
+  /**
+   * Assess every lock source for a time entry (posted/billing-approved incl.
+   * contract auto-approve, and timesheet submitted/approved). Reusable by
+   * delete and, in future, by create/update guards.
+   */
+  async assessTimeEntryLock(entry: Partial<AutotaskTimeEntry>): Promise<{
+    locked: boolean;
+    state: TimeEntryLockState;
+    reason?: string;
+    timesheetId?: number;
+  }> {
+    if ((entry as any).billingApprovalDateTime != null) {
+      return { locked: true, state: 'billing_posted', reason: lockReason('billing_posted') };
+    }
+    if (entry.resourceID != null && entry.dateWorked) {
+      const ts = await this.getTimesheetLockState(entry.resourceID, String(entry.dateWorked));
+      if (ts.state === 'timesheet_pending_approval' || ts.state === 'timesheet_approved') {
+        return { locked: true, state: ts.state, reason: lockReason(ts.state), ...(ts.timesheetId != null ? { timesheetId: ts.timesheetId } : {}) };
+      }
+      return { locked: false, state: ts.state };
+    }
+    return { locked: false, state: 'unknown' };
+  }
+
+  /**
+   * DELETE a time entry (top-level entity). Autotask permits a time entry to be
+   * deleted only BY THE RESOURCE WHO OWNS IT — even an admin/API user cannot
+   * delete another user's time directly (confirmed in the UI). So when
+   * `asResourceID` is given we tunnel the delete via native impersonation
+   * (ImpersonationResourceId = the owner) for the duration of the call. Requires
+   * the API user's security level to allow impersonation and the owner to be an
+   * ACTIVE, non-API, non-system resource. Lock errors are re-thrown for the
+   * caller to map.
+   */
+  async deleteTimeEntry(id: number, opts?: { asResourceID?: number }): Promise<void> {
+    const http = await this.ensureClient();
+    const run = () => http.delete('TimeEntries', id);
+    if (opts?.asResourceID != null) {
+      const origin = getRequestOrigin();
+      await runWithRequestContext(
+        { impersonationResourceId: opts.asResourceID, ...(origin ? { origin } : {}) },
+        run
+      );
+    } else {
+      await run();
+    }
+    this.logger.info(`Time entry ${id} deleted${opts?.asResourceID != null ? ` (as resource ${opts.asResourceID})` : ''}`);
+  }
+
+  /** DELETE a project task via the child route (needs projectID, like update/complete). */
+  async deleteTaskById(id: number, projectID: number): Promise<void> {
+    const http = await this.ensureClient();
+    await http.childDelete('Projects', projectID, 'Tasks', id);
+    this.logger.info(`Task ${id} deleted (project ${projectID})`);
+  }
+
+  /**
+   * Read-only inventory of everything attached to a task, for a guarded delete:
+   * time entries, notes, attachments, secondary resources, and predecessor
+   * dependencies (incoming + outgoing). Never deletes; never cascades.
+   */
+  async inspectTaskForDelete(id: number): Promise<{
+    task: AutotaskTask | null;
+    timeEntries: Array<Record<string, any>>;
+    notes: Array<Record<string, any>>;
+    attachments: Array<Record<string, any>>;
+    secondaryResources: Array<Record<string, any>>;
+    dependencies: Array<Record<string, any>>;
+  }> {
+    const http = await this.ensureClient();
+    const [task, timeEntries, notes, attachments, secondaryResources, preds] = await Promise.all([
+      this.getTask(id).catch(() => null),
+      http.query<Record<string, any>>('TimeEntries', [{ op: 'eq', field: 'taskID', value: id }], { maxRecords: 500, includeFields: ['id', 'resourceID', 'dateWorked', 'hoursWorked'] }).catch(() => []),
+      this.searchTaskNotes(id, { pageSize: 100 }).catch(() => [] as any[]),
+      this.searchTaskAttachments(id, { pageSize: 100 }).catch(() => [] as any[]),
+      this.listTaskResources(id).catch(() => [] as any[]),
+      Promise.all([
+        http.query<Record<string, any>>('TaskPredecessors', [{ op: 'eq', field: 'predecessorTaskID', value: id }], { maxRecords: 200, includeFields: ['id', 'predecessorTaskID', 'successorTaskID', 'lagDays'] }).catch(() => []),
+        http.query<Record<string, any>>('TaskPredecessors', [{ op: 'eq', field: 'successorTaskID', value: id }], { maxRecords: 200, includeFields: ['id', 'predecessorTaskID', 'successorTaskID', 'lagDays'] }).catch(() => []),
+      ]).then(([outgoing, incoming]) => [...outgoing, ...incoming]),
+    ]);
+    return { task, timeEntries, notes, attachments, secondaryResources, dependencies: preds };
   }
 
   /** Update a time entry (§4.8) via the collection PATCH convention. */

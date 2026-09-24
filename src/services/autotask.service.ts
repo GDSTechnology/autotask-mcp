@@ -53,6 +53,7 @@ import { normalizeTimestamp } from '../utils/timezone';
 import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
+import { applyBillingTreatment, BillingTreatment } from '../utils/billing-treatment';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1587,6 +1588,177 @@ export class AutotaskService {
       errors: results.filter((r) => r.status === 'error').length,
       created: results.filter((r) => r.status === 'created').length,
       written: !dryRun && !hasErrors,
+      results,
+    };
+  }
+
+  /** Resolve an ACTIVE resource by exact email (Teams participant → Autotask resource). */
+  async resolveResourceByEmail(email: string): Promise<{ id: number; firstName: string; lastName: string } | null> {
+    const http = await this.ensureClient();
+    try {
+      const rows = await http.query<Record<string, any>>(
+        'Resources',
+        [{ op: 'eq', field: 'email', value: email.trim() }, { op: 'eq', field: 'isActive', value: true }],
+        { maxRecords: 2, includeFields: ['id', 'firstName', 'lastName', 'email'] }
+      );
+      const r = (rows || [])[0];
+      return r?.id != null ? { id: r.id, firstName: r.firstName ?? '', lastName: r.lastName ?? '' } : null;
+    } catch { return null; }
+  }
+
+  /**
+   * Capture a collaborative work event (e.g. a Teams triage thread on a ticket)
+   * as one call: a TICKET time entry per contributing tech + an optional ticket
+   * note (the narrative). The ticket-oriented sibling of createTaskTimeEntriesBulk.
+   *
+   * Resolves each participant by resourceID | resourceName | email; auto-resolves
+   * the role (a multi-role/no-default participant errors asking for roleID — never
+   * guesses); applies billingTreatment; inherits timezone normalization from
+   * createTimeEntry. Dry-run first + validate-all-before-write: if ANY participant
+   * fails to resolve, nothing is written. Time is written idempotently
+   * (logTimeIdempotent). The note is written last, idempotently when an
+   * idempotencyKey is given, so a re-run neither double-logs time nor dupes the note.
+   */
+  async logTicketCollaboration(params: {
+    ticketID: number;
+    dateWorked: string;
+    participants: Array<{
+      resourceID?: number;
+      resourceName?: string;
+      email?: string;
+      hoursWorked: number;
+      summaryNotes: string;
+      internalNotes?: string;
+      roleID?: number;
+      billingTreatment?: BillingTreatment;
+      startDateTime?: string;
+      endDateTime?: string;
+      timeZone?: string;
+    }>;
+    note?: { title?: string; description: string; noteType?: number; publish?: number; idempotencyKey?: string };
+    dryRun?: boolean;
+  }): Promise<{
+    ticketID: number;
+    dateWorked: string;
+    dryRun: boolean;
+    planned: number;
+    wouldCreate: number;
+    duplicates: number;
+    errors: number;
+    created: number;
+    written: boolean;
+    note?: { status: 'would_create' | 'created' | 'duplicate' | 'skipped'; noteId?: number };
+    results: Array<{
+      resourceID?: number;
+      label?: string;
+      hoursWorked: number;
+      roleID?: number;
+      status: 'would_create' | 'created' | 'duplicate' | 'error';
+      id?: number;
+      duplicateOf?: number;
+      error?: string;
+      needsSelection?: Array<{ roleID: number; roleName?: string | null; isDefault?: boolean }>;
+    }>;
+  }> {
+    const { ticketID, dateWorked, participants, note, dryRun = false } = params;
+    const http = await this.ensureClient();
+
+    let dayEntries: Array<Record<string, any>> = [];
+    try {
+      dayEntries = await http.query<Record<string, any>>(
+        'TimeEntries',
+        [{ op: 'eq', field: 'ticketID', value: ticketID }, { op: 'eq', field: 'dateWorked', value: dateWorked }],
+        { maxRecords: 500, includeFields: ['id', 'resourceID', 'summaryNotes', 'startDateTime'] }
+      );
+    } catch { /* probe failure shouldn't block; per-entry create still guards */ }
+
+    type Row = Awaited<ReturnType<AutotaskService['logTicketCollaboration']>>['results'][number];
+    const plan: Array<{ row: Row; p: typeof participants[number] }> = [];
+
+    for (const p of participants) {
+      const label = p.resourceName || p.email || (p.resourceID != null ? `resource ${p.resourceID}` : undefined);
+      const row: Row = { hoursWorked: p.hoursWorked, status: 'would_create', ...(p.resourceID != null ? { resourceID: p.resourceID } : {}), ...(label ? { label } : {}) };
+
+      let resourceID = p.resourceID;
+      if (resourceID == null && p.email) {
+        const r = await this.resolveResourceByEmail(p.email);
+        if (!r) { row.status = 'error'; row.error = `No active resource found for email "${p.email}"`; plan.push({ row, p }); continue; }
+        resourceID = r.id; row.resourceID = r.id;
+      }
+      if (resourceID == null && p.resourceName) {
+        const r = await this.resolveResourceByName(p.resourceName);
+        if (!r) { row.status = 'error'; row.error = `No active resource found matching "${p.resourceName}"`; plan.push({ row, p }); continue; }
+        resourceID = r.id; row.resourceID = r.id;
+      }
+      if (resourceID == null) { row.status = 'error'; row.error = 'resourceID, resourceName, or email is required'; plan.push({ row, p }); continue; }
+
+      let roleID = p.roleID;
+      if (roleID == null) {
+        let rr: Awaited<ReturnType<typeof this.resolveWorkTimeEntryRole>> | null;
+        try { rr = await this.resolveWorkTimeEntryRole(resourceID); } catch { rr = null; }
+        if (rr && 'error' in rr) { row.status = 'error'; row.error = rr.error; plan.push({ row, p }); continue; }
+        if (rr && 'needsSelection' in rr) { row.status = 'error'; row.error = 'Resource has multiple roles and no default — set roleID'; row.needsSelection = rr.needsSelection; plan.push({ row, p }); continue; }
+        if (rr && 'roleID' in rr) roleID = rr.roleID;
+      }
+      if (roleID != null) row.roleID = roleID;
+
+      const want = String(p.summaryNotes).trim().toLowerCase();
+      const dup = dayEntries.find((e) => e.resourceID === resourceID && String(e.summaryNotes ?? '').trim().toLowerCase() === want);
+      if (dup?.id != null) { row.status = 'duplicate'; row.duplicateOf = dup.id; }
+
+      plan.push({ row, p });
+    }
+
+    const hasErrors = plan.some((x) => x.row.status === 'error');
+
+    if (!dryRun && !hasErrors) {
+      for (const { row, p } of plan) {
+        if (row.status !== 'would_create') continue;
+        const entry: Record<string, any> = {
+          resourceID: row.resourceID as number,
+          dateWorked,
+          ticketID,
+          summaryNotes: p.summaryNotes,
+          hoursWorked: p.hoursWorked,
+          ...(row.roleID != null ? { roleID: row.roleID } : {}),
+          ...(p.internalNotes ? { internalNotes: p.internalNotes } : {}),
+          ...(p.startDateTime ? { startDateTime: p.startDateTime } : {}),
+          ...(p.endDateTime ? { endDateTime: p.endDateTime } : {}),
+          ...(p.timeZone ? { timeZone: p.timeZone } : {}),
+        };
+        applyBillingTreatment(entry, p.billingTreatment);
+        const res = await this.logTimeIdempotent(entry as any);
+        if (res.created) { row.status = 'created'; row.id = res.id; }
+        else { row.status = 'duplicate'; row.duplicateOf = res.duplicateOf ?? res.id; row.id = res.id; }
+      }
+    }
+
+    // Note last — only when time succeeded (no resolution errors), idempotent if keyed.
+    let noteResult: { status: 'would_create' | 'created' | 'duplicate' | 'skipped'; noteId?: number } | undefined;
+    if (note?.description) {
+      if (dryRun || hasErrors) {
+        noteResult = { status: 'would_create' };
+      } else if (note.idempotencyKey) {
+        const nr = await this.createTicketNoteIdempotent(ticketID, { title: note.title ?? 'Ticket note', description: note.description, ...(note.noteType != null ? { noteType: note.noteType } : {}), ...(note.publish != null ? { publish: note.publish } : {}) } as any, note.idempotencyKey);
+        noteResult = { status: nr.created ? 'created' : 'duplicate', noteId: nr.noteId };
+      } else {
+        const nid = await this.createTicketNote(ticketID, { title: note.title ?? 'Ticket note', description: note.description, ...(note.noteType != null ? { noteType: note.noteType } : {}), ...(note.publish != null ? { publish: note.publish } : {}) } as any);
+        noteResult = { status: 'created', noteId: nid };
+      }
+    }
+
+    const results = plan.map((x) => x.row);
+    return {
+      ticketID,
+      dateWorked,
+      dryRun,
+      planned: results.length,
+      wouldCreate: results.filter((r) => r.status === 'would_create').length,
+      duplicates: results.filter((r) => r.status === 'duplicate').length,
+      errors: results.filter((r) => r.status === 'error').length,
+      created: results.filter((r) => r.status === 'created').length,
+      written: !dryRun && !hasErrors,
+      ...(noteResult ? { note: noteResult } : {}),
       results,
     };
   }

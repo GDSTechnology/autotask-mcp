@@ -1393,6 +1393,18 @@ export class AutotaskToolHandler {
         const msg = `${verb}: of ${r.planned} entr(ies) on task ${r.taskID} (${r.dateWorked}) — ${r.dryRun ? r.wouldCreate + ' would create' : r.created + ' created'}, ${r.duplicates} duplicate, ${r.errors} error(s). ${r.dryRun ? 'Re-run with dryRun:false to commit.' : ''}`.trim();
         return { result: r, message: msg };
       }],
+      ['autotask_log_ticket_collaboration', async (a) => {
+        if (!a.ticketID) return { result: null, message: 'ticketID is required.' };
+        if (!a.dateWorked) return { result: null, message: 'dateWorked (YYYY-MM-DD) is required.' };
+        if (!Array.isArray(a.participants) || a.participants.length === 0) return { result: null, message: 'participants[] is required (one per contributing tech, each with hoursWorked + summaryNotes and one of resourceID/resourceName/email).' };
+        if (a.note && !a.note.description) return { result: null, message: 'note.description is required when note is provided.' };
+        const dryRun = a.dryRun === undefined ? true : !!a.dryRun; // dry-run first by default
+        const r = await s.logTicketCollaboration({ ticketID: a.ticketID, dateWorked: a.dateWorked, participants: a.participants, note: a.note, dryRun });
+        const verb = r.dryRun ? 'DRY RUN (nothing written)' : (r.written ? 'wrote' : 'NO WRITES — fix the errors and re-run');
+        const noteBit = r.note ? `; note ${r.note.status}${r.note.noteId ? ` (${r.note.noteId})` : ''}` : '';
+        const msg = `${verb}: of ${r.planned} participant(s) on ticket ${r.ticketID} (${r.dateWorked}) — ${r.dryRun ? r.wouldCreate + ' would create' : r.created + ' created'}, ${r.duplicates} duplicate, ${r.errors} error(s)${noteBit}. ${r.dryRun ? 'Re-run with dryRun:false to commit.' : ''}`.trim();
+        return { result: r, message: msg };
+      }],
       ['autotask_get_time_entry_targets', async (a) => {
         if (a.resourceID == null) return { result: null, message: 'resourceID is required (whose targets to list).' };
         const r = await s.getTimeEntryTargets({ resourceID: a.resourceID, companyID: a.companyID, projectID: a.projectID, searchTerm: a.searchTerm, maxRecords: a.maxRecords });

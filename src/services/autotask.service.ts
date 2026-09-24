@@ -51,7 +51,7 @@ import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhook
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
 import { normalizeTimestamp } from '../utils/timezone';
 import { windowsToIana } from '../utils/windows-timezones';
-import { TimeEntryLockState, classifyTimesheetStatusLabel, lockReason } from '../utils/timesheet-lock';
+import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import {
   AutotaskCompany,
@@ -1182,59 +1182,28 @@ export class AutotaskService {
    * authoritative gate is Autotask's own error on write/delete, mapped via
    * classifyLockError). No timesheet row for the week => 'open'.
    */
-  async getTimesheetLockState(
-    resourceID: number,
-    dateWorked: string
-  ): Promise<{ state: 'open' | 'timesheet_pending_approval' | 'timesheet_approved' | 'unknown'; timesheetId?: number; statusLabel?: string }> {
-    try {
-      const http = await this.ensureClient();
-      const d = String(dateWorked).slice(0, 10);
-      const rows = await http.query<Record<string, any>>(
-        'TimeSheets',
-        [
-          { op: 'eq', field: 'resourceID', value: resourceID },
-          { op: 'lte', field: 'startDate', value: `${d}T00:00:00` },
-          { op: 'gte', field: 'endDate', value: `${d}T00:00:00` },
-        ],
-        { maxRecords: 3, includeFields: ['id', 'startDate', 'endDate', 'status'] }
-      );
-      const t = (rows || [])[0];
-      if (!t || t.status == null) return { state: t ? 'unknown' : 'open' };
-      let label: string | undefined;
-      try {
-        const fi = await this.getFieldInfo('TimeSheets');
-        label = fi.find((f) => f.name === 'status')?.picklistValues?.find((v) => String(v.value) === String(t.status))?.label;
-      } catch { /* label unresolved -> classify by 'unknown' below */ }
-      const state = label ? classifyTimesheetStatusLabel(label) : 'unknown';
-      return { state, timesheetId: t.id, ...(label ? { statusLabel: label } : {}) };
-    } catch (e) {
-      this.logger.debug(`getTimesheetLockState(${resourceID}, ${dateWorked}) failed:`, e);
-      return { state: 'unknown' };
-    }
-  }
-
   /**
-   * Assess every lock source for a time entry (posted/billing-approved incl.
-   * contract auto-approve, and timesheet submitted/approved). Reusable by
-   * delete and, in future, by create/update guards.
+   * Assess the lock state of a time entry from what the REST API can actually
+   * SEE ahead of time: only `billingApprovalDateTime` (posted / contract
+   * auto-approve). The submitted/approved TIMESHEET lock, the owner-only rule,
+   * and the owner's delete permission are NOT exposed by the API (there is no
+   * timesheet entity and no lock field on TimeEntry) — those surface only when
+   * the delete is attempted and are mapped by classifyLockError. So a
+   * non-posted entry returns state 'open' with `preflightOnly: true` to signal
+   * that further locks can still be enforced at execution.
    */
   async assessTimeEntryLock(entry: Partial<AutotaskTimeEntry>): Promise<{
     locked: boolean;
     state: TimeEntryLockState;
     reason?: string;
-    timesheetId?: number;
+    preflightOnly?: boolean;
   }> {
     if ((entry as any).billingApprovalDateTime != null) {
       return { locked: true, state: 'billing_posted', reason: lockReason('billing_posted') };
     }
-    if (entry.resourceID != null && entry.dateWorked) {
-      const ts = await this.getTimesheetLockState(entry.resourceID, String(entry.dateWorked));
-      if (ts.state === 'timesheet_pending_approval' || ts.state === 'timesheet_approved') {
-        return { locked: true, state: ts.state, reason: lockReason(ts.state), ...(ts.timesheetId != null ? { timesheetId: ts.timesheetId } : {}) };
-      }
-      return { locked: false, state: ts.state };
-    }
-    return { locked: false, state: 'unknown' };
+    // Not posted — no other lock is knowable pre-flight (no timesheet entity /
+    // no lock field). Enforced at execution via classifyLockError.
+    return { locked: false, state: 'open', preflightOnly: true };
   }
 
   /**

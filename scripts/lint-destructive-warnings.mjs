@@ -23,6 +23,9 @@ const SKIP_PATTERNS = [
   /_dropdown\b/, /_list\b/, /_search\b/, /_get\b/,
   /quarantine_list/, /quarantine_search/,
   /messages_blocked/, /clicks_blocked/,
+  // Read-only inspector: Autotask project tasks are not API-deletable (canDelete=false),
+  // so autotask_delete_task only inventories the task and returns UI-delete guidance.
+  /^autotask_delete_task$/,
 ];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', '__tests__', '.git', 'docs', 'docs-repo']);

@@ -1499,7 +1499,7 @@ export class AutotaskService {
       id?: number;
       duplicateOf?: number;
       error?: string;
-      needsSelection?: Array<{ roleID: number; roleName?: string | null; isDefault?: boolean }>;
+      needsSelection?: Array<{ roleID: number; roleName?: string | null; isDefault?: boolean; departments?: string[]; queues?: string[] }>;
     }>;
   }> {
     const { taskID, dateWorked, entries, dryRun = false } = params;
@@ -1657,7 +1657,7 @@ export class AutotaskService {
       id?: number;
       duplicateOf?: number;
       error?: string;
-      needsSelection?: Array<{ roleID: number; roleName?: string | null; isDefault?: boolean }>;
+      needsSelection?: Array<{ roleID: number; roleName?: string | null; isDefault?: boolean; departments?: string[]; queues?: string[] }>;
     }>;
   }> {
     const { ticketID, dateWorked, participants, note, dryRun = false } = params;
@@ -2592,9 +2592,23 @@ export class AutotaskService {
       const roles = await this.searchRoles({ pageSize: 500 });
       nameById = new Map(roles.map((r) => [Number(r.id), String(r.name)]));
     } catch { /* names are a nicety */ }
+    // Department + queue names give an LLM the context to pick the right role
+    // when a resource has several (e.g. Engineer in IT vs Administrative in Admin).
+    let deptById = new Map<number, string>();
+    try {
+      const depts = await http.query<Record<string, any>>('Departments', MATCH_ALL, { includeFields: ['id', 'name'], maxRecords: 500 });
+      deptById = new Map(depts.map((d) => [Number(d.id), String(d.name)]));
+    } catch { /* best-effort */ }
+    const queueById = new Map<number, string>();
+    try {
+      const fi = await this.getFieldInfo('Tickets');
+      for (const v of fi.find((f) => f.name === 'queueID')?.picklistValues ?? []) queueById.set(Number(v.value), v.label);
+    } catch { /* best-effort */ }
     return links.map((l) => ({
       ...l,
-      roleName: nameById.get(Number(l.roleID)),
+      roleName: nameById.get(Number(l.roleID)) ?? null,
+      departmentName: l.departmentID != null ? (deptById.get(Number(l.departmentID)) ?? null) : null,
+      queueName: l.queueID != null ? (queueById.get(Number(l.queueID)) ?? null) : null,
       isDefaultServiceDeskRole: defaultRoleID != null && Number(l.roleID) === Number(defaultRoleID),
     }));
   }
@@ -2623,18 +2637,36 @@ export class AutotaskService {
    */
   async resolveWorkTimeEntryRole(
     resourceID: number
-  ): Promise<{ roleID: number } | { needsSelection: Array<{ roleID: number; roleName: string | null; isDefault: boolean }> } | { error: string }> {
+  ): Promise<{ roleID: number } | { needsSelection: Array<{ roleID: number; roleName: string | null; isDefault: boolean; departments?: string[]; queues?: string[] }> } | { error: string }> {
     const roles = await this.getResourceRoles(resourceID);
     if (!roles.length) {
       return { error: `Resource ${resourceID} has no roles assigned — ticket/task time entries require a role. Assign one in Autotask, or pass roleID explicitly.` };
     }
     const def = roles.find((r) => r.isDefaultServiceDeskRole && r.roleID != null);
     if (def) return { roleID: Number(def.roleID) };
-    if (roles.length === 1 && roles[0].roleID != null) return { roleID: Number(roles[0].roleID) };
+    const distinctRoleIDs = new Set(roles.filter((r) => r.roleID != null).map((r) => Number(r.roleID)));
+    if (distinctRoleIDs.size === 1) return { roleID: [...distinctRoleIDs][0] };
+    // Multiple distinct roles, no default the API can see — return them DEDUPED by
+    // roleID with the department(s)/queue(s) each covers, so the caller (an LLM)
+    // can pick the role that fits the work rather than guessing.
+    const byRole = new Map<number, { roleID: number; roleName: string | null; isDefault: boolean; departments: Set<string>; queues: Set<string> }>();
+    for (const r of roles) {
+      if (r.roleID == null) continue;
+      const id = Number(r.roleID);
+      const e = byRole.get(id) ?? { roleID: id, roleName: r.roleName ?? null, isDefault: false, departments: new Set<string>(), queues: new Set<string>() };
+      if (r.departmentName) e.departments.add(String(r.departmentName));
+      if (r.queueName) e.queues.add(String(r.queueName));
+      e.isDefault = e.isDefault || !!r.isDefaultServiceDeskRole;
+      byRole.set(id, e);
+    }
     return {
-      needsSelection: roles
-        .filter((r) => r.roleID != null)
-        .map((r) => ({ roleID: Number(r.roleID), roleName: r.roleName ?? null, isDefault: !!r.isDefaultServiceDeskRole })),
+      needsSelection: [...byRole.values()].map((e) => ({
+        roleID: e.roleID,
+        roleName: e.roleName,
+        isDefault: e.isDefault,
+        ...(e.departments.size ? { departments: [...e.departments] } : {}),
+        ...(e.queues.size ? { queues: [...e.queues] } : {}),
+      })),
     };
   }
 

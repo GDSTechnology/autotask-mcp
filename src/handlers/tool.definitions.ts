@@ -1922,7 +1922,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_get_resource_roles',
-    description: 'List the roles a resource (user) may act in (from ResourceRoles), enriched with each role name and flagging the resource\'s default service-desk role. Use to pick a valid roleID when assigning that user or logging their time.',
+    description: 'List the roles a resource (user) may act in (from ResourceRoles), enriched with roleName, departmentName, and queueName, and flagging the resource\'s default service-desk role. Built so an LLM can pick the CORRECT roleID for the work when a resource has multiple roles (e.g. "Engineer" in Information Technology for a support ticket vs "Administrative" in Administration). NOTE: the REST API only exposes defaultServiceDeskRoleID as a default; the UI\'s "Default Department and Role" is NOT exposed, so when it is unset a resource with several roles has no API-visible default and you should choose by role/department context. Use to resolve a valid roleID before logging time / assigning work.',
     inputSchema: {
       type: 'object',
       properties: {

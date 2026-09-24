@@ -1204,6 +1204,53 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Bulk task time entries (attendees)' }
   },
   {
+    name: 'autotask_log_ticket_collaboration',
+    description: 'Capture a collaborative work event on a TICKET (e.g. a Teams triage thread keyed by ticket #) in one call: a ticket time entry PER contributing tech + an optional ticket note (the narrative). The ticket-oriented sibling of autotask_create_task_time_entries_bulk — built for reconstructing time+notes that happened in Teams/chat rather than the ticket. DRY-RUN FIRST (default): resolves each participant (by resourceID, resourceName, or email — a Teams user), auto-resolves each role, flags duplicates, and returns the plan without writing. Re-run with dryRun:false to commit. Rerun-safe (idempotent time via same resource+day+ticket+summary; note idempotent when note.idempotencyKey is set). Validate-all-before-write: if ANY participant fails to resolve or needs a role choice, NOTHING is written. Per-participant summaryNotes are client/invoice-facing; internalNotes are team-only; billingTreatment (billable|non_billable|contract_included) and timezone-aware start/end are supported per participant.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'The ticket the collaboration is logged against.' },
+        dateWorked: { type: 'string', description: 'Date worked for all entries (YYYY-MM-DD).' },
+        dryRun: { type: 'boolean', description: 'Default TRUE — return the plan without writing. Set false to commit.' },
+        participants: {
+          type: 'array',
+          description: 'One item per contributing tech.',
+          items: {
+            type: 'object',
+            properties: {
+              resourceID: { type: 'number', description: 'Resource ID. Provide this, resourceName, or email.' },
+              resourceName: { type: 'string', description: 'Resource name (resolved to an active resource).' },
+              email: { type: 'string', description: 'Resource email (e.g. from a Teams participant) — resolved to an active resource.' },
+              hoursWorked: { type: 'number', description: 'Hours this tech contributed.' },
+              summaryNotes: { type: 'string', description: 'CLIENT/INVOICE-facing summary of this tech\'s contribution. Also the idempotency signal.' },
+              internalNotes: { type: 'string', description: 'INTERNAL-only notes (not client/invoice-visible).' },
+              roleID: { type: 'number', description: 'Optional role; auto-resolved from the resource\'s default when omitted (multiple roles with no default → that participant errors asking for roleID).' },
+              billingTreatment: { type: 'string', enum: ['billable', 'non_billable', 'contract_included'], description: 'High-level billing intent for this entry.' },
+              startDateTime: { type: 'string', description: 'Optional start (offset ISO, or local + timeZone).' },
+              endDateTime: { type: 'string', description: 'Optional end.' },
+              timeZone: { type: 'string', description: 'IANA/Windows timezone for local start/end (converted to UTC).' }
+            },
+            required: ['hoursWorked', 'summaryNotes']
+          }
+        },
+        note: {
+          type: 'object',
+          description: 'Optional ticket note capturing the triage narrative (written last, after time).',
+          properties: {
+            title: { type: 'string', description: 'Note title (default "Ticket note").' },
+            description: { type: 'string', description: 'Note body (the how-we-got-there narrative). Required if note is provided.' },
+            noteType: { type: 'number', description: 'TicketNotes noteType picklist id (tenant-specific; see autotask_get_field_info).' },
+            publish: { type: 'number', description: 'TicketNotes publish/visibility picklist id (controls client visibility).' },
+            idempotencyKey: { type: 'string', description: 'Dedup key so a re-run does not duplicate the note (e.g. "TRIAGE:<ticket>:<thread>").' }
+          },
+          required: ['description']
+        }
+      },
+      required: ['ticketID', 'dateWorked', 'participants']
+    },
+    annotations: { title: 'Log ticket collaboration (multi-tech)' }
+  },
+  {
     name: 'autotask_get_my_day',
     description: 'The acting user\'s working picture for a date (default today): tickets assigned to them, the time they have already logged that day, and their open tasks. Built for a scheduled assistant to see what already exists and backfill only the gaps. Acts as the caller by default (currentUser) — or pass resourceID. Read-only.',
     inputSchema: {
@@ -5585,7 +5632,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

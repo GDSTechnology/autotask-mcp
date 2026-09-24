@@ -1354,8 +1354,8 @@ export class AutotaskToolHandler {
           try { rr = await s.resolveWorkTimeEntryRole(a.resourceID); } catch { rr = null; }
           if (rr && 'error' in rr) return { result: null, message: rr.error };
           if (rr && 'needsSelection' in rr) {
-            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}`).join(', ');
-            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — re-run with roleID set to one of: ${opts}.` };
+            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}${r.departments?.length ? ` [${r.departments.join('/')}]` : ''}${r.isDefault ? ' (default)' : ''}`).join('; ');
+            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — pick the one matching the work (by role/department) and re-run with roleID set to one of: ${opts}.` };
           }
           if (rr && 'roleID' in rr) a.roleID = rr.roleID;
         }
@@ -1452,8 +1452,8 @@ export class AutotaskToolHandler {
           try { rr = await s.resolveWorkTimeEntryRole(a.resourceID); } catch { rr = null; }
           if (rr && 'error' in rr) return { result: null, message: rr.error };
           if (rr && 'needsSelection' in rr) {
-            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}`).join(', ');
-            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — re-run with roleID set to one of: ${opts}.` };
+            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}${r.departments?.length ? ` [${r.departments.join('/')}]` : ''}${r.isDefault ? ' (default)' : ''}`).join('; ');
+            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — pick the one matching the work (by role/department) and re-run with roleID set to one of: ${opts}.` };
           }
           if (rr && 'roleID' in rr) a.roleID = rr.roleID;
         }
@@ -1706,7 +1706,8 @@ export class AutotaskToolHandler {
       }],
       ['autotask_get_resource_roles', async (a) => {
         const r = await s.getResourceRoles(a.resourceID);
-        return { result: r, message: `Resource ${a.resourceID} has ${r.length} role(s)` };
+        const summary = r.map((x) => `${x.roleID}=${x.roleName ?? '?'}${x.departmentName ? ` [${x.departmentName}]` : ''}${x.isDefaultServiceDeskRole ? ' (default)' : ''}`).join('; ');
+        return { result: r, message: `Resource ${a.resourceID} has ${r.length} role association(s): ${summary}` };
       }],
 
       // Configuration Items

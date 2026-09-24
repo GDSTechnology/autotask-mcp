@@ -2593,16 +2593,18 @@ export class AutotaskToolHandler {
           isNonBillable: (entry as any).isNonBillable, showOnInvoice: (entry as any).showOnInvoice,
           billingApprovalDateTime: (entry as any).billingApprovalDateTime, summaryNotes: entry.summaryNotes, internalNotes: entry.internalNotes,
         };
+        // Only billing-posted is knowable pre-flight; a submitted/approved timesheet,
+        // the owner-only rule, and the owner's delete permission are enforced only
+        // when the delete is attempted (no API entity/field exposes them).
         const blockedByApproval = lock.state === 'billing_posted' && !allowApproved;
-        const blockedByTimesheet = lock.state === 'timesheet_pending_approval' || lock.state === 'timesheet_approved';
+        const caveat = 'Note: a submitted/approved timesheet, the owner-only rule, or the owner lacking delete permission can only be detected at execution.';
         if (dryRun) {
-          const canDelete = !blockedByTimesheet && !blockedByApproval;
+          const canDelete = !blockedByApproval;
           return {
-            result: { status: 'dry_run', timeEntry: target, lock, canDelete, ...(canDelete ? {} : { blockedReason: lock.reason }) },
-            message: canDelete ? `DRY RUN: time entry ${a.id} can be deleted. Re-run with dryRun:false and confirm:true.` : `DRY RUN: time entry ${a.id} is BLOCKED — ${lock.reason}`,
+            result: { status: 'dry_run', timeEntry: target, lock, canDelete, preflightOnly: true, ...(canDelete ? {} : { blockedReason: lock.reason }) },
+            message: canDelete ? `DRY RUN: no billing-post lock on time entry ${a.id}. ${caveat} Re-run with dryRun:false and confirm:true to attempt.` : `DRY RUN: time entry ${a.id} is BLOCKED — ${lock.reason}`,
           };
         }
-        if (blockedByTimesheet) return { result: { status: 'blocked', timeEntryId: a.id, lock }, message: `Not deleted — ${lock.reason}` };
         if (blockedByApproval) return { result: { status: 'blocked', timeEntryId: a.id, lock }, message: `Not deleted — ${lock.reason} Pass allowApproved:true to attempt anyway (Autotask may still refuse).` };
         try {
           // Autotask lets only the OWNER delete their time — impersonate them.
@@ -2616,66 +2618,79 @@ export class AutotaskToolHandler {
         return { result: { status: 'deleted', timeEntryId: a.id, verification: { exists: !!after } }, message: `Deleted time entry ${a.id}.` };
       }],
       ['autotask_delete_task', async (a) => {
-        const dryRun = a.dryRun !== false;
+        // Autotask does NOT permit deleting a project task via the REST API
+        // (Tasks entityInformation canDelete=false) — UI only. We inventory the
+        // task so the caller sees what's attached, but never attempt the delete.
         const inv = await s.inspectTaskForDelete(a.id);
-        if (!inv.task) return { result: { status: 'already_deleted', taskId: a.id }, message: `Task ${a.id} not found (already deleted).` };
-        const projectID = a.projectID ?? (inv.task as any).projectID;
-        const blockers = {
+        if (!inv.task) return { result: { status: 'already_deleted', taskId: a.id }, message: `Task ${a.id} not found.` };
+        const attached = {
           timeEntries: inv.timeEntries.map((t) => t.id), notes: inv.notes.map((n) => n.id),
           attachments: inv.attachments.map((x) => x.id), secondaryResources: inv.secondaryResources.map((r) => r.id),
           dependencies: inv.dependencies.map((d) => d.id),
         };
-        const hasBlockers = Object.values(blockers).some((arr) => arr.length > 0);
-        const base = { taskId: a.id, taskNumber: (inv.task as any).taskNumber, title: inv.task.title, projectId: projectID };
-        if (hasBlockers) return { result: { status: 'blocked', ...base, blockers }, message: `Task ${a.id} has attached records — not deleted (no cascade). Remove them first, or use autotask_delete_task_with_time for the time entries. Blockers: ${JSON.stringify(blockers)}` };
-        if (dryRun) return { result: { status: 'dry_run', ...base, blockers, canDelete: true, plannedActions: [`Delete task ${a.id}`, `Verify task ${a.id} no longer exists`] }, message: `DRY RUN: task ${a.id} has no attached records and can be deleted. Re-run with dryRun:false and confirm:true.` };
-        if (projectID == null) return { result: null, message: `projectID could not be determined for task ${a.id}; pass projectID.` };
-        await s.deleteTaskById(a.id, projectID);
-        const after = await s.getTask(a.id).catch(() => null);
-        return { result: { status: 'deleted', ...base, verification: { exists: !!after } }, message: `Deleted task ${a.id}.` };
+        const base = { taskId: a.id, taskNumber: (inv.task as any).taskNumber, title: inv.task.title, projectId: a.projectID ?? (inv.task as any).projectID };
+        return {
+          result: { status: 'ui_delete_required', ...base, apiDeletable: false, attached },
+          message: `Autotask does not allow deleting a project task via the API — delete task ${a.id} in the Autotask UI (its notes & secondary resources cascade). This tool can clear the API-deletable time entries first: use autotask_delete_task_with_time. Attached now: ${attached.timeEntries.length} time entr(ies), ${attached.notes.length} note(s), ${attached.secondaryResources.length} secondary resource(s), ${attached.dependencies.length} dependency(ies).`,
+        };
       }],
       ['autotask_delete_task_with_time', async (a) => {
         const taskId = a.taskId ?? a.id;
         const dryRun = a.dryRun !== false;
         const allowApproved = a.allowApproved === true;
+        const removeSecondaryResources = a.removeSecondaryResources === true;
         const inv = await s.inspectTaskForDelete(taskId);
-        if (!inv.task) return { result: { status: 'already_deleted', taskId }, message: `Task ${taskId} not found (already deleted).` };
-        const projectID = a.projectID ?? (inv.task as any).projectID;
-        const base = { taskId, taskNumber: (inv.task as any).taskNumber, title: inv.task.title, projectId: projectID };
-        // Assess each time entry's lock state.
+        if (!inv.task) return { result: { status: 'already_deleted', taskId }, message: `Task ${taskId} not found.` };
+        const base = { taskId, taskNumber: (inv.task as any).taskNumber, title: inv.task.title, projectId: a.projectID ?? (inv.task as any).projectID };
+        // Pre-flight per entry: only billing-post is visible; other locks surface at execution.
         const teAssess = await Promise.all(inv.timeEntries.map(async (t) => {
           const full = await s.getTimeEntry(t.id).catch(() => null);
-          const lock = full ? await s.assessTimeEntryLock(full) : { locked: false, state: 'unknown' as const };
-          const blocked = lock.state === 'timesheet_pending_approval' || lock.state === 'timesheet_approved' || (lock.state === 'billing_posted' && !allowApproved);
-          return { id: t.id, resource: t.resourceID, dateWorked: t.dateWorked, hoursWorked: t.hoursWorked, lock, blocked };
+          const lock = full ? await s.assessTimeEntryLock(full) : { locked: false, state: 'open' as const };
+          const blockedPreflight = lock.state === 'billing_posted' && !allowApproved;
+          return { id: t.id, resource: t.resourceID, dateWorked: t.dateWorked, hoursWorked: t.hoursWorked, lock, blockedPreflight };
         }));
-        // Other attached records block the TASK (never cascade-deleted here).
-        const otherBlockers = { notes: inv.notes.map((n) => n.id), attachments: inv.attachments.map((x) => x.id), secondaryResources: inv.secondaryResources.map((r) => r.id), dependencies: inv.dependencies.map((d) => d.id) };
-        const hasOther = Object.values(otherBlockers).some((arr) => arr.length > 0);
-        const lockedTE = teAssess.filter((t) => t.blocked);
-        const canDelete = lockedTE.length === 0 && !hasOther;
-        const plannedActions = [...teAssess.map((t) => `Delete time entry ${t.id}`), 'Verify task has no remaining time entries', `Delete task ${taskId}`, `Verify task ${taskId} no longer exists`];
+        const secResourceIds = inv.secondaryResources.map((r) => r.id);
+        const uiRemainder = { notes: inv.notes.map((n) => n.id), attachments: inv.attachments.map((x) => x.id), dependencies: inv.dependencies.map((d) => d.id), ...(removeSecondaryResources ? {} : { secondaryResources: secResourceIds }) };
         if (dryRun) {
+          const plannedActions = [
+            ...teAssess.map((t) => `Delete time entry ${t.id} (as owner ${t.resource})`),
+            ...(removeSecondaryResources ? secResourceIds.map((id) => `Remove secondary resource row ${id}`) : []),
+            `Then delete task ${taskId} in the Autotask UI (API cannot delete tasks); its notes/dependencies cascade.`,
+          ];
           return {
-            result: { status: 'dry_run', ...base, timeEntries: teAssess, ...otherBlockers, canDelete, ...(canDelete ? {} : { blockers: { lockedTimeEntries: lockedTE.map((t) => ({ id: t.id, reason: t.lock.reason })), ...otherBlockers } }), plannedActions },
-            message: canDelete ? `DRY RUN: would delete ${teAssess.length} time entr(ies) then task ${taskId}. Re-run with dryRun:false and confirm:true.` : `DRY RUN: cannot proceed — ${lockedTE.length} locked time entr(ies)${hasOther ? ' + other attached records' : ''}.`,
+            result: { status: 'dry_run', ...base, apiTaskDeletable: false, timeEntries: teAssess, willRemoveSecondaryResources: removeSecondaryResources ? secResourceIds : [], uiRemainder, plannedActions },
+            message: `DRY RUN: would delete ${teAssess.length} time entr(ies)${removeSecondaryResources ? ` + ${secResourceIds.length} secondary resource(s)` : ''} for task ${taskId}, then you delete the task in the UI (API can't). Locks beyond billing-post are enforced at execution. Re-run with dryRun:false and confirm:true.`,
           };
         }
-        if (!canDelete) return { result: { status: 'blocked', ...base, blockers: { lockedTimeEntries: lockedTE.map((t) => ({ id: t.id, reason: t.lock.reason })), ...otherBlockers } }, message: 'Not deleted — locked time entries or other attached records present.' };
+        // Execute: delete time entries as their owners (best-effort, per-entry).
         const timeEntryResults: Array<Record<string, any>> = [];
         for (const t of teAssess) {
           try { await s.deleteTimeEntry(t.id, t.resource != null ? { asResourceID: t.resource } : undefined); timeEntryResults.push({ id: t.id, status: 'deleted' }); }
-          catch (e) { const ls = classifyLockError(e instanceof Error ? e.message : String(e)); timeEntryResults.push({ id: t.id, status: 'error', reason: ls ? lockReason(ls) : (e instanceof Error ? e.message : String(e)) }); }
+          catch (e) { const ls = classifyLockError(e instanceof Error ? e.message : String(e)); timeEntryResults.push({ id: t.id, status: 'error', state: ls ?? undefined, reason: ls ? lockReason(ls) : (e instanceof Error ? e.message : String(e)) }); }
         }
-        const failed = timeEntryResults.filter((r) => r.status === 'error');
-        if (failed.length) return { result: { status: 'stopped', ...base, timeEntryResults }, message: `Stopped: ${failed.length} time entr(y/ies) could not be deleted; task ${taskId} NOT deleted.` };
-        // Confirm no time remains before deleting the task.
-        const recheck = await s.inspectTaskForDelete(taskId);
-        if (recheck.timeEntries.length) return { result: { status: 'stopped', ...base, timeEntryResults, remaining: recheck.timeEntries.map((t) => t.id) }, message: `Stopped: time still attached to task ${taskId} after deletes; task NOT deleted.` };
-        if (projectID == null) return { result: { status: 'stopped', ...base, timeEntryResults }, message: `Time deleted, but projectID unknown for task ${taskId} — pass projectID to delete the task.` };
-        await s.deleteTaskById(taskId, projectID);
-        const after = await s.getTask(taskId).catch(() => null);
-        return { result: { status: 'deleted', ...base, timeEntryResults, verification: { exists: !!after } }, message: `Deleted ${timeEntryResults.length} time entr(ies) and task ${taskId}.` };
+        const secResourceResults: Array<Record<string, any>> = [];
+        if (removeSecondaryResources) {
+          for (const id of secResourceIds) {
+            try { await s.removeTaskResource(id); secResourceResults.push({ id, status: 'removed' }); }
+            catch (e) { secResourceResults.push({ id, status: 'error', reason: e instanceof Error ? e.message : String(e) }); }
+          }
+        }
+        const teFailed = timeEntryResults.filter((r) => r.status === 'error');
+        const recheck = await s.inspectTaskForDelete(taskId).catch(() => null);
+        const remainingTime = recheck ? recheck.timeEntries.map((t) => t.id) : undefined;
+        const cleared = teFailed.length === 0;
+        return {
+          result: {
+            status: cleared ? 'time_cleared' : 'partial',
+            ...base, apiTaskDeletable: false, timeEntryResults,
+            ...(removeSecondaryResources ? { secResourceResults } : {}),
+            ...(remainingTime ? { remainingTimeEntries: remainingTime } : {}),
+            uiRemainder,
+          },
+          message: cleared
+            ? `Deleted ${timeEntryResults.length} time entr(ies)${removeSecondaryResources ? ` + ${secResourceResults.filter((r) => r.status === 'removed').length} secondary resource(s)` : ''}. Task ${taskId} can't be deleted via the API — delete it in the Autotask UI (notes/dependencies cascade).`
+            : `Partial: ${teFailed.length} of ${timeEntryResults.length} time entr(y/ies) could NOT be deleted (${teFailed.map((r) => `#${r.id}: ${r.reason}`).join('; ')}). Clear those (reopen timesheet / owner delete permission / UI) then re-run.`,
+        };
       }],
 
       // Meta-tools for progressive discovery

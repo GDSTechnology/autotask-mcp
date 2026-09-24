@@ -4045,32 +4045,32 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_delete_task',
-    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Permanently delete ONE project task. Does NOT cascade: if the task has attached records (time entries, notes, attachments, secondary resources, or predecessor dependencies) it returns status "blocked" with the blockers and deletes nothing — clear them first (use autotask_delete_task_with_time for the time entries). DRY-RUN FIRST: without dryRun:false it inventories the task and returns the plan. To delete an unattached task pass BOTH dryRun:false AND confirm:true. Idempotent: a missing id returns "already_deleted". Verifies the task is gone.',
+    description: 'Inspect a project task for deletion. NOTE: Autotask does NOT allow deleting a project task via the REST API (Tasks canDelete=false) — tasks are deleted in the UI only. This tool therefore inventories the task (time entries, notes, attachments, secondary resources, dependencies) and returns status "ui_delete_required" with clear guidance; it never attempts an (impossible) API delete. To clear the API-deletable time entries first, use autotask_delete_task_with_time, then delete the task in the UI (its notes & dependencies cascade). Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'number', description: 'Task ID to delete.' },
-        projectID: { type: 'number', description: 'Optional — looked up from the task if omitted (needed for the child-route DELETE).' },
-        dryRun: { type: 'boolean', description: 'Default TRUE — inventory + plan without deleting. Set false (with confirm:true) to delete.' }
+        id: { type: 'number', description: 'Task ID to inspect.' },
+        projectID: { type: 'number', description: 'Optional — looked up from the task if omitted.' }
       },
       required: ['id']
     },
-    annotations: { title: 'Delete task', readOnlyHint: false, destructiveHint: true }
+    annotations: { title: 'Delete task (inspect / UI-required)', readOnlyHint: true }
   },
   {
     name: 'autotask_delete_task_with_time',
-    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Guarded cleanup: delete a task AND its time entries. Does NOT remove notes/attachments/secondary-resources/dependencies — refuses if any exist. DRY-RUN FIRST (default): inventories the task, assesses each entry\'s lock, returns the ordered plan; to execute pass dryRun:false AND confirm:true. Deletes each entry (stop-on-failure; skips locked/posted unless allowApproved), verifies no time remains, then deletes the task. Never deletes the task after only partial time removal.',
+    description: '⚠ DESTRUCTIVE — IRREVERSIBLE. Obsolete-task cleanup: deletes its TIME ENTRIES (each as its owner via impersonation), optionally removes secondary resources, then you delete the task itself in the UI (the API cannot delete tasks). Dry-run first (default); execute with dryRun:false AND confirm:true. Locks beyond billing-post (submitted timesheet / owner delete-permission) surface at execution — not pre-detectable. Returns "time_cleared" or "partial".',
     inputSchema: {
       type: 'object',
       properties: {
-        taskId: { type: 'number', description: 'Task ID to clean up.' },
-        projectID: { type: 'number', description: 'Optional; looked up if omitted.' },
-        dryRun: { type: 'boolean', description: 'Default TRUE. Set false + confirm:true to execute.' },
-        allowApproved: { type: 'boolean', description: 'Attempt posted/approved entries. Default false.' }
+        taskId: { type: 'number', description: 'Task ID.' },
+        projectID: { type: 'number', description: 'Optional.' },
+        dryRun: { type: 'boolean', description: 'Default TRUE; false+confirm to run.' },
+        allowApproved: { type: 'boolean', description: 'Attempt posted entries.' },
+        removeSecondaryResources: { type: 'boolean', description: 'Also remove crew rows.' }
       },
       required: ['taskId']
     },
-    annotations: { title: 'Delete task with time', readOnlyHint: false, destructiveHint: true }
+    annotations: { title: 'Delete task time + UI handoff', readOnlyHint: false, destructiveHint: true }
   },
   {
     name: 'autotask_verify_task_time_entries',

@@ -1349,7 +1349,29 @@ export class AutotaskToolHandler {
           }
           if (rr && 'roleID' in rr) a.roleID = rr.roleID;
         }
-        const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
+        // High-level billing intent -> Autotask field combo (explicit fields win).
+        const billingTreatment = a.billingTreatment; delete a.billingTreatment;
+        applyBillingTreatment(a, billingTreatment);
+        const id = await s.createTimeEntry(a);
+        // Rich readback so timezone/billing errors are visible immediately (the
+        // stored UTC instant + resolved billing state), not just the id.
+        const stored = await s.getTimeEntry(id).catch(() => null);
+        const warnings: string[] = [];
+        const span = durationHours(stored?.startDateTime as string | undefined, stored?.endDateTime as string | undefined);
+        if (span != null && stored?.hoursWorked != null && Math.abs(span - Number(stored.hoursWorked)) > 0.02) {
+          warnings.push(`hoursWorked=${stored.hoursWorked} does not match the ${span.toFixed(4)}h stored start/end interval`);
+        }
+        const result = stored
+          ? {
+              id,
+              dateWorked: stored.dateWorked, startDateTime: stored.startDateTime, endDateTime: stored.endDateTime,
+              hoursWorked: stored.hoursWorked, hoursToBill: (stored as any).hoursToBill,
+              isNonBillable: (stored as any).isNonBillable, showOnInvoice: (stored as any).showOnInvoice,
+              billingCodeID: (stored as any).billingCodeID, roleID: stored.roleID,
+              ...(warnings.length ? { warnings } : {}),
+            }
+          : { id };
+        return { result, message: `Successfully created time entry with ID: ${id}${warnings.length ? ` (warning: ${warnings.join('; ')})` : ''}` };
       }],
       ['autotask_create_task_time_entries_bulk', async (a) => {
         if (!a.taskID) return { result: null, message: 'taskID is required.' };

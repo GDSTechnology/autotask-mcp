@@ -7,6 +7,7 @@
  * as-is — or a local wall-clock time plus an IANA timeZone, which we convert to
  * the correct UTC instant, DST included.
  */
+import { windowsToIana } from './windows-timezones.js';
 
 /** True when the ISO string already carries a UTC offset (Z or ±HH:MM). */
 export function hasOffset(iso: string): boolean {
@@ -51,15 +52,23 @@ export function zonedLocalToUTC(localISO: string, timeZone: string): Date {
 
 /**
  * Normalize a timestamp to a UTC ISO string.
- *  - already offset-aware  -> that exact instant, as UTC ISO
- *  - local + timeZone      -> converted to UTC ISO (DST-correct)
- *  - local, no timeZone    -> returned unchanged (caller/Autotask interprets)
+ *  - already offset-aware   -> that exact instant, as UTC ISO
+ *  - local + timeZone       -> converted to UTC ISO (DST-correct)
+ *  - local, no/unknown tz   -> returned unchanged (caller/Autotask interprets)
+ *
+ * `timeZone` may be an IANA id ("America/New_York") or a Windows name from
+ * Autotask ("Eastern Standard Time"); the latter is mapped to IANA first. An
+ * unrecognized zone is treated as "no timezone" (passthrough) rather than
+ * throwing, so a bad value never blocks a write.
  */
 export function normalizeTimestamp(iso: string | undefined, timeZone?: string): string | undefined {
   if (!iso) return iso;
   const s = iso.trim();
   if (hasOffset(s)) return new Date(s).toISOString();
-  if (timeZone) return zonedLocalToUTC(s, timeZone).toISOString();
+  const iana = windowsToIana(timeZone);
+  if (iana) {
+    try { return zonedLocalToUTC(s, iana).toISOString(); } catch { return s; }
+  }
   return s;
 }
 

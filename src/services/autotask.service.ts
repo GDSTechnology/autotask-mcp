@@ -2571,16 +2571,18 @@ export class AutotaskService {
    * Autotask has NO department field on Resource — department lives on
    * ResourceRoles; use getResourceRoles / autotask_get_resource_roles for that.
    */
-  async reportResourceBurden(opts: { includeInactive?: boolean; resourceType?: string; resourceIDs?: number[] } = {}): Promise<{
+  async reportResourceBurden(opts: { includeInactive?: boolean; includeApiUsers?: boolean; resourceType?: string; resourceIDs?: number[] } = {}): Promise<{
     count: number;
     withCost: number;
     missingCost: number;
+    apiUsersExcluded: number;
     notes: string[];
     resources: Array<{
       id: number; firstName: string | null; lastName: string | null; email: string | null;
       isActive: boolean; internalCost: number | null; hasInternalCost: boolean;
       payrollType: number | null; payrollTypeLabel: string | null;
-      resourceType: string | null; hireDate: string | null;
+      resourceType: string | null; licenseType: number | null; licenseTypeLabel: string | null;
+      hireDate: string | null;
     }>;
   }> {
     const http = await this.ensureClient();
@@ -2592,14 +2594,25 @@ export class AutotaskService {
     const rows = await http.query<Record<string, any>>(
       'Resources',
       filters.length ? filters : MATCH_ALL,
-      { maxRecords: 500, includeFields: ['id', 'firstName', 'lastName', 'email', 'isActive', 'internalCost', 'payrollType', 'resourceType', 'hireDate'] }
+      { maxRecords: 500, includeFields: ['id', 'firstName', 'lastName', 'email', 'isActive', 'internalCost', 'payrollType', 'resourceType', 'licenseType', 'hireDate'] }
     );
     let payrollLabels = new Map<number, string>();
+    let licenseLabels = new Map<number, string>();
+    let apiUserLicenseValue: number | null = null;
     try {
       const fi = await this.getFieldInfo('Resources');
       payrollLabels = new Map((fi.find((f) => f.name === 'payrollType')?.picklistValues ?? []).map((v) => [Number(v.value), v.label]));
-    } catch { /* labels are a nicety */ }
-    const resources = (rows || []).map((r) => ({
+      const licVals = fi.find((f) => f.name === 'licenseType')?.picklistValues ?? [];
+      licenseLabels = new Map(licVals.map((v) => [Number(v.value), v.label]));
+      const apiVal = licVals.find((v) => /api user/i.test(String(v.label)));
+      apiUserLicenseValue = apiVal ? Number(apiVal.value) : 7; // 7 = API User (standard)
+    } catch { apiUserLicenseValue = 7; }
+    // API/integration accounts (licenseType = API User) are not real staff and
+    // would pollute cost/utilisation — excluded by default.
+    const isApiUser = (r: Record<string, any>) => apiUserLicenseValue != null && Number(r.licenseType) === apiUserLicenseValue;
+    const apiUsersExcluded = opts.includeApiUsers ? 0 : (rows || []).filter(isApiUser).length;
+    const kept = (rows || []).filter((r) => opts.includeApiUsers || !isApiUser(r));
+    const resources = kept.map((r) => ({
       id: Number(r.id),
       firstName: r.firstName ?? null,
       lastName: r.lastName ?? null,
@@ -2610,6 +2623,8 @@ export class AutotaskService {
       payrollType: r.payrollType != null ? Number(r.payrollType) : null,
       payrollTypeLabel: r.payrollType != null ? (payrollLabels.get(Number(r.payrollType)) ?? null) : null,
       resourceType: r.resourceType ?? null,
+      licenseType: r.licenseType != null ? Number(r.licenseType) : null,
+      licenseTypeLabel: r.licenseType != null ? (licenseLabels.get(Number(r.licenseType)) ?? null) : null,
       hireDate: r.hireDate ?? null,
     }));
     const missingCost = resources.filter((r) => !r.hasInternalCost).length;
@@ -2617,11 +2632,13 @@ export class AutotaskService {
       count: resources.length,
       withCost: resources.length - missingCost,
       missingCost,
+      apiUsersExcluded,
       notes: [
         'internalCost is the PER-HOUR internal cost as entered in Autotask (the labour-burden basis).',
         'The API does not indicate whether internalCost is fully loaded (wage + employer taxes + benefits) or wage-only — treat it per your data-entry convention; a wage-only figure understates true cost by ~25–30%.',
         'payrollType/resourceType give the employment basis (salaried vs hourly vs contractor). Department is not on the Resource — use get_resource_roles.',
-        missingCost > 0 ? `${missingCost} resource(s) have no internalCost set — their cost math falls back to a blended rate.` : 'All returned resources have an internalCost set.',
+        opts.includeApiUsers ? 'API/integration accounts INCLUDED (includeApiUsers=true).' : `${apiUsersExcluded} API/integration account(s) (licenseType = API User) excluded — pass includeApiUsers:true to include.`,
+        missingCost > 0 ? `${missingCost} of the returned resource(s) have no internalCost set — their cost math falls back to a blended rate.` : 'All returned resources have an internalCost set.',
       ],
       resources,
     };

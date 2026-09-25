@@ -34,6 +34,9 @@ function mockBurden(rows: any[]): { fetchMock: jest.SpyInstance; bodies: any[] }
         { value: '1', label: 'Salary', isActive: true }, { value: '2', label: 'Hourly', isActive: true },
         { value: '3', label: 'Contractor', isActive: true }, { value: '4', label: 'Salary Non Exempt', isActive: true },
       ] },
+      { name: 'licenseType', isPickList: true, picklistValues: [
+        { value: '1', label: 'Administrator', isActive: true }, { value: '3', label: 'Professional', isActive: true }, { value: '7', label: 'API User', isActive: true },
+      ] },
     ] }));
     return Promise.resolve(res(200, { items: [] }));
   });
@@ -44,9 +47,10 @@ beforeEach(() => _resetZoneUrlCache());
 afterEach(() => jest.restoreAllMocks());
 
 const ROWS = [
-  { id: 30683829, firstName: 'Jonathan', lastName: 'Fitzgerald', email: 'jf@gds.com', isActive: true, internalCost: 150, payrollType: 1, resourceType: 'Employee', hireDate: '2015-07-01T00:00:00.000Z' },
-  { id: 200, firstName: 'Bookkeeper', lastName: 'B', email: 'bk@gds.com', isActive: true, internalCost: 0, payrollType: 4, resourceType: 'Employee', hireDate: null },
-  { id: 300, firstName: 'Contractor', lastName: 'C', email: 'cc@x.com', isActive: true, internalCost: 90, payrollType: 3, resourceType: 'Contractor', hireDate: null },
+  { id: 30683829, firstName: 'Jonathan', lastName: 'Fitzgerald', email: 'jf@gds.com', isActive: true, internalCost: 150, payrollType: 1, resourceType: 'Employee', licenseType: 1, hireDate: '2015-07-01T00:00:00.000Z' },
+  { id: 200, firstName: 'Bookkeeper', lastName: 'B', email: 'bk@gds.com', isActive: true, internalCost: 0, payrollType: 4, resourceType: 'Employee', licenseType: 3, hireDate: null },
+  { id: 300, firstName: 'Contractor', lastName: 'C', email: 'cc@x.com', isActive: true, internalCost: 90, payrollType: 3, resourceType: 'Contractor', licenseType: 3, hireDate: null },
+  { id: 400, firstName: 'RMM', lastName: 'Z - API', email: 'rmm@x.com', isActive: true, internalCost: 0, payrollType: 1, resourceType: 'Contractor', licenseType: 7, hireDate: null },
 ];
 
 describe('reportResourceBurden', () => {
@@ -57,6 +61,9 @@ describe('reportResourceBurden', () => {
 
     // default filter is isActive = true
     expect(bodies[0].filter).toEqual([{ op: 'eq', field: 'isActive', value: true }]);
+    // API user (id 400, licenseType 7) excluded by default
+    expect(out.apiUsersExcluded).toBe(1);
+    expect(out.resources.find((r) => r.id === 400)).toBeUndefined();
     expect(out.count).toBe(3);
     expect(out.withCost).toBe(2);
     expect(out.missingCost).toBe(1); // the bookkeeper with internalCost 0
@@ -66,6 +73,7 @@ describe('reportResourceBurden', () => {
     expect(jf.hasInternalCost).toBe(true);
     expect(jf.payrollTypeLabel).toBe('Salary');
     expect(jf.resourceType).toBe('Employee');
+    expect(jf.licenseTypeLabel).toBe('Administrator');
     expect(jf.hireDate).toBe('2015-07-01T00:00:00.000Z');
 
     const bk = out.resources.find((r) => r.id === 200)!;
@@ -79,6 +87,15 @@ describe('reportResourceBurden', () => {
     const out = await svc.reportResourceBurden();
     expect(out.notes.join(' ')).toMatch(/fully loaded|wage-only/i);
     expect(out.notes.join(' ')).toMatch(/per-hour/i);
+  });
+
+  test('includeApiUsers:true keeps API/integration accounts', async () => {
+    const svc = new AutotaskService(config, logger);
+    mockBurden(ROWS);
+    const out = await svc.reportResourceBurden({ includeApiUsers: true });
+    expect(out.apiUsersExcluded).toBe(0);
+    expect(out.count).toBe(4);
+    expect(out.resources.find((r) => r.id === 400)!.licenseTypeLabel).toBe('API User');
   });
 
   test('includeInactive drops the isActive filter; resourceType + resourceIDs filter', async () => {
@@ -98,6 +115,6 @@ describe('autotask_report_resource_burden tool', () => {
     mockBurden(ROWS);
     const handler = new AutotaskToolHandler(svc, logger);
     const r = await handler.callTool('autotask_report_resource_burden', {});
-    expect(r.content[0].text).toMatch(/3 resource\(s\): 2 with internalCost, 1 without/);
+    expect(r.content[0].text).toMatch(/3 resource\(s\): 2 with internalCost, 1 without \(1 API account\(s\) excluded\)/);
   });
 });

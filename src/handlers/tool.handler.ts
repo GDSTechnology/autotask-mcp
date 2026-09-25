@@ -1709,6 +1709,10 @@ export class AutotaskToolHandler {
         const summary = r.map((x) => `${x.roleID}=${x.roleName ?? '?'}${x.departmentName ? ` [${x.departmentName}]` : ''}${x.isDefaultServiceDeskRole ? ' (default)' : ''}`).join('; ');
         return { result: r, message: `Resource ${a.resourceID} has ${r.length} role association(s): ${summary}` };
       }],
+      ['autotask_report_resource_burden', async (a) => {
+        const r = await s.reportResourceBurden({ includeInactive: a.includeInactive, resourceType: a.resourceType, resourceIDs: a.resourceIDs });
+        return { result: r, message: `${r.count} resource(s): ${r.withCost} with internalCost, ${r.missingCost} without.` };
+      }],
 
       // Configuration Items
       ['autotask_search_configuration_items', async (a) => {

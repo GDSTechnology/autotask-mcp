@@ -2556,6 +2556,76 @@ export class AutotaskService {
     }
   }
 
+  /**
+   * Per-resource labour-burden report for cost/utilisation pages. Returns the
+   * fields the cost math is built on: `internalCost` (the Autotask labour-burden
+   * basis — a PER-HOUR internal cost as entered), the employment basis
+   * (`payrollType`: Salary/Hourly/Contractor/Salary Non Exempt, and
+   * `resourceType`: Employee/Contractor — which decide whether an unlogged hour
+   * is cash gone vs capacity uncaptured), plus isActive and hireDate. Read-only.
+   *
+   * IMPORTANT (open data question, not answerable via the API): `internalCost` is
+   * only the number entered in Autotask — the API does not say whether it is
+   * fully loaded (wage + employer taxes + benefits) or wage-only. Surfaced in
+   * `notes` so a cost page can flag the assumption rather than silently understate.
+   * Autotask has NO department field on Resource — department lives on
+   * ResourceRoles; use getResourceRoles / autotask_get_resource_roles for that.
+   */
+  async reportResourceBurden(opts: { includeInactive?: boolean; resourceType?: string; resourceIDs?: number[] } = {}): Promise<{
+    count: number;
+    withCost: number;
+    missingCost: number;
+    notes: string[];
+    resources: Array<{
+      id: number; firstName: string | null; lastName: string | null; email: string | null;
+      isActive: boolean; internalCost: number | null; hasInternalCost: boolean;
+      payrollType: number | null; payrollTypeLabel: string | null;
+      resourceType: string | null; hireDate: string | null;
+    }>;
+  }> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    if (!opts.includeInactive) filters.push({ op: 'eq', field: 'isActive', value: true });
+    if (opts.resourceType) filters.push({ op: 'eq', field: 'resourceType', value: opts.resourceType });
+    if (opts.resourceIDs?.length) filters.push({ op: 'in', field: 'id', value: opts.resourceIDs });
+    const rows = await http.query<Record<string, any>>(
+      'Resources',
+      filters.length ? filters : MATCH_ALL,
+      { maxRecords: 1000, includeFields: ['id', 'firstName', 'lastName', 'email', 'isActive', 'internalCost', 'payrollType', 'resourceType', 'hireDate'] }
+    );
+    let payrollLabels = new Map<number, string>();
+    try {
+      const fi = await this.getFieldInfo('Resources');
+      payrollLabels = new Map((fi.find((f) => f.name === 'payrollType')?.picklistValues ?? []).map((v) => [Number(v.value), v.label]));
+    } catch { /* labels are a nicety */ }
+    const resources = (rows || []).map((r) => ({
+      id: Number(r.id),
+      firstName: r.firstName ?? null,
+      lastName: r.lastName ?? null,
+      email: r.email ?? null,
+      isActive: !!r.isActive,
+      internalCost: r.internalCost != null ? Number(r.internalCost) : null,
+      hasInternalCost: r.internalCost != null && Number(r.internalCost) > 0,
+      payrollType: r.payrollType != null ? Number(r.payrollType) : null,
+      payrollTypeLabel: r.payrollType != null ? (payrollLabels.get(Number(r.payrollType)) ?? null) : null,
+      resourceType: r.resourceType ?? null,
+      hireDate: r.hireDate ?? null,
+    }));
+    const missingCost = resources.filter((r) => !r.hasInternalCost).length;
+    return {
+      count: resources.length,
+      withCost: resources.length - missingCost,
+      missingCost,
+      notes: [
+        'internalCost is the PER-HOUR internal cost as entered in Autotask (the labour-burden basis).',
+        'The API does not indicate whether internalCost is fully loaded (wage + employer taxes + benefits) or wage-only — treat it per your data-entry convention; a wage-only figure understates true cost by ~25–30%.',
+        'payrollType/resourceType give the employment basis (salaried vs hourly vs contractor). Department is not on the Resource — use get_resource_roles.',
+        missingCost > 0 ? `${missingCost} resource(s) have no internalCost set — their cost math falls back to a blended rate.` : 'All returned resources have an internalCost set.',
+      ],
+      resources,
+    };
+  }
+
   // =====================================================
   // Roles (#42) — Autotask role model. A Resource has a
   // `defaultServiceDeskRoleID` (its default role) and a set of ResourceRoles

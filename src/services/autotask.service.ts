@@ -2588,10 +2588,11 @@ export class AutotaskService {
     if (!opts.includeInactive) filters.push({ op: 'eq', field: 'isActive', value: true });
     if (opts.resourceType) filters.push({ op: 'eq', field: 'resourceType', value: opts.resourceType });
     if (opts.resourceIDs?.length) filters.push({ op: 'in', field: 'id', value: opts.resourceIDs });
+    // Autotask caps a single query at 500 rows — plenty for a resource roster.
     const rows = await http.query<Record<string, any>>(
       'Resources',
       filters.length ? filters : MATCH_ALL,
-      { maxRecords: 1000, includeFields: ['id', 'firstName', 'lastName', 'email', 'isActive', 'internalCost', 'payrollType', 'resourceType', 'hireDate'] }
+      { maxRecords: 500, includeFields: ['id', 'firstName', 'lastName', 'email', 'isActive', 'internalCost', 'payrollType', 'resourceType', 'hireDate'] }
     );
     let payrollLabels = new Map<number, string>();
     try {

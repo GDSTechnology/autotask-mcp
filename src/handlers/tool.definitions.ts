@@ -1932,6 +1932,21 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     },
     annotations: { title: 'Get resource roles', readOnlyHint: true }
   },
+  {
+    name: 'autotask_report_resource_burden',
+    description: 'Per-resource labour-burden report for cost / utilisation pages. Returns the fields real cost math needs: internalCost (Autotask\'s labour-burden basis — a PER-HOUR internal cost as entered), the employment basis (payrollType: Salary/Hourly/Contractor/Salary Non Exempt; resourceType: Employee/Contractor — which decide whether an unlogged hour is cash already gone vs capacity uncaptured), licenseType, plus isActive and hireDate. Active, real-staff resources only by default — API/integration accounts (licenseType = API User) are EXCLUDED (they have no cost and would pollute utilisation); pass includeApiUsers:true to include them. IMPORTANT: the API does NOT say whether internalCost is fully loaded (wage + employer taxes + benefits) or wage-only — a `notes` array surfaces this and flags resources with no internalCost set. Department is not a Resource field (use autotask_get_resource_roles). Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        includeInactive: { type: 'boolean', description: 'Include inactive resources (leavers). Default false — leavers must not drag utilisation down.' },
+        includeApiUsers: { type: 'boolean', description: 'Include API/integration accounts (licenseType = API User). Default false — they are not real staff.' },
+        resourceType: { type: 'string', description: 'Filter by resourceType label, e.g. "Employee" or "Contractor".' },
+        resourceIDs: { type: 'array', items: { type: 'number' }, description: 'Limit to specific resource IDs.' }
+      },
+      required: []
+    },
+    annotations: { title: 'Resource labour burden', readOnlyHint: true }
+  },
 
   // Ticket Notes tools
   {
@@ -5644,7 +5659,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   resources: {
     description: 'Search Autotask resources (technicians/staff) and roles (for assignment / time entries)',
-    tools: ['autotask_search_resources', 'autotask_search_roles', 'autotask_get_resource_roles']
+    tools: ['autotask_search_resources', 'autotask_search_roles', 'autotask_get_resource_roles', 'autotask_report_resource_burden']
   },
   configuration_items: {
     description: 'Search and read configuration items (assets/devices), including contract/service entitlement links and coverage gaps',

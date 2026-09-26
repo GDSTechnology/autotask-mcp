@@ -62,6 +62,36 @@ describe('summarizeUnbilledTime (pure)', () => {
     expect(out.totals.estValue).toBeNull();
     expect(out.totals.hoursMissingRate).toBe(4);
   });
+
+  test('no basis map -> byContractBasis omitted, all hours count as needs-review', () => {
+    const out = summarizeUnbilledTime(entries, { asOf });
+    expect(out.byContractBasis).toBeUndefined();
+    // nothing proven by-design, so needs-review == all billable hours
+    expect(out.totals.needsReviewHours).toBe(out.totals.billableHours);
+  });
+
+  test('basis map -> no_contract surfaced, absorbed excluded from needs-review', () => {
+    const rows: UnbilledTimeEntry[] = [
+      { id: 1, resourceID: 100, roleID: 9, dateWorked: '2026-09-20', hoursToBill: 2, contractID: 501 }, // billed
+      { id: 2, resourceID: 100, roleID: 9, dateWorked: '2026-09-20', hoursToBill: 4, contractID: 502 }, // absorbed
+      { id: 3, resourceID: 200, roleID: 9, dateWorked: '2026-09-20', hoursToBill: 3 },                  // NO contract
+      { id: 4, resourceID: 200, roleID: 9, dateWorked: '2026-09-20', hoursToBill: 1, contractID: 999 }, // not in map -> unknown
+    ];
+    const out = summarizeUnbilledTime(rows, {
+      asOf,
+      rateByRole: new Map([[9, 100]]),
+      basisByContract: new Map<number, any>([[501, 'billed'], [502, 'absorbed']]),
+    });
+    const bb = out.byContractBasis!;
+    expect(bb.billed.billableHours).toBe(2);
+    expect(bb.absorbed.billableHours).toBe(4);
+    expect(bb.no_contract.billableHours).toBe(3); // contract-less time is its OWN bucket
+    expect(bb.unknown.billableHours).toBe(1);
+    expect(bb.no_contract.estValue).toBe(300); // 3h * 100 — valued, not dropped
+    // needs-review = billed + block + no_contract + unknown = 2 + 3 + 1 = 6 (absorbed 4 excluded)
+    expect(out.totals.needsReviewHours).toBe(6);
+    expect(out.totals.billableHours).toBe(10);
+  });
 });
 
 describe('AutotaskService.reportUnbilledTime', () => {
@@ -93,6 +123,39 @@ describe('AutotaskService.reportUnbilledTime', () => {
     expect(out.totals.billableHours).toBe(2);
     expect(out.totals.estValue).toBe(350); // 2h * 175
     expect(out.byResource[0].resourceName).toBe('Jonathan Fitzgerald');
+  });
+
+  test('resolves contract basis and surfaces no_contract as its own bucket', async () => {
+    let teCall = 0;
+    const contractQueries: any[] = [];
+    jest.spyOn(global, 'fetch' as any).mockImplementation((...args: any[]) => {
+      const url = args[0] as string; const init = (args[1] || {}) as RequestInit;
+      if (/\/TimeEntries\/query$/.test(url)) {
+        teCall += 1;
+        if (teCall === 1) return Promise.resolve(res(200, { items: [
+          { id: 11, resourceID: 100, roleID: 9, dateWorked: '2026-09-20', hoursToBill: 2, isNonBillable: false, contractID: 501 }, // T&M -> billed
+          { id: 12, resourceID: 100, roleID: 9, dateWorked: '2026-09-20', hoursToBill: 4, isNonBillable: false, contractID: 502 }, // Recurring -> absorbed
+          { id: 13, resourceID: 200, roleID: 9, dateWorked: '2026-09-20', hoursToBill: 3, isNonBillable: false },                  // NO contract
+        ] }));
+        return Promise.resolve(res(200, { items: [] }));
+      }
+      if (/\/Roles\/query$/.test(url)) return Promise.resolve(res(200, { items: [{ id: 9, name: 'Engineer', hourlyRate: 100 }] }));
+      if (/\/Resources\/query$/.test(url)) return Promise.resolve(res(200, { items: [{ id: 100, firstName: 'A', lastName: 'B' }, { id: 200, firstName: 'C', lastName: 'D' }] }));
+      if (/\/Contracts\/query$/.test(url)) {
+        contractQueries.push(JSON.parse(String(init.body)));
+        return Promise.resolve(res(200, { items: [{ id: 501, contractType: 1 }, { id: 502, contractType: 7 }] }));
+      }
+      return Promise.resolve(res(200, { items: [] }));
+    });
+
+    const out = await new AutotaskService(config, logger).reportUnbilledTime({ fromDate: '2026-09-01' });
+    // only the referenced contract ids were looked up
+    expect(contractQueries[0].filter).toContainEqual({ op: 'in', field: 'id', value: [501, 502] });
+    const bb = out.byContractBasis!;
+    expect(bb.billed.billableHours).toBe(2);
+    expect(bb.absorbed.billableHours).toBe(4);
+    expect(bb.no_contract.billableHours).toBe(3); // contract-less work surfaced, not filtered out
+    expect(out.totals.needsReviewHours).toBe(5); // billed 2 + no_contract 3 (absorbed 4 excluded)
   });
 
   test('includeApproved drops the notExist filter', async () => {

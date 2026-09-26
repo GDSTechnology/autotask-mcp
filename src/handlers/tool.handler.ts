@@ -1773,7 +1773,13 @@ export class AutotaskToolHandler {
       ['autotask_report_unbilled_time', async (a) => {
         const r = await s.reportUnbilledTime({ fromDate: a.fromDate, toDate: a.toDate, resourceID: a.resourceID, includeApproved: a.includeApproved });
         const v = r.totals.estValue != null ? `~$${r.totals.estValue} est. value` : 'value n/a (no bill rates)';
-        return { result: r, message: `${r.totals.billableHours}h unapproved billable across ${r.totals.entries} entr(ies) / ${r.byResource.length} resource(s); ${v}; ${r.totals.atRiskHours}h >30d.` };
+        const bb = r.byContractBasis;
+        // Surface the contract-basis split, leading with no_contract — time on a
+        // company with NO contract is billable-until-proven-otherwise, not absorbed.
+        const basis = bb
+          ? ` Basis: ${r.totals.needsReviewHours}h needs review (${bb.no_contract.billableHours}h no-contract, ${bb.billed.billableHours}h billed, ${bb.block.billableHours}h block, ${bb.unknown.billableHours}h unknown); ${bb.absorbed.billableHours}h absorbed + ${bb.umbrella.billableHours}h umbrella by design.`
+          : '';
+        return { result: r, message: `${r.totals.billableHours}h unapproved billable across ${r.totals.entries} entr(ies) / ${r.byResource.length} resource(s); ${v}; ${r.totals.atRiskHours}h >30d.${basis}` };
       }],
       ['autotask_report_sla_compliance', async (a) => {
         const r = await s.getSlaCompliance({ from: a.from, to: a.to, companyID: a.companyID, queueID: a.queueID, openOnly: a.openOnly, groupBy: a.groupBy, maxTickets: a.maxTickets });

@@ -1228,7 +1228,7 @@ export class AutotaskService {
     // Unapproved = the pre-invoice leak. notExist for nulls (eq null matches nothing in Autotask).
     if (!opts.includeApproved) filters.push({ op: 'notExist', field: 'billingApprovalDateTime' });
 
-    const includeFields = ['id', 'resourceID', 'roleID', 'dateWorked', 'createDateTime', 'hoursWorked', 'hoursToBill', 'isNonBillable', 'billingApprovalDateTime', 'ticketID', 'taskID'];
+    const includeFields = ['id', 'resourceID', 'roleID', 'dateWorked', 'createDateTime', 'hoursWorked', 'hoursToBill', 'isNonBillable', 'billingApprovalDateTime', 'ticketID', 'taskID', 'contractID'];
     const entries: Array<Record<string, any>> = [];
     let lastId = 0;
     for (let page = 0; page < 40; page++) {
@@ -1258,7 +1258,22 @@ export class AutotaskService {
         for (const r of res) nameByResource.set(Number(r.id), `${r.firstName ?? ''} ${r.lastName ?? ''}`.trim());
       } catch { /* names are a nicety */ }
     }
-    return summarizeUnbilledTime(entries as UnbilledTimeEntry[], { rateByRole, nameByResource });
+
+    // Contract labour-billing basis per entry, so no_contract time is surfaced
+    // as its own bucket instead of being filtered out. Resolve the contractType
+    // of the contracts actually referenced; entries with no contractID become
+    // no_contract in the summary. The lookup is a nicety — if it fails the
+    // rollup is simply omitted (hours are never lost).
+    const basisByContract = new Map<number, LabourBasis>();
+    const contractIDs = [...new Set(entries.map((e) => (e.contractID != null ? Number(e.contractID) : NaN)).filter((n) => Number.isFinite(n)))];
+    for (let i = 0; i < contractIDs.length; i += 200) {
+      try {
+        const cs = await http.query<Record<string, any>>('Contracts', [{ op: 'in', field: 'id', value: contractIDs.slice(i, i + 200) }], { maxRecords: 500, includeFields: ['id', 'contractType'] });
+        for (const c of cs) basisByContract.set(Number(c.id), classifyContractLabourBilling(c.contractType).basis);
+      } catch { /* basis rollup is a nicety; omitted on failure */ }
+    }
+    const haveBasis = contractIDs.length === 0 || basisByContract.size > 0;
+    return summarizeUnbilledTime(entries as UnbilledTimeEntry[], { rateByRole, nameByResource, ...(haveBasis ? { basisByContract } : {}) });
   }
 
   /**

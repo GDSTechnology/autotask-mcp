@@ -20,9 +20,30 @@ export interface UnbilledTimeEntry {
   billingApprovalDateTime?: string | null;
   ticketID?: number;
   taskID?: number;
+  contractID?: number | null;
 }
 
 export type AgeBucket = '0-30' | '31-60' | '61-90' | '90+';
+
+// Labour-billing basis of the contract the time was worked under. Mirrors
+// contract-labour.ts LabourBasis plus `no_contract` — time on a company with NO
+// contract at all. That is NOT absorbed and must never be filtered out: it is
+// billable-until-proven-otherwise and often a bigger leak than contract time,
+// so it is surfaced as its own first-class bucket. `unknown` = contract exists
+// but its type could not be classified.
+export type ContractBasis = 'billed' | 'block' | 'absorbed' | 'umbrella' | 'unknown' | 'no_contract';
+
+export interface BasisRollup {
+  entries: number;
+  billableHours: number;
+  estValue: number | null;
+  hoursMissingRate: number;
+}
+
+// Which bases are worth a human's attention (chase or set up billing) vs.
+// working as designed. no_contract + unknown are "needs review"; absorbed +
+// umbrella are by design. billed + block are active leakage to chase.
+const REVIEW_BASES: ReadonlySet<ContractBasis> = new Set<ContractBasis>(['billed', 'block', 'no_contract', 'unknown']);
 
 export interface ResourceUnbilledTime {
   resourceID: number;
@@ -45,8 +66,14 @@ export interface UnbilledTimeSummary {
     hoursMissingRate: number;
     buckets: Record<AgeBucket, number>;
     atRiskHours: number; // > 30 days old by dateWorked
+    needsReviewHours: number; // billable hours in leakage/needs-review bases (excludes absorbed + umbrella)
   };
   byResource: ResourceUnbilledTime[];
+  // Same billable time bucketed by the contract's labour-billing basis, so
+  // contract-less work (`no_contract`) is surfaced, never excluded. Absent when
+  // no basis mapping was supplied (all time would collapse to no_contract and
+  // mislead), so callers can tell "unknown" from "not looked up".
+  byContractBasis?: Record<ContractBasis, BasisRollup>;
 }
 
 const DAY = 86_400_000;
@@ -73,11 +100,30 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  */
 export function summarizeUnbilledTime(
   entries: UnbilledTimeEntry[],
-  opts: { rateByRole?: Map<number, number>; nameByResource?: Map<number, string>; asOf?: Date } = {}
+  opts: {
+    rateByRole?: Map<number, number>;
+    nameByResource?: Map<number, string>;
+    asOf?: Date;
+    /**
+     * contractID -> labour-billing basis. When supplied, the summary adds a
+     * byContractBasis rollup and time on contract-less companies lands in the
+     * `no_contract` bucket (surfaced, never dropped). Omit it and the rollup is
+     * omitted rather than collapsing everything to no_contract.
+     */
+    basisByContract?: Map<number, ContractBasis>;
+  } = {}
 ): UnbilledTimeSummary {
   const asOf = opts.asOf ?? new Date();
   const rateByRole = opts.rateByRole ?? new Map();
   const nameByResource = opts.nameByResource ?? new Map();
+  const basisByContract = opts.basisByContract;
+
+  const emptyBasis = (): BasisRollup => ({ entries: 0, billableHours: 0, estValue: null, hoursMissingRate: 0 });
+  const byBasis: Record<ContractBasis, BasisRollup> | undefined = basisByContract
+    ? { billed: emptyBasis(), block: emptyBasis(), absorbed: emptyBasis(), umbrella: emptyBasis(), unknown: emptyBasis(), no_contract: emptyBasis() }
+    : undefined;
+  const basisOf = (e: UnbilledTimeEntry): ContractBasis =>
+    e.contractID != null ? (basisByContract!.get(Number(e.contractID)) ?? 'unknown') : 'no_contract';
 
   const byId = new Map<number, ResourceUnbilledTime & { _lagSum: number; _lagN: number }>();
   for (const e of entries) {
@@ -104,6 +150,14 @@ export function summarizeUnbilledTime(
       const lag = Math.floor((Date.parse(e.createDateTime) - Date.parse(`${String(e.dateWorked).slice(0, 10)}T00:00:00Z`)) / DAY);
       if (!Number.isNaN(lag)) { r._lagSum += lag; r._lagN += 1; }
     }
+    // contract labour-billing basis (no_contract surfaced, never dropped)
+    if (byBasis) {
+      const b = byBasis[basisOf(e)];
+      b.entries += 1;
+      b.billableHours = round2(b.billableHours + hours);
+      if (rate != null) b.estValue = round2((b.estValue ?? 0) + hours * rate);
+      else b.hoursMissingRate = round2(b.hoursMissingRate + hours);
+    }
   }
 
   const byResource = [...byId.values()].map((r) => {
@@ -119,7 +173,13 @@ export function summarizeUnbilledTime(
     hoursMissingRate: round2(byResource.reduce((s, r) => s + r.hoursMissingRate, 0)),
     buckets: byResource.reduce((acc, r) => { (Object.keys(acc) as AgeBucket[]).forEach((k) => { acc[k] = round2(acc[k] + r.buckets[k]); }); return acc; }, emptyBuckets()),
     atRiskHours: 0,
+    needsReviewHours: 0,
   };
   totals.atRiskHours = round2(totals.buckets['31-60'] + totals.buckets['61-90'] + totals.buckets['90+']);
-  return { asOf: asOf.toISOString(), totals, byResource };
+  // needs-review = leakage + no_contract + unknown (never absorbed/umbrella).
+  // Without a basis map nothing is proven by-design, so all billable hours need review.
+  totals.needsReviewHours = byBasis
+    ? round2((Object.keys(byBasis) as ContractBasis[]).filter((b) => REVIEW_BASES.has(b)).reduce((s, b) => s + byBasis[b].billableHours, 0))
+    : totals.billableHours;
+  return { asOf: asOf.toISOString(), totals, byResource, ...(byBasis ? { byContractBasis: byBasis } : {}) };
 }

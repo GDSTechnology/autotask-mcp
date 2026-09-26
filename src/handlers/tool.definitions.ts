@@ -3709,6 +3709,21 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Unbilled-work report', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_unbilled_time',
+    description: 'Unbilled-TIME leakage — the pre-invoice stage. Billable time entries that have NOT been approved for billing yet (billingApprovalDateTime not set), so they cannot reach an invoice until someone approves them. Per resource, aged by dateWorked (0-30/31-60/61-90/90+), with an at-risk (>30d) total, an estimated $ value (billable hours × the role\'s bill rate; hours with no resolvable rate are surfaced separately, never counted as $0), and the average write-up lag (createDateTime − dateWorked). Complements autotask_report_unbilled (which covers posted-but-not-invoiced billing items) — together they cover logged → approved → posted → invoiced. Read-only. NOTE: this does NOT find hours never logged at all (calendar/Teams work with no time entry) — that is the reconstruction side (get_time_entry_targets).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fromDate: { type: 'string', description: 'dateWorked on/after (YYYY-MM-DD). Default: last 365 days (guardrail against a full-history scan) — pass an earlier date to widen.' },
+        toDate: { type: 'string', description: 'dateWorked on/before (YYYY-MM-DD).' },
+        resourceID: { type: 'number', description: 'Limit to one resource (tech).' },
+        includeApproved: { type: 'boolean', description: 'Also include already-approved billable time (default false — only the unapproved pre-invoice backlog).' }
+      },
+      required: []
+    },
+    annotations: { title: 'Unbilled time (pre-invoice)', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_sla_compliance',
     description: "SLA compliance report (read-only). Classifies each ticket's three SLA stages — Triage/First-Response, Tech-Engagement/Resolution-Plan, Resolved — as met (actual ≤ due) / missed (actual > due) / pending (open, due in future) / breached (open, due passed) / no_target (no SLA due set). Returns per-stage counts + compliance % (met ÷ closed), a breach queue (open+overdue, worst first) for 'what needs attention now', and optional grouping. Scope by createDate window (default last 30 days) + optional company/queue; group by queue, resource, company, week, or month. For n8n/chat dashboards.",
     inputSchema: {
@@ -5647,7 +5662,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

@@ -54,6 +54,7 @@ import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import { applyBillingTreatment, BillingTreatment } from '../utils/billing-treatment';
+import { summarizeUnbilledTime, UnbilledTimeEntry, UnbilledTimeSummary } from '../utils/unbilled-time';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -1205,6 +1206,58 @@ export class AutotaskService {
     // Not posted — no other lock is knowable pre-flight (no timesheet entity /
     // no lock field). Enforced at execution via classifyLockError.
     return { locked: false, state: 'open', preflightOnly: true };
+  }
+
+  /**
+   * Unbilled-TIME leakage: billable time entries not yet approved for billing
+   * (billingApprovalDateTime not set), so they can't reach an invoice until
+   * approved. Per resource, aged by dateWorked, valued at the role's bill rate
+   * (Roles.hourlyRate) with hours-missing-rate surfaced separately. Complements
+   * report_unbilled (posted-but-not-invoiced BillingItems). Read-only.
+   */
+  async reportUnbilledTime(opts: { fromDate?: string; toDate?: string; resourceID?: number; includeApproved?: boolean } = {}): Promise<UnbilledTimeSummary> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [{ op: 'eq', field: 'isNonBillable', value: false }];
+    // Guardrail: default to the last 365 days so an unbounded call can't trigger
+    // a full-history scan. Pass fromDate explicitly to widen.
+    const effectiveFrom = opts.fromDate ?? new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+    filters.push({ op: 'gte', field: 'dateWorked', value: `${effectiveFrom.slice(0, 10)}T00:00:00` });
+    if (opts.toDate) filters.push({ op: 'lte', field: 'dateWorked', value: `${opts.toDate.slice(0, 10)}T23:59:59` });
+    if (opts.resourceID != null) filters.push({ op: 'eq', field: 'resourceID', value: opts.resourceID });
+    // Unapproved = the pre-invoice leak. notExist for nulls (eq null matches nothing in Autotask).
+    if (!opts.includeApproved) filters.push({ op: 'notExist', field: 'billingApprovalDateTime' });
+
+    const includeFields = ['id', 'resourceID', 'roleID', 'dateWorked', 'createDateTime', 'hoursWorked', 'hoursToBill', 'isNonBillable', 'billingApprovalDateTime', 'ticketID', 'taskID'];
+    const entries: Array<Record<string, any>> = [];
+    let lastId = 0;
+    for (let page = 0; page < 40; page++) {
+      const batch = await http.query<Record<string, any>>(
+        'TimeEntries',
+        [...filters, { op: 'gt', field: 'id', value: lastId }],
+        { maxRecords: 500, includeFields }
+      );
+      if (!batch || batch.length === 0) break;
+      batch.sort((a, b) => Number(a.id) - Number(b.id));
+      entries.push(...batch);
+      lastId = Number(batch[batch.length - 1].id);
+      if (batch.length < 500) break;
+    }
+
+    // Resolve role bill rates + resource names for the ids actually present.
+    const rateByRole = new Map<number, number>();
+    try {
+      const roles = await this.searchRoles({ pageSize: 500 });
+      for (const r of roles) if (r.id != null && r.hourlyRate != null) rateByRole.set(Number(r.id), Number(r.hourlyRate));
+    } catch { /* rates are a nicety; value falls to hoursMissingRate */ }
+    const nameByResource = new Map<number, string>();
+    const resourceIDs = [...new Set(entries.map((e) => Number(e.resourceID)).filter((n) => Number.isFinite(n)))];
+    for (let i = 0; i < resourceIDs.length; i += 200) {
+      try {
+        const res = await http.query<Record<string, any>>('Resources', [{ op: 'in', field: 'id', value: resourceIDs.slice(i, i + 200) }], { maxRecords: 500, includeFields: ['id', 'firstName', 'lastName'] });
+        for (const r of res) nameByResource.set(Number(r.id), `${r.firstName ?? ''} ${r.lastName ?? ''}`.trim());
+      } catch { /* names are a nicety */ }
+    }
+    return summarizeUnbilledTime(entries as UnbilledTimeEntry[], { rateByRole, nameByResource });
   }
 
   /**

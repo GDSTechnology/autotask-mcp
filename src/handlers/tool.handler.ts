@@ -1770,6 +1770,11 @@ export class AutotaskToolHandler {
         const r = await s.getUnbilledReport({ companyID: a.companyID, minAgeDays: a.minAgeDays });
         return { result: r, message: `$${r.totalAmount} unbilled across ${r.totalCount} item(s); $${r.atRiskAmount} at risk (>30d)` };
       }],
+      ['autotask_report_unbilled_time', async (a) => {
+        const r = await s.reportUnbilledTime({ fromDate: a.fromDate, toDate: a.toDate, resourceID: a.resourceID, includeApproved: a.includeApproved });
+        const v = r.totals.estValue != null ? `~$${r.totals.estValue} est. value` : 'value n/a (no bill rates)';
+        return { result: r, message: `${r.totals.billableHours}h unapproved billable across ${r.totals.entries} entr(ies) / ${r.byResource.length} resource(s); ${v}; ${r.totals.atRiskHours}h >30d.` };
+      }],
       ['autotask_report_sla_compliance', async (a) => {
         const r = await s.getSlaCompliance({ from: a.from, to: a.to, companyID: a.companyID, queueID: a.queueID, openOnly: a.openOnly, groupBy: a.groupBy, maxTickets: a.maxTickets });
         const tr = r.stages.triage, en = r.stages.engagement, rv = r.stages.resolved;

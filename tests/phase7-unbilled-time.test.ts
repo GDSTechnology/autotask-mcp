@@ -104,5 +104,7 @@ describe('AutotaskService.reportUnbilledTime', () => {
     });
     await new AutotaskService(config, logger).reportUnbilledTime({ includeApproved: true });
     expect(bodies[0].filter.find((x: any) => x.field === 'billingApprovalDateTime')).toBeUndefined();
+    // guardrail: a default dateWorked lower bound is applied when no fromDate given
+    expect(bodies[0].filter.find((x: any) => x.field === 'dateWorked' && x.op === 'gte')).toBeDefined();
   });
 });

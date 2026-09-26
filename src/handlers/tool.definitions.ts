@@ -3714,7 +3714,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        fromDate: { type: 'string', description: 'dateWorked on/after (YYYY-MM-DD). Default: no lower bound (all unapproved billable time).' },
+        fromDate: { type: 'string', description: 'dateWorked on/after (YYYY-MM-DD). Default: last 365 days (guardrail against a full-history scan) — pass an earlier date to widen.' },
         toDate: { type: 'string', description: 'dateWorked on/before (YYYY-MM-DD).' },
         resourceID: { type: 'number', description: 'Limit to one resource (tech).' },
         includeApproved: { type: 'boolean', description: 'Also include already-approved billable time (default false — only the unapproved pre-invoice backlog).' }

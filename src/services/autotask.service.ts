@@ -1218,7 +1218,10 @@ export class AutotaskService {
   async reportUnbilledTime(opts: { fromDate?: string; toDate?: string; resourceID?: number; includeApproved?: boolean } = {}): Promise<UnbilledTimeSummary> {
     const http = await this.ensureClient();
     const filters: QueryFilter[] = [{ op: 'eq', field: 'isNonBillable', value: false }];
-    if (opts.fromDate) filters.push({ op: 'gte', field: 'dateWorked', value: `${opts.fromDate.slice(0, 10)}T00:00:00` });
+    // Guardrail: default to the last 365 days so an unbounded call can't trigger
+    // a full-history scan. Pass fromDate explicitly to widen.
+    const effectiveFrom = opts.fromDate ?? new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+    filters.push({ op: 'gte', field: 'dateWorked', value: `${effectiveFrom.slice(0, 10)}T00:00:00` });
     if (opts.toDate) filters.push({ op: 'lte', field: 'dateWorked', value: `${opts.toDate.slice(0, 10)}T23:59:59` });
     if (opts.resourceID != null) filters.push({ op: 'eq', field: 'resourceID', value: opts.resourceID });
     // Unapproved = the pre-invoice leak. notExist for nulls (eq null matches nothing in Autotask).

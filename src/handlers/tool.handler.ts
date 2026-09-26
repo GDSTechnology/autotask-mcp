@@ -1921,6 +1921,11 @@ export class AutotaskToolHandler {
         const r = await s.getContractRecurringRevenue({ contractID: a.contractID, asOfDate: a.asOfDate });
         return { result: r, message: `MRR $${r.mrr} / ARR $${r.arr} across ${r.activeLineCount} active recurring line(s) as of ${r.asOf}` };
       }],
+      ['autotask_report_contract_labour_basis', async (a) => {
+        const r = await s.reportContractLabourBasis({ companyID: a.companyID, includeInactive: a.includeInactive, contractType: a.contractType });
+        const b = r.byBasis;
+        return { result: r, message: `${r.count} contract(s): ${b.billed} billed, ${b.block} block, ${b.absorbed} absorbed, ${b.umbrella} umbrella, ${b.unknown} unknown.` };
+      }],
       ['autotask_get_contract_milestone', async (a) => {
         const r = await s.getContractMilestone(a.id); return { result: r, message: r ? `Contract milestone ${a.id}` : `Contract milestone ${a.id} not found` };
       }],

@@ -5439,6 +5439,20 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Contract recurring revenue (MRR/ARR)', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_contract_labour_basis',
+    description: 'Contract labour-billing basis — the "is labour included in the fee" flag (dashboard gap #4). Per contract, DERIVES from contractType whether labour is billed on top (Time & Materials / Per Ticket → basis "billed"), drawn from a prepaid block (Block Hours → "block", overage billable), or absorbed in the fee (Fixed Price / Retainer / Recurring Service → "absorbed"); Umbrella and unknown are separate. Each row carries leakageRelevant (true when unbilled/unapproved time on it is worth chasing), billingPreference (why time may sit unapproved — Manually / On timesheet approval defer billing), overageBillingRate, setupFee, and the exclusion set. Autotask has NO direct labour-included field — this is the derivation. Cross-reference with report_unbilled_time / report_unbilled to scope the $ leak to leakageRelevant contracts. Read-only; active contracts by default.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyID: { type: 'number', description: 'Limit to one company (omit for all).' },
+        contractType: { type: 'number', description: 'Filter by contractType id (1=T&M, 3=Fixed Price, 4=Block Hours, 6=Retainer, 7=Recurring Service, 8=Per Ticket, 9=Umbrella).' },
+        includeInactive: { type: 'boolean', description: 'Include inactive contracts (status ≠ Active). Default false.' }
+      },
+      required: []
+    },
+    annotations: { title: 'Contract labour basis', readOnlyHint: true }
+  },
+  {
     name: 'autotask_get_contract_milestone',
     description: 'Get a single ContractMilestone by id — a commercial milestone payment on a contract (title, amount, dateDue, status, description, billingCodeID, isInitialPayment).',
     inputSchema: { type: 'object', properties: { id: { type: 'number', description: 'ContractMilestone id' } }, required: ['id'] },
@@ -5666,7 +5680,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_report_sla_compliance', 'autotask_generate_sla_framework', 'autotask_report_sla_coverage', 'autotask_assign_contract_sla', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service', 'autotask_get_contract_service', 'autotask_search_contract_services', 'autotask_get_contract_billed_units', 'autotask_report_contract_recurring_revenue', 'autotask_report_contract_labour_basis', 'autotask_get_contract_milestone', 'autotask_search_contract_milestones', 'autotask_create_contract_milestone', 'autotask_update_contract_milestone', 'autotask_report_block_hour_usage', 'autotask_report_ticket_charges', 'autotask_report_unbilled', 'autotask_report_project_pl', 'autotask_report_sla_compliance', 'autotask_generate_sla_framework', 'autotask_report_sla_coverage', 'autotask_assign_contract_sla', 'autotask_analyze_ticket_billing_gaps', 'autotask_report_ticket_billing_gaps']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',

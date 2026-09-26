@@ -55,6 +55,7 @@ import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import { applyBillingTreatment, BillingTreatment } from '../utils/billing-treatment';
 import { summarizeUnbilledTime, UnbilledTimeEntry, UnbilledTimeSummary } from '../utils/unbilled-time';
+import { classifyContractLabourBilling, LabourBasis } from '../utils/contract-labour';
 import {
   AutotaskCompany,
   AutotaskContact,
@@ -3158,6 +3159,77 @@ export class AutotaskService {
       this.logger.error('Failed to search contracts:', error);
       throw error;
     }
+  }
+
+  /**
+   * Contract labour-billing basis (dashboard gap #4). Per contract, derives
+   * whether labour is billed on top (T&M / Per Ticket), drawn from a prepaid
+   * block (Block Hours), or absorbed in the fee (Fixed Price / Retainer /
+   * Recurring Service) — the flag that tells a real billing leak from a contract
+   * working as designed. Also surfaces billingPreference (why time may sit
+   * unapproved) and overageBillingRate. Read-only. Active contracts by default.
+   */
+  async reportContractLabourBasis(opts: { companyID?: number; includeInactive?: boolean; contractType?: number } = {}): Promise<{
+    count: number;
+    byBasis: Record<LabourBasis, number>;
+    notes: string[];
+    contracts: Array<{
+      id: number; contractName: string | null; companyID: number | null;
+      contractType: number | null; contractTypeLabel: string | null;
+      basis: LabourBasis; labourBilled: boolean | null; leakageRelevant: boolean; description: string;
+      billingPreference: number | null; billingPreferenceLabel: string | null;
+      overageBillingRate: number | null; setupFee: number | null; contractExclusionSetID: number | null;
+    }>;
+  }> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    if (!opts.includeInactive) filters.push({ op: 'eq', field: 'status', value: 1 });
+    if (opts.companyID != null) filters.push({ op: 'eq', field: 'companyID', value: opts.companyID });
+    if (opts.contractType != null) filters.push({ op: 'eq', field: 'contractType', value: opts.contractType });
+    const rows = await http.query<Record<string, any>>(
+      'Contracts',
+      filters.length ? filters : MATCH_ALL,
+      { maxRecords: 500, includeFields: ['id', 'contractName', 'companyID', 'contractType', 'billingPreference', 'overageBillingRate', 'setupFee', 'contractExclusionSetID'] }
+    );
+    let typeLabels = new Map<number, string>();
+    let prefLabels = new Map<number, string>();
+    try {
+      const fi = await this.getFieldInfo('Contracts');
+      typeLabels = new Map((fi.find((f) => f.name === 'contractType')?.picklistValues ?? []).map((v) => [Number(v.value), v.label]));
+      prefLabels = new Map((fi.find((f) => f.name === 'billingPreference')?.picklistValues ?? []).map((v) => [Number(v.value), v.label]));
+    } catch { /* labels are a nicety */ }
+    const byBasis: Record<LabourBasis, number> = { billed: 0, block: 0, absorbed: 0, umbrella: 0, unknown: 0 };
+    const contracts = (rows || []).map((c) => {
+      const cls = classifyContractLabourBilling(c.contractType);
+      byBasis[cls.basis] += 1;
+      return {
+        id: Number(c.id),
+        contractName: c.contractName ?? null,
+        companyID: c.companyID != null ? Number(c.companyID) : null,
+        contractType: c.contractType != null ? Number(c.contractType) : null,
+        contractTypeLabel: c.contractType != null ? (typeLabels.get(Number(c.contractType)) ?? null) : null,
+        basis: cls.basis,
+        labourBilled: cls.labourBilled,
+        leakageRelevant: cls.leakageRelevant,
+        description: cls.description,
+        billingPreference: c.billingPreference != null ? Number(c.billingPreference) : null,
+        billingPreferenceLabel: c.billingPreference != null ? (prefLabels.get(Number(c.billingPreference)) ?? null) : null,
+        overageBillingRate: c.overageBillingRate != null ? Number(c.overageBillingRate) : null,
+        setupFee: c.setupFee != null ? Number(c.setupFee) : null,
+        contractExclusionSetID: c.contractExclusionSetID != null ? Number(c.contractExclusionSetID) : null,
+      };
+    });
+    return {
+      count: contracts.length,
+      byBasis,
+      notes: [
+        'Labour basis is derived from contractType (Autotask has no direct "labour included" field).',
+        'leakageRelevant=true (T&M / Per Ticket / Block overage) means unbilled/unapproved time on that contract is worth chasing; absorbed (Fixed/Retainer/Recurring) means it is by design.',
+        'billingPreference explains WHY time may sit unapproved: "Manually" and "On timesheet approval" both defer billing until a person acts.',
+        'Cross-reference this with report_unbilled_time / report_unbilled so the $ signal is scoped to leakageRelevant contracts.',
+      ],
+      contracts,
+    };
   }
 
   /**

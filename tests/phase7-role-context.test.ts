@@ -90,7 +90,7 @@ describe('resolveWorkTimeEntryRole selection context', () => {
       return Promise.resolve(res(200, { items: [] }));
     });
     const out = await new AutotaskService(config, logger).resolveWorkTimeEntryRole(5);
-    expect(out).toEqual({ roleID: 222 });
+    expect(out).toEqual(expect.objectContaining({ roleID: 222, source: "default" }));
   });
 
   test('single distinct role resolves without a pick', async () => {
@@ -104,6 +104,6 @@ describe('resolveWorkTimeEntryRole selection context', () => {
       return Promise.resolve(res(200, { items: [] }));
     });
     const out = await new AutotaskService(config, logger).resolveWorkTimeEntryRole(6);
-    expect(out).toEqual({ roleID: 111 });
+    expect(out).toEqual(expect.objectContaining({ roleID: 111, source: "sole" }));
   });
 });

@@ -52,6 +52,7 @@ import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } fr
 import { normalizeTimestamp } from '../utils/timezone';
 import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
+import { RoleChoice, RoleSource } from '../utils/time-entry-role';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import { applyBillingTreatment, BillingTreatment } from '../utils/billing-treatment';
 import { summarizeUnbilledTime, UnbilledTimeEntry, UnbilledTimeSummary } from '../utils/unbilled-time';
@@ -1564,6 +1565,8 @@ export class AutotaskService {
       resourceName?: string;
       hoursWorked: number;
       roleID?: number;
+      roleName?: string | null;
+      roleSource?: RoleSource;
       status: 'would_create' | 'created' | 'duplicate' | 'error';
       id?: number;
       duplicateOf?: number;
@@ -1605,15 +1608,17 @@ export class AutotaskService {
       }
       if (resourceID == null) { row.status = 'error'; row.error = 'resourceID or resourceName is required'; plan.push({ row, entry }); continue; }
 
-      // Resolve role (best-effort; a needsSelection is a hard stop for that entry)
+      // Resolve the role, or validate a caller-chosen one (a needsSelection or an
+      // invalid role is a hard stop for that entry). Best-effort: a failed lookup
+      // keeps a caller-chosen roleID and lets Autotask enforce it.
       let roleID = entry.roleID;
-      if (roleID == null) {
-        let rr: Awaited<ReturnType<typeof this.resolveWorkTimeEntryRole>> | null;
-        try { rr = await this.resolveWorkTimeEntryRole(resourceID); } catch { rr = null; }
-        if (rr && 'error' in rr) { row.status = 'error'; row.error = rr.error; plan.push({ row, entry }); continue; }
-        if (rr && 'needsSelection' in rr) { row.status = 'error'; row.error = 'Resource has multiple roles and no default — set roleID'; row.needsSelection = rr.needsSelection; plan.push({ row, entry }); continue; }
-        if (rr && 'roleID' in rr) roleID = rr.roleID;
-      }
+      let rr: Awaited<ReturnType<typeof this.resolveWorkTimeEntryRole>> | null;
+      try { rr = await this.resolveWorkTimeEntryRole(resourceID, roleID); } catch { rr = null; }
+      if (rr && 'error' in rr) { row.status = 'error'; row.error = rr.error; plan.push({ row, entry }); continue; }
+      if (rr && 'needsSelection' in rr) { row.status = 'error'; row.error = 'Resource has multiple roles and no default — set roleID'; row.needsSelection = rr.needsSelection; plan.push({ row, entry }); continue; }
+      if (rr && 'invalidRole' in rr) { row.status = 'error'; row.error = `roleID ${rr.invalidRole} is not an active role for this resource — set roleID to one of its roles`; row.needsSelection = rr.validRoles; plan.push({ row, entry }); continue; }
+      if (rr && 'roleID' in rr) { roleID = rr.roleID; row.roleName = rr.roleName; row.roleSource = rr.source; }
+      else if (roleID != null) row.roleSource = 'explicit_unverified';
       if (roleID != null) row.roleID = roleID;
 
       // Duplicate probe (mirror logTimeIdempotent's summary guard)
@@ -1722,6 +1727,8 @@ export class AutotaskService {
       label?: string;
       hoursWorked: number;
       roleID?: number;
+      roleName?: string | null;
+      roleSource?: RoleSource;
       status: 'would_create' | 'created' | 'duplicate' | 'error';
       id?: number;
       duplicateOf?: number;
@@ -1761,14 +1768,15 @@ export class AutotaskService {
       }
       if (resourceID == null) { row.status = 'error'; row.error = 'resourceID, resourceName, or email is required'; plan.push({ row, p }); continue; }
 
+      // Resolve the role, or validate a caller-chosen one (see the bulk-task path).
       let roleID = p.roleID;
-      if (roleID == null) {
-        let rr: Awaited<ReturnType<typeof this.resolveWorkTimeEntryRole>> | null;
-        try { rr = await this.resolveWorkTimeEntryRole(resourceID); } catch { rr = null; }
-        if (rr && 'error' in rr) { row.status = 'error'; row.error = rr.error; plan.push({ row, p }); continue; }
-        if (rr && 'needsSelection' in rr) { row.status = 'error'; row.error = 'Resource has multiple roles and no default — set roleID'; row.needsSelection = rr.needsSelection; plan.push({ row, p }); continue; }
-        if (rr && 'roleID' in rr) roleID = rr.roleID;
-      }
+      let rr: Awaited<ReturnType<typeof this.resolveWorkTimeEntryRole>> | null;
+      try { rr = await this.resolveWorkTimeEntryRole(resourceID, roleID); } catch { rr = null; }
+      if (rr && 'error' in rr) { row.status = 'error'; row.error = rr.error; plan.push({ row, p }); continue; }
+      if (rr && 'needsSelection' in rr) { row.status = 'error'; row.error = 'Resource has multiple roles and no default — set roleID'; row.needsSelection = rr.needsSelection; plan.push({ row, p }); continue; }
+      if (rr && 'invalidRole' in rr) { row.status = 'error'; row.error = `roleID ${rr.invalidRole} is not an active role for this resource — set roleID to one of its roles`; row.needsSelection = rr.validRoles; plan.push({ row, p }); continue; }
+      if (rr && 'roleID' in rr) { roleID = rr.roleID; row.roleName = rr.roleName; row.roleSource = rr.source; }
+      else if (roleID != null) row.roleSource = 'explicit_unverified';
       if (roleID != null) row.roleID = roleID;
 
       const want = String(p.summaryNotes).trim().toLowerCase();
@@ -2787,28 +2795,35 @@ export class AutotaskService {
 
   /**
    * Resolve the roleID for a ticket/task time entry (Autotask requires one).
-   * Uses the resource's DEFAULT service-desk role when it has one, or its sole
-   * role when there's only one — otherwise returns the resource's roles as a
-   * SELECTION list (roleID → canonical name) so the caller can pick, rather than
-   * guessing/matching a role that isn't theirs. Never invents a role.
+   *
+   * With `requestedRoleID` (the caller chose): VALIDATE it against the
+   * resource's active roles — a role that isn't theirs returns `invalidRole`
+   * plus the valid choices instead of being sent to Autotask.
+   *
+   * Without it: the resource's DEFAULT service-desk role, or its sole role —
+   * otherwise a SELECTION list (roleID → canonical name + department/queue) so
+   * the caller picks. Never guesses between several roles (see
+   * utils/time-entry-role). `source` records how the role was chosen.
    */
   async resolveWorkTimeEntryRole(
-    resourceID: number
-  ): Promise<{ roleID: number } | { needsSelection: Array<{ roleID: number; roleName: string | null; isDefault: boolean; departments?: string[]; queues?: string[] }> } | { error: string }> {
-    const roles = await this.getResourceRoles(resourceID);
+    resourceID: number,
+    requestedRoleID?: number | null
+  ): Promise<
+    | { roleID: number; roleName: string | null; source: 'explicit' | 'default' | 'sole' }
+    | { needsSelection: RoleChoice[] }
+    | { invalidRole: number; validRoles: RoleChoice[] }
+    | { error: string }
+  > {
+    // Inactive ResourceRoles rows are not roles the resource can log time in.
+    const roles = (await this.getResourceRoles(resourceID)).filter((r) => r.roleID != null && r.isActive !== false);
     if (!roles.length) {
-      return { error: `Resource ${resourceID} has no roles assigned — ticket/task time entries require a role. Assign one in Autotask, or pass roleID explicitly.` };
+      return { error: `Resource ${resourceID} has no active roles assigned — ticket/task time entries require a role. Assign one in Autotask, then re-run.` };
     }
-    const def = roles.find((r) => r.isDefaultServiceDeskRole && r.roleID != null);
-    if (def) return { roleID: Number(def.roleID) };
-    const distinctRoleIDs = new Set(roles.filter((r) => r.roleID != null).map((r) => Number(r.roleID)));
-    if (distinctRoleIDs.size === 1) return { roleID: [...distinctRoleIDs][0] };
-    // Multiple distinct roles, no default the API can see — return them DEDUPED by
-    // roleID with the department(s)/queue(s) each covers, so the caller (an LLM)
-    // can pick the role that fits the work rather than guessing.
+    // DEDUPE by roleID with the department(s)/queue(s) each covers — Autotask
+    // stores one ResourceRoles row per department AND per queue, so the raw list
+    // repeats roles.
     const byRole = new Map<number, { roleID: number; roleName: string | null; isDefault: boolean; departments: Set<string>; queues: Set<string> }>();
     for (const r of roles) {
-      if (r.roleID == null) continue;
       const id = Number(r.roleID);
       const e = byRole.get(id) ?? { roleID: id, roleName: r.roleName ?? null, isDefault: false, departments: new Set<string>(), queues: new Set<string>() };
       if (r.departmentName) e.departments.add(String(r.departmentName));
@@ -2816,15 +2831,23 @@ export class AutotaskService {
       e.isDefault = e.isDefault || !!r.isDefaultServiceDeskRole;
       byRole.set(id, e);
     }
-    return {
-      needsSelection: [...byRole.values()].map((e) => ({
-        roleID: e.roleID,
-        roleName: e.roleName,
-        isDefault: e.isDefault,
-        ...(e.departments.size ? { departments: [...e.departments] } : {}),
-        ...(e.queues.size ? { queues: [...e.queues] } : {}),
-      })),
-    };
+    const choices: RoleChoice[] = [...byRole.values()].map((e) => ({
+      roleID: e.roleID,
+      roleName: e.roleName,
+      isDefault: e.isDefault,
+      ...(e.departments.size ? { departments: [...e.departments] } : {}),
+      ...(e.queues.size ? { queues: [...e.queues] } : {}),
+    }));
+    if (requestedRoleID != null) {
+      const hit = byRole.get(Number(requestedRoleID));
+      return hit
+        ? { roleID: hit.roleID, roleName: hit.roleName, source: 'explicit' }
+        : { invalidRole: Number(requestedRoleID), validRoles: choices };
+    }
+    const def = choices.find((c) => c.isDefault);
+    if (def) return { roleID: def.roleID, roleName: def.roleName, source: 'default' };
+    if (choices.length === 1) return { roleID: choices[0]!.roleID, roleName: choices[0]!.roleName, source: 'sole' };
+    return { needsSelection: choices };
   }
 
   async searchResources(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskResource>> {

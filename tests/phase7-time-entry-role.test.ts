@@ -95,6 +95,38 @@ describe('resolveWorkTimeEntryRole', () => {
     });
   });
 
+  // 110/112: hidden system roles (Roles entity doesn't return them; unnamed,
+  // held by ~9 resources in Administration, never used for time — live 2026-09-29).
+  const withSystemRoles = JONATHAN_ROLES.map((r) => ({ ...r, roleExists: r.roleID !== 110 && r.roleID !== 112 }));
+
+  test('hidden system roles are left out of the pick list', async () => {
+    const s = mk();
+    jest.spyOn(s, 'getResourceRoles').mockResolvedValue(withSystemRoles);
+    const r = await s.resolveWorkTimeEntryRole(30683829) as any;
+    expect(r.needsSelection.map((c: any) => c.roleID)).toEqual([29683386, 29683355, 29682834]);
+  });
+
+  test('an explicit hidden system roleID is rejected', async () => {
+    const s = mk();
+    jest.spyOn(s, 'getResourceRoles').mockResolvedValue(withSystemRoles);
+    const r = await s.resolveWorkTimeEntryRole(30683829, 112) as any;
+    expect(r.invalidRole).toBe(112);
+    expect(r.validRoles.map((c: any) => c.roleID)).not.toContain(112);
+  });
+
+  test('roleExists unknown (null — lookup failed) does NOT hide a role', async () => {
+    const s = mk();
+    jest.spyOn(s, 'getResourceRoles').mockResolvedValue([{ roleID: 42, roleName: null, roleExists: null, isActive: true }]);
+    expect(await s.resolveWorkTimeEntryRole(1)).toEqual({ roleID: 42, roleName: null, source: 'sole' });
+  });
+
+  test('a resource holding ONLY system roles gets the no-roles error, not a system role', async () => {
+    const s = mk();
+    jest.spyOn(s, 'getResourceRoles').mockResolvedValue([{ roleID: 110, roleName: null, roleExists: false, isActive: true }]);
+    const r = await s.resolveWorkTimeEntryRole(1) as any;
+    expect(r.error).toMatch(/no active roles/);
+  });
+
   test('an explicit roleID on an inactive role row is rejected', async () => {
     const s = mk();
     jest.spyOn(s, 'getResourceRoles').mockResolvedValue([

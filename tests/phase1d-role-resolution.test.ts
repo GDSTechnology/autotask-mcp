@@ -49,21 +49,42 @@ describe('role service methods (#42)', () => {
     expect(await svc.resolveResourceDefaultRole(5)).toBeNull();
   });
 
+  // Route the mocked http.query by entity; `roles` answers the Roles lookup.
+  const rolesHttp = (links: any[], roles: any[] | Error) => jest.fn(async (entity: string, _filter?: unknown, _opts?: unknown) => {
+    if (entity === 'ResourceRoles') return links;
+    if (entity === 'Roles') { if (roles instanceof Error) throw roles; return roles; }
+    return [];
+  });
+
   test('getResourceRoles enriches names and flags the default role', async () => {
     const svc = withHttp({});
-    jest.spyOn(svc as any, 'ensureClient').mockResolvedValue({
-      query: jest.fn().mockResolvedValue([
-        { id: 1, resourceID: 5, roleID: 99 },
-        { id: 2, resourceID: 5, roleID: 42 },
-      ]),
-    });
+    const query = rolesHttp([{ id: 1, resourceID: 5, roleID: 99 }, { id: 2, resourceID: 5, roleID: 42 }], [{ id: 99, name: 'Technician' }, { id: 42, name: 'Engineer' }]);
+    jest.spyOn(svc as any, 'ensureClient').mockResolvedValue({ query });
     jest.spyOn(svc, 'getResource').mockResolvedValue({ id: 5, defaultServiceDeskRoleID: 99 } as any);
-    jest.spyOn(svc, 'searchRoles').mockResolvedValue([{ id: 99, name: 'Technician' }, { id: 42, name: 'Engineer' }]);
     const roles = await svc.getResourceRoles(5);
     expect(roles).toEqual([
-      expect.objectContaining({ roleID: 99, roleName: 'Technician', isDefaultServiceDeskRole: true }),
-      expect.objectContaining({ roleID: 42, roleName: 'Engineer', isDefaultServiceDeskRole: false }),
+      expect.objectContaining({ roleID: 99, roleName: 'Technician', roleExists: true, isDefaultServiceDeskRole: true }),
+      expect.objectContaining({ roleID: 42, roleName: 'Engineer', roleExists: true, isDefaultServiceDeskRole: false }),
     ]);
+    // Names come from an exact `in` lookup of THIS resource's roleIDs — no page cap.
+    const rolesCall = query.mock.calls.find((c: any[]) => c[0] === 'Roles')!;
+    expect(rolesCall[1]).toEqual([{ op: 'in', field: 'id', value: [99, 42] }]);
+  });
+
+  test('a roleID the Roles entity does not return is a hidden system role (roleExists:false)', async () => {
+    const svc = withHttp({});
+    jest.spyOn(svc as any, 'ensureClient').mockResolvedValue({ query: rolesHttp([{ id: 1, resourceID: 5, roleID: 29683355 }, { id: 2, resourceID: 5, roleID: 110 }], [{ id: 29683355, name: 'Engineer' }]) });
+    jest.spyOn(svc, 'getResource').mockResolvedValue({ id: 5 } as any);
+    const roles = await svc.getResourceRoles(5);
+    expect(roles.find((r) => r.roleID === 110)).toEqual(expect.objectContaining({ roleName: null, roleExists: false }));
+  });
+
+  test('a FAILED Roles lookup leaves roleExists unknown (null), never false', async () => {
+    const svc = withHttp({});
+    jest.spyOn(svc as any, 'ensureClient').mockResolvedValue({ query: rolesHttp([{ id: 1, resourceID: 5, roleID: 42 }], new Error('boom')) });
+    jest.spyOn(svc, 'getResource').mockResolvedValue({ id: 5 } as any);
+    const roles = await svc.getResourceRoles(5);
+    expect(roles[0]).toEqual(expect.objectContaining({ roleID: 42, roleName: null, roleExists: null }));
   });
 });
 

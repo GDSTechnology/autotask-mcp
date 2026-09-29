@@ -31,8 +31,8 @@
 # transport origin (peer address / X-Forwarded-For / User-Agent) is captured
 # automatically and logged next to it — no config needed.
 #
-# Both services track `:latest` so a deploy is just `docker compose pull &&
-# docker compose up -d` — no YAML edit per release (semantic-release publishes
+# Both services track `:latest` so a deploy is just `docker compose pull <svc>
+# && docker compose up -d <svc>` — no YAML edit per release (semantic-release publishes
 # `:latest` alongside each version tag). Needs a release >= 3.2.0 for
 # per-instance impersonation mode. To pin/roll back, replace `:latest` with a
 # specific tag (e.g. `:3.2.0`) or a digest. Both services share the same

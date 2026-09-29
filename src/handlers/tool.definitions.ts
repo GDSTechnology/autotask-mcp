@@ -1144,11 +1144,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         offsetHours: {
           type: 'number',
-          description: 'Billing offset in hours to subtract from worked time — e.g. a 30-minute lunch on an 8h ticket = 0.5. Billable (hoursToBill) becomes hoursWorked − offsetHours. Lets one entry capture worked-vs-billable instead of splitting it.'
-        },
-        hoursToBill: {
-          type: 'number',
-          description: 'Billable hours. Optional — if omitted and offsetHours is given, it is computed as hoursWorked − offsetHours.'
+          description: 'Billing offset in hours to subtract from worked time — e.g. a 30-minute lunch on an 8h ticket = 0.5. The ONLY API lever on billed time: Autotask derives hoursToBill (read-only — not an input) from hoursWorked − offsetHours, then applies the contract/work-type rounding (e.g. a 0.25h minimum), so the stored hoursToBill can exceed the difference. The result reports the stored hoursToBill.'
         },
         showOnInvoice: {
           type: 'boolean',
@@ -1282,8 +1278,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         currentUser: { type: 'boolean', description: 'Log as the calling user (default when resourceID is omitted).' },
         roleID: { type: 'number', description: 'Role for the entry. Validated against the user\'s active roles when set (invalid → returns the valid choices, nothing written); auto-filled from the default (or sole) role when omitted; multiple roles → returns choices.' },
         billingCodeID: { type: 'number', description: 'Work type / billing code (ticket/task time)' },
-        offsetHours: { type: 'number', description: 'Billing offset to subtract from worked time (e.g. 0.5 for a 30m lunch); hoursToBill = hoursWorked − offset.' },
-        hoursToBill: { type: 'number', description: 'Billable hours (optional; computed from offsetHours when omitted).' },
+        offsetHours: { type: 'number', description: 'Billing offset to subtract from worked time (e.g. 0.5 for a 30m lunch). Autotask derives the read-only hoursToBill from hoursWorked − offset plus contract/work-type rounding.' },
         category: { type: 'string', description: 'Category for Regular Time (no ticket/task), e.g. "Internal Meeting" (from autotask_list_regular_time_categories)' }
       },
       required: ['summaryNotes']
@@ -1312,8 +1307,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       properties: {
         id: { type: 'number', description: 'Time entry ID to update' },
         hoursWorked: { type: 'number', description: 'Actual hours worked (fractional allowed)' },
-        hoursToBill: { type: 'number', description: 'Billable hours. Note: to make an entry non-billable, set isNonBillable/showOnInvoice — hoursToBill alone is not a reliable non-billable signal.' },
-        offsetHours: { type: 'number', description: 'Billing offset in hours to subtract from worked time (e.g. 0.5 for a 30m lunch).' },
+        offsetHours: { type: 'number', description: 'Billing offset in hours to subtract from worked time (e.g. 0.5 for a 30m lunch). hoursToBill itself is READ-ONLY (Autotask derives it from hoursWorked − offsetHours plus contract/work-type rounding) and is not an input; a request to set only it writes nothing and says so. To make an entry non-billable set isNonBillable/showOnInvoice.' },
         dateWorked: { type: 'string', description: 'Date worked (YYYY-MM-DD).' },
         startDateTime: { type: 'string', description: 'Start date/time. Offset-aware ISO (e.g. 2026-09-23T10:00:00-04:00) is stored as the correct UTC instant. To pass a local time, also send timeZone.' },
         endDateTime: { type: 'string', description: 'End date/time (see startDateTime).' },

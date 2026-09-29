@@ -13,6 +13,10 @@ name: Release
 on:
   push:
     branches: [main]
+  # Manual re-run for when GitHub drops the push event of a merge (seen
+  # 2026-09-29: #141 merged, no workflow started). Run it from main — on any
+  # other branch semantic-release finds no release branch and cuts nothing.
+  workflow_dispatch:
 
 permissions:
   contents: write        # create tags + GitHub Releases

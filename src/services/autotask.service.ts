@@ -1135,11 +1135,12 @@ export class AutotaskService {
         //  - local with no resolvable tz -> left naive (legacy behavior)
         if (body.startDateTime) body.startDateTime = normalizeTimestamp(String(body.startDateTime), effectiveTz);
         if (body.endDateTime) body.endDateTime = normalizeTimestamp(String(body.endDateTime), effectiveTz);
-        // Billable = worked minus the offset (e.g. a 30m lunch) when not set explicitly.
-        if (body.offsetHours != null && body.hoursToBill == null && body.hoursWorked != null) {
-          body.hoursToBill = Math.max(0, Math.round((Number(body.hoursWorked) - Math.abs(Number(body.offsetHours))) * 100) / 100);
-        }
       }
+      // hoursToBill is READ-ONLY (TimeEntries entityInformation, verified live
+      // 2026-09-29): Autotask derives it from hoursWorked − offsetHours plus the
+      // contract/work-type rounding, and silently ignores a supplied value. Never
+      // send it, so nothing implies it was honoured. Use offsetHours to bill less.
+      delete body.hoursToBill;
       const id = await http.create('TimeEntries', body);
       this.logger.info(`Time entry created with ID: ${id}`);
       return id;
@@ -1342,7 +1343,9 @@ export class AutotaskService {
     const http = await this.ensureClient();
     try {
       this.logger.debug(`Updating time entry ${id}:`, updates);
-      await http.update('TimeEntries', id, updates as Record<string, any>);
+      // hoursToBill is read-only (see createTimeEntry) — never send it.
+      const { hoursToBill: _readOnly, ...writable } = updates;
+      await http.update('TimeEntries', id, writable as Record<string, any>);
       this.logger.info(`Time entry ${id} updated`);
     } catch (error) {
       this.logger.error(`Failed to update time entry ${id}:`, error);

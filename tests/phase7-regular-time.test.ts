@@ -107,12 +107,24 @@ describe('ticket/task time start-stop derivation', () => {
     expect(create.mock.calls[0][1].hoursWorked).toBe(8);
   });
 
-  test('billing offset (lunch) → hoursToBill = worked − offset', async () => {
+  // hoursToBill is READ-ONLY (live entityInformation, 2026-09-29): Autotask
+  // derives it from hoursWorked − offsetHours + contract rounding and ignores a
+  // supplied value, so the offset is sent and hoursToBill never is.
+  test('billing offset (lunch) sends offsetHours, never the read-only hoursToBill', async () => {
     const s = mk();
     const create = jest.fn().mockResolvedValue(1);
     jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
-    await s.createTimeEntry({ ticketID: 1, resourceID: 1, roleID: 5, dateWorked: '2026-09-22', hoursWorked: 8, offsetHours: 0.5, summaryNotes: 'x' } as any);
-    expect(create.mock.calls[0][1].hoursToBill).toBe(7.5);
+    await s.createTimeEntry({ ticketID: 1, resourceID: 1, roleID: 5, dateWorked: '2026-09-22', hoursWorked: 8, offsetHours: 0.5, hoursToBill: 7.5, summaryNotes: 'x' } as any);
+    expect(create.mock.calls[0][1].offsetHours).toBe(0.5);
+    expect(create.mock.calls[0][1]).not.toHaveProperty('hoursToBill');
+  });
+
+  test('updateTimeEntry never sends the read-only hoursToBill', async () => {
+    const s = mk();
+    const update = jest.fn().mockResolvedValue(undefined);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ update });
+    await s.updateTimeEntry(7, { hoursToBill: 0.1, summaryNotes: 'y' } as any);
+    expect(update.mock.calls[0][2]).toEqual({ summaryNotes: 'y' });
   });
 
   test('hours-only span rolls past midnight to the next day', async () => {

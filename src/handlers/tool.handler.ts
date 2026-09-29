@@ -989,6 +989,13 @@ export class AutotaskToolHandler {
       message: `Found ${p.items.length} ${noun}`,
       pagination: { page: p.page, pageSize: p.pageSize, hasMore: p.hasMore },
     });
+    // hoursToBill is read-only: Autotask derives it and ignores a supplied value.
+    // Say so when a caller asked for a value the stored entry doesn't carry.
+    const hoursToBillWarning = (requested: unknown, stored: unknown): string | null => {
+      if (requested == null) return null;
+      if (stored != null && Math.abs(Number(stored) - Number(requested)) < 0.005) return null;
+      return `hoursToBill is read-only in the Autotask API — requested ${requested}, Autotask stored ${stored ?? 'unknown'} (derived from hoursWorked − offsetHours plus contract/work-type rounding). Use offsetHours to bill less than worked, or edit Hours to Bill in the Autotask UI.`;
+    };
     // Ticket/task time needs a roleID: resolve the default/sole role, or VALIDATE
     // a caller-chosen one against the resource's roles. Returns `stop` (a response
     // to send, nothing written) for a needed pick or an invalid role; otherwise
@@ -1373,6 +1380,8 @@ export class AutotaskToolHandler {
         // High-level billing intent -> Autotask field combo (explicit fields win).
         const billingTreatment = a.billingTreatment; delete a.billingTreatment;
         applyBillingTreatment(a, billingTreatment);
+        // hoursToBill is read-only (Autotask derives it); kept only to warn below.
+        const requestedHoursToBill = a.hoursToBill; delete a.hoursToBill;
         const id = await s.createTimeEntry(a);
         // Rich readback so timezone/billing/role errors are visible immediately
         // (who, which role, how much, where), not just the id.
@@ -1389,6 +1398,8 @@ export class AutotaskToolHandler {
         if (stored && a.roleID != null && stored.roleID != null && Number(stored.roleID) !== Number(a.roleID)) {
           warnings.push(`stored roleID ${stored.roleID} differs from the requested roleID ${a.roleID}`);
         }
+        const htbWarning = hoursToBillWarning(requestedHoursToBill, stored?.hoursToBill);
+        if (htbWarning) warnings.push(htbWarning);
         const result = stored
           ? {
               id,
@@ -2616,7 +2627,15 @@ export class AutotaskToolHandler {
         return { result: r, message: 'Time entry retrieved successfully' };
       }],
       ['autotask_update_time_entry', async (a) => {
-        const { id, billingTreatment, timeZone, ...updates } = a;
+        const { id, billingTreatment, timeZone, hoursToBill: requestedHoursToBill, ...updates } = a;
+        // hoursToBill is read-only (Autotask derives it) — an update of ONLY it
+        // would be a silent no-op reported as success, so refuse it up front.
+        if (requestedHoursToBill != null && Object.keys(updates).length === 0 && !billingTreatment) {
+          return {
+            result: { id, status: 'not_writable', field: 'hoursToBill' },
+            message: `Nothing was written: hoursToBill is read-only in the Autotask API — Autotask calculates it from hoursWorked − offsetHours and the contract/work-type rounding. To bill less than worked set offsetHours; to change the rounding, edit the contract, or edit Hours to Bill in the Autotask UI.`,
+          };
+        }
         // A role change is validated against the ENTRY OWNER's roles (not the
         // caller's) so a wrong role can't be written onto someone's time.
         if (updates.roleID != null) {
@@ -2637,6 +2656,11 @@ export class AutotaskToolHandler {
           warnings.push(`hoursWorked=${updates.hoursWorked} does not match the ${span.toFixed(4)}h start/end interval`);
         }
         await s.updateTimeEntry(id, updates);
+        if (requestedHoursToBill != null) {
+          const after = await s.getTimeEntry(id).catch(() => null);
+          const w = hoursToBillWarning(requestedHoursToBill, after?.hoursToBill);
+          if (w) warnings.push(w);
+        }
         return { result: warnings.length ? { id, warnings } : id, message: `Successfully updated time entry ${id}${warnings.length ? ` (warning: ${warnings.join('; ')})` : ''}` };
       }],
       ['autotask_delete_time_entry', async (a) => {

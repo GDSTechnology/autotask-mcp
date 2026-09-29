@@ -196,6 +196,52 @@ describe('create_time_entry handler role wiring', () => {
   });
 });
 
+// hoursToBill is read-only in the Autotask API (live entry 55508: an update to
+// 0.1 "succeeded" while Autotask kept 0.25). The tools must not imply otherwise.
+describe('hoursToBill is read-only', () => {
+  const { AutotaskToolHandler } = require('../src/handlers/tool.handler');
+
+  test('update of ONLY hoursToBill writes nothing and says why', async () => {
+    const s = mk();
+    const update = jest.spyOn(s, 'updateTimeEntry').mockResolvedValue(undefined as any);
+    const h = new AutotaskToolHandler(s, new Logger('error'));
+    const b = body(await h.callTool('autotask_update_time_entry', { id: 55508, hoursToBill: 0.1 }));
+    expect(update).not.toHaveBeenCalled();
+    expect(b.data).toEqual({ id: 55508, status: 'not_writable', field: 'hoursToBill' });
+    expect(b.message).toMatch(/Nothing was written: hoursToBill is read-only/);
+  });
+
+  test('update with other fields proceeds and warns when stored hoursToBill differs', async () => {
+    const s = mk();
+    const update = jest.spyOn(s, 'updateTimeEntry').mockResolvedValue(undefined as any);
+    jest.spyOn(s, 'getTimeEntry').mockResolvedValue({ id: 55508, hoursToBill: 0.25 } as any);
+    const h = new AutotaskToolHandler(s, new Logger('error'));
+    const b = body(await h.callTool('autotask_update_time_entry', { id: 55508, hoursToBill: 0.1, summaryNotes: 'y' }));
+    expect(update).toHaveBeenCalledWith(55508, { summaryNotes: 'y' });
+    expect(b.data.warnings.join(' ')).toMatch(/requested 0.1, Autotask stored 0.25/);
+  });
+
+  test('create drops hoursToBill and warns when Autotask stored something else', async () => {
+    const s = mk();
+    jest.spyOn(s, 'getResourceRoles').mockResolvedValue(JONATHAN_ROLES);
+    const create = jest.spyOn(s, 'createTimeEntry').mockResolvedValue(555 as any);
+    jest.spyOn(s, 'getTimeEntry').mockResolvedValue({ id: 555, resourceID: 30683829, ticketID: 209477, roleID: 29683355, hoursWorked: 0.1, hoursToBill: 0.25 } as any);
+    jest.spyOn(s, 'getResource').mockResolvedValue({ id: 30683829, firstName: 'Jonathan', lastName: 'Fitzgerald' } as any);
+    const h = new AutotaskToolHandler(s, new Logger('error'));
+    const b = body(await h.callTool('autotask_create_time_entry', { resourceID: 30683829, ticketID: 209477, roleID: 29683355, dateWorked: '2026-09-28', hoursWorked: 0.1, hoursToBill: 0.1, summaryNotes: 'x' }));
+    expect(create.mock.calls[0]![0]).not.toHaveProperty('hoursToBill');
+    expect(b.data.hoursToBill).toBe(0.25);
+    expect(b.data.warnings.join(' ')).toMatch(/hoursToBill is read-only/);
+  });
+
+  test('no time-entry write schema advertises hoursToBill as an input', () => {
+    for (const name of ['autotask_create_time_entry', 'autotask_log_my_time', 'autotask_update_time_entry']) {
+      const props = (TOOL_DEFINITIONS.find((t) => t.name === name)!.inputSchema as any).properties;
+      expect(props).not.toHaveProperty('hoursToBill');
+    }
+  });
+});
+
 // GDS 2026-09-28 reported "the error handler asks for roleID but the published
 // schema doesn't expose it". Pin that every labour-entry tool that can answer
 // role_required ADVERTISES roleID, so the retry the message asks for is possible.

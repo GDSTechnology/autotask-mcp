@@ -12,6 +12,7 @@ import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
+import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
 // confirm gate treats an omitted dryRun as a dry-run (plan only, no confirm),
@@ -988,6 +989,25 @@ export class AutotaskToolHandler {
       message: `Found ${p.items.length} ${noun}`,
       pagination: { page: p.page, pageSize: p.pageSize, hasMore: p.hasMore },
     });
+    // Ticket/task time needs a roleID: resolve the default/sole role, or VALIDATE
+    // a caller-chosen one against the resource's roles. Returns `stop` (a response
+    // to send, nothing written) for a needed pick or an invalid role; otherwise
+    // fills a.roleID and reports how it was chosen. Best-effort: if the role
+    // lookup itself fails the write proceeds (Autotask still enforces the role).
+    const resolveTimeEntryRole = async (a: any): Promise<{ stop: { result: any; message: string } } | { roleName: string | null; roleSource: RoleSource | null }> => {
+      if (!(a.ticketID || a.taskID)) return { roleName: null, roleSource: null };
+      let rr: Awaited<ReturnType<typeof s.resolveWorkTimeEntryRole>> | null;
+      try { rr = await s.resolveWorkTimeEntryRole(a.resourceID, a.roleID); } catch { rr = null; }
+      if (rr && 'error' in rr) return { stop: { result: null, message: rr.error } };
+      if (rr && 'needsSelection' in rr) {
+        return { stop: { result: { status: 'role_required', needsSelection: rr.needsSelection }, message: needsRoleSelectionMessage(rr.needsSelection) } };
+      }
+      if (rr && 'invalidRole' in rr) {
+        return { stop: { result: { status: 'invalid_role', requestedRoleID: rr.invalidRole, needsSelection: rr.validRoles }, message: invalidRoleMessage(rr.invalidRole, a.resourceID, rr.validRoles) } };
+      }
+      if (rr && 'roleID' in rr) { a.roleID = rr.roleID; return { roleName: rr.roleName, roleSource: rr.source }; }
+      return { roleName: null, roleSource: a.roleID != null ? 'explicit_unverified' : null };
+    };
     return new Map<string, H>([
       // Connection
       ['autotask_test_connection', async () => {
@@ -1315,14 +1335,16 @@ export class AutotaskToolHandler {
           return { result: null, message: 'Please specify who is logging this time. Provide a resourceName (e.g., "Will Spence") or resourceID.' };
         }
         // Resolve resourceName to resourceID via SDK helper
+        let resourceName: string | null = null;
         if (a.resourceName && !a.resourceID) {
           const resource = await s.resolveResourceByName(a.resourceName);
           if (!resource) {
             throw new Error(`No resource found matching "${a.resourceName}"`);
           }
           a.resourceID = resource.id;
-          delete a.resourceName;
+          resourceName = [resource.firstName, resource.lastName].filter(Boolean).join(' ') || null;
         }
+        delete a.resourceName;
         // For Regular Time entries (no ticket/task/project), handle category
         const isRegularTime = !a.ticketID && !a.taskID && !a.projectID;
         if (isRegularTime) {
@@ -1345,43 +1367,46 @@ export class AutotaskToolHandler {
           // the "Error finding reference Task/Ticket" 500). 5 = Activity.
           if (a.timeEntryType == null) a.timeEntryType = 5;
         }
-        // Ticket/task time entries require a roleID. Use the resource's default
-        // when it has one; otherwise surface a pick rather than guessing. Best-
-        // effort: if the role lookup itself fails, let the create proceed (Autotask
-        // still enforces the requirement) rather than hard-blocking.
-        if ((a.ticketID || a.taskID) && a.roleID == null) {
-          let rr: Awaited<ReturnType<typeof s.resolveWorkTimeEntryRole>> | null;
-          try { rr = await s.resolveWorkTimeEntryRole(a.resourceID); } catch { rr = null; }
-          if (rr && 'error' in rr) return { result: null, message: rr.error };
-          if (rr && 'needsSelection' in rr) {
-            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}${r.departments?.length ? ` [${r.departments.join('/')}]` : ''}${r.isDefault ? ' (default)' : ''}`).join('; ');
-            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — pick the one matching the work (by role/department) and re-run with roleID set to one of: ${opts}.` };
-          }
-          if (rr && 'roleID' in rr) a.roleID = rr.roleID;
-        }
+        // Ticket/task time: default/sole role, a pick, or validate the chosen one.
+        const role = await resolveTimeEntryRole(a);
+        if ('stop' in role) return role.stop;
         // High-level billing intent -> Autotask field combo (explicit fields win).
         const billingTreatment = a.billingTreatment; delete a.billingTreatment;
         applyBillingTreatment(a, billingTreatment);
         const id = await s.createTimeEntry(a);
-        // Rich readback so timezone/billing errors are visible immediately (the
-        // stored UTC instant + resolved billing state), not just the id.
+        // Rich readback so timezone/billing/role errors are visible immediately
+        // (who, which role, how much, where), not just the id.
         const stored = await s.getTimeEntry(id).catch(() => null);
+        if (resourceName == null && a.resourceID != null) {
+          const r = await s.getResource(a.resourceID).catch(() => null) as Record<string, any> | null;
+          resourceName = r ? ([r.firstName, r.lastName].filter(Boolean).join(' ') || null) : null;
+        }
         const warnings: string[] = [];
         const span = durationHours(stored?.startDateTime as string | undefined, stored?.endDateTime as string | undefined);
         if (span != null && stored?.hoursWorked != null && Math.abs(span - Number(stored.hoursWorked)) > 0.02) {
           warnings.push(`hoursWorked=${stored.hoursWorked} does not match the ${span.toFixed(4)}h stored start/end interval`);
         }
+        if (stored && a.roleID != null && stored.roleID != null && Number(stored.roleID) !== Number(a.roleID)) {
+          warnings.push(`stored roleID ${stored.roleID} differs from the requested roleID ${a.roleID}`);
+        }
         const result = stored
           ? {
               id,
+              ticketID: stored.ticketID ?? null, taskID: stored.taskID ?? null,
+              resourceID: stored.resourceID, resourceName,
+              roleID: stored.roleID ?? null,
+              roleName: stored.roleID != null && Number(stored.roleID) === Number(a.roleID) ? role.roleName : null,
+              roleSource: role.roleSource,
               dateWorked: stored.dateWorked, startDateTime: stored.startDateTime, endDateTime: stored.endDateTime,
               hoursWorked: stored.hoursWorked, hoursToBill: (stored as any).hoursToBill,
               isNonBillable: (stored as any).isNonBillable, showOnInvoice: (stored as any).showOnInvoice,
-              billingCodeID: (stored as any).billingCodeID, roleID: stored.roleID,
+              billingCodeID: (stored as any).billingCodeID,
+              summaryNotes: stored.summaryNotes,
               ...(warnings.length ? { warnings } : {}),
             }
-          : { id };
-        return { result, message: `Successfully created time entry with ID: ${id}${warnings.length ? ` (warning: ${warnings.join('; ')})` : ''}` };
+          : { id, resourceID: a.resourceID, resourceName, roleID: a.roleID ?? null, roleName: role.roleName, roleSource: role.roleSource };
+        const roleBit = a.roleID != null ? ` as ${role.roleName ?? 'role'} (${a.roleID})` : '';
+        return { result, message: `Successfully created time entry with ID: ${id}${resourceName ? ` for ${resourceName}` : ''}${roleBit}${warnings.length ? ` (warning: ${warnings.join('; ')})` : ''}` };
       }],
       ['autotask_create_task_time_entries_bulk', async (a) => {
         if (!a.taskID) return { result: null, message: 'taskID is required.' };
@@ -1445,23 +1470,15 @@ export class AutotaskToolHandler {
           if (a.timeEntryType == null) a.timeEntryType = 5;
         }
         delete a.category;
-        // Ticket/task time entries require a roleID — default, else pick (no guess).
-        // Best-effort: a role-lookup failure doesn't block the log.
-        if ((a.ticketID || a.taskID) && a.roleID == null) {
-          let rr: Awaited<ReturnType<typeof s.resolveWorkTimeEntryRole>> | null;
-          try { rr = await s.resolveWorkTimeEntryRole(a.resourceID); } catch { rr = null; }
-          if (rr && 'error' in rr) return { result: null, message: rr.error };
-          if (rr && 'needsSelection' in rr) {
-            const opts = rr.needsSelection.map((r) => `${r.roleID} = ${r.roleName ?? '(unnamed role)'}${r.departments?.length ? ` [${r.departments.join('/')}]` : ''}${r.isDefault ? ' (default)' : ''}`).join('; ');
-            return { result: { needsSelection: rr.needsSelection }, message: `This resource has multiple roles and no single default — pick the one matching the work (by role/department) and re-run with roleID set to one of: ${opts}.` };
-          }
-          if (rr && 'roleID' in rr) a.roleID = rr.roleID;
-        }
+        // Ticket/task time: default/sole role, a pick, or validate the chosen one.
+        const role = await resolveTimeEntryRole(a);
+        if ('stop' in role) return role.stop;
         const dateWorked = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked)
           ? a.dateWorked.slice(0, 10)
           : new Date().toISOString().slice(0, 10);
         const r = await s.logTimeIdempotent({ ...a, dateWorked });
-        return { result: r, message: r.created ? `Logged time entry ${r.id}` : `Skipped — duplicate of existing time entry ${r.duplicateOf}` };
+        const roleInfo = a.roleID != null ? { roleID: a.roleID, roleName: role.roleName, roleSource: role.roleSource } : {};
+        return { result: { ...r, ...roleInfo }, message: r.created ? `Logged time entry ${r.id}` : `Skipped — duplicate of existing time entry ${r.duplicateOf}` };
       }],
 
       // Projects
@@ -2600,6 +2617,14 @@ export class AutotaskToolHandler {
       }],
       ['autotask_update_time_entry', async (a) => {
         const { id, billingTreatment, timeZone, ...updates } = a;
+        // A role change is validated against the ENTRY OWNER's roles (not the
+        // caller's) so a wrong role can't be written onto someone's time.
+        if (updates.roleID != null) {
+          const entry = await s.getTimeEntry(id);
+          if (!entry) return { result: null, message: `Time entry ${id} not found.` };
+          const role = await resolveTimeEntryRole({ ...entry, roleID: updates.roleID });
+          if ('stop' in role) return role.stop;
+        }
         // Timezone-normalize any local start/end (offset-aware or missing tz = passthrough).
         if (updates.startDateTime) updates.startDateTime = normalizeTimestamp(updates.startDateTime, timeZone);
         if (updates.endDateTime) updates.endDateTime = normalizeTimestamp(updates.endDateTime, timeZone);

@@ -1108,7 +1108,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         roleID: {
           type: 'number',
-          description: 'Role ID for the time entry (required by Autotask for ticket/task time). When omitted it is auto-filled from the resource\'s default service-desk role, or its sole role; if the resource has multiple roles and no single default, the tool returns the role choices (roleID → name) to pick from rather than guessing. Discover roles with autotask_get_resource_roles.'
+          description: 'Role ID for the time entry (required by Autotask for ticket/task time; drives the bill rate and labour reporting). When SET it is validated against the resource\'s active roles — a role that is not theirs returns status "invalid_role" with the valid choices and writes nothing. When OMITTED it is auto-filled from the resource\'s default service-desk role, or its sole role; with multiple roles and no default it returns status "role_required" with the choices (roleID → name + department/queue) and writes nothing — it never guesses. The result reports roleID, roleName and roleSource (explicit / default / sole). Discover roles with autotask_get_resource_roles.'
         },
         category: {
           type: 'string',
@@ -1280,7 +1280,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         internalNotes: { type: 'string', description: 'INTERNAL-only notes for the team (not shown to client/invoice) — carry both on one entry.' },
         resourceID: { type: 'number', description: 'Log as this resource. Omit to log as the calling user (currentUser).' },
         currentUser: { type: 'boolean', description: 'Log as the calling user (default when resourceID is omitted).' },
-        roleID: { type: 'number', description: 'Role for the entry. Auto-filled from the user\'s default (or sole) role when omitted; multiple roles → returns choices.' },
+        roleID: { type: 'number', description: 'Role for the entry. Validated against the user\'s active roles when set (invalid → returns the valid choices, nothing written); auto-filled from the default (or sole) role when omitted; multiple roles → returns choices.' },
         billingCodeID: { type: 'number', description: 'Work type / billing code (ticket/task time)' },
         offsetHours: { type: 'number', description: 'Billing offset to subtract from worked time (e.g. 0.5 for a 30m lunch); hoursToBill = hoursWorked − offset.' },
         hoursToBill: { type: 'number', description: 'Billable hours (optional; computed from offsetHours when omitted).' },
@@ -1320,7 +1320,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         timeZone: { type: 'string', description: 'IANA timezone (e.g. "America/New_York") for start/end given as local wall-clock time WITHOUT an offset. Correctly handles DST. Ignored when the timestamp already carries an offset.' },
         summaryNotes: { type: 'string', description: 'CLIENT/INVOICE-facing summary notes.' },
         internalNotes: { type: 'string', description: 'INTERNAL-only notes (not shown to client/invoice).' },
-        roleID: { type: 'number', description: 'Role for the entry (ticket/task time).' },
+        roleID: { type: 'number', description: 'Role for the entry (ticket/task time). Validated against the entry owner\'s active roles; an invalid role returns the valid choices and writes nothing.' },
         billingCodeID: { type: 'number', description: 'Work type / billing code ID (ticket/task time). NOTE: work type does not by itself set billability — use isNonBillable / billingTreatment.' },
         internalBillingCodeID: { type: 'number', description: 'Internal (Regular Time) category id.' },
         isNonBillable: { type: 'boolean', description: 'Mark the entry non-billable. Live-test: this (with showOnInvoice=false) is what actually makes an entry non-billable — showOnInvoice=false alone does not.' },

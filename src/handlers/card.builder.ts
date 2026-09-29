@@ -9,6 +9,7 @@ import { AutotaskService } from '../services/autotask.service.js';
 import { PicklistCache } from '../services/picklist.cache.js';
 import { Logger } from '../utils/logger.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
+import type { AutotaskQueryOptionsExtended } from '../types/autotask.js';
 
 export const TICKET_CARD_RESOURCE_URI = 'ui://autotask/ticket-card.html';
 
@@ -123,35 +124,65 @@ export async function buildTicketCard(
   if (priority) card.priority = priority;
   if (queue) card.queue = queue;
 
-  // Recent notes give the card (and its add-note round-trip) visible context.
-  // Autotask returns notes oldest-first and much of a ticket's note stream is
-  // its own bookkeeping (workflow-rule / notification logs), so the first N
-  // were the ticket's creation noise. Read one page, drop system notes, keep
-  // the NEWEST N human notes, and show them oldest→newest (the card appends
-  // a newly added note at the bottom).
+  // Recent ACTIVITY gives the card (and its add-note round-trip) context: what
+  // people wrote AND what techs did. Techs record their work in time-entry
+  // summaries, not notes — and most of a ticket's note stream is Autotask /
+  // integration bookkeeping (T20260921.0086: 17 notes, none human; the work is
+  // in 3 time entries). So: human notes + time entries, merged by time, the
+  // NEWEST N, shown oldest→newest (the card appends a new note at the bottom).
+  // Each source is best-effort on its own — one failing never blanks the other.
+  const activity: Array<{ at: number; seq: number; item: TicketCard['notes'][number] }> = [];
+  let seq = 0;
   try {
-    const all = await service.searchTicketNotes(ticket.id, { pageSize: CARD_NOTE_FETCH });
-    const { human } = partitionTicketNotes(all);
-    const recent = human
-      .map((n, i) => ({ n, i, t: Date.parse(String(n.createDateTime ?? '')) }))
-      .sort((a, b) => (Number.isNaN(a.t) || Number.isNaN(b.t) ? a.i - b.i : a.t - b.t || a.i - b.i))
-      .slice(-CARD_NOTE_LIMIT)
-      .map((x) => x.n);
-    card.notes = recent.map((n) => {
-      const note: TicketCard['notes'][number] = {
-        description: String(n.description ?? '').slice(0, CARD_NOTE_MAX_LENGTH),
-      };
-      if (n.title) note.title = String(n.title);
-      return note;
-    });
+    const { human } = partitionTicketNotes(await service.searchTicketNotes(ticket.id, { pageSize: CARD_NOTE_FETCH }));
+    for (const n of human) {
+      const item: TicketCard['notes'][number] = { description: String(n.description ?? '').slice(0, CARD_NOTE_MAX_LENGTH) };
+      if (n.title) item.title = String(n.title);
+      activity.push({ at: Date.parse(String(n.createDateTime ?? '')), seq: seq++, item });
+    }
   } catch (error) {
     logger.debug('Ticket card: note fetch failed, rendering without notes', error);
   }
+  try {
+    const query: AutotaskQueryOptionsExtended & { ticketId: number } = { ticketId: ticket.id, pageSize: CARD_NOTE_FETCH };
+    const entries = (await service.searchTimeEntries(query)).items;
+    const names = await resourceNames(service, entries.map((e) => e.resourceID));
+    for (const e of entries) {
+      const summary = String(e.summaryNotes ?? '').trim();
+      if (!summary) continue;
+      const who = names.get(Number(e.resourceID)) ?? `Resource ${e.resourceID}`;
+      const hours = e.hoursWorked != null ? ` · ${Number(e.hoursWorked).toFixed(2)} h` : '';
+      const day = e.dateWorked ? ` · ${String(e.dateWorked).slice(0, 10)}` : '';
+      activity.push({
+        at: Date.parse(String(e.startDateTime ?? e.createDateTime ?? e.dateWorked ?? '')),
+        seq: seq++,
+        item: { title: `Time entry — ${who}${hours}${day}`, description: summary.slice(0, CARD_NOTE_MAX_LENGTH) },
+      });
+    }
+  } catch (error) {
+    logger.debug('Ticket card: time-entry fetch failed, rendering without time entries', error);
+  }
+  card.notes = activity
+    .sort((a, b) => (Number.isNaN(a.at) || Number.isNaN(b.at) ? a.seq - b.seq : a.at - b.at || a.seq - b.seq))
+    .slice(-CARD_NOTE_LIMIT)
+    .map((x) => x.item);
 
   const noteDefaults = await resolveNoteDefaults(picklists, logger);
   if (noteDefaults) card.noteDefaults = noteDefaults;
 
   return card;
+}
+
+/** Best-effort "First Last" for each distinct resource id (misses are simply absent). */
+async function resourceNames(service: AutotaskService, ids: unknown[]): Promise<Map<number, string>> {
+  const unique = [...new Set(ids.map(Number).filter((id) => Number.isFinite(id)))];
+  const names = new Map<number, string>();
+  await Promise.all(unique.map(async (id) => {
+    const r = await service.getResource(id).catch(() => null) as { firstName?: string; lastName?: string } | null;
+    const name = r ? [r.firstName, r.lastName].filter(Boolean).join(' ') : '';
+    if (name) names.set(id, name);
+  }));
+  return names;
 }
 
 async function picklistLabel(

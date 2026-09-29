@@ -2754,12 +2754,21 @@ export class AutotaskService {
       this.getResource(resourceID).catch(() => null),
     ]);
     const defaultRoleID = (resource as Record<string, any> | null)?.defaultServiceDeskRoleID ?? null;
-    // Resolve role names best-effort (single Roles page, mapped by id).
-    let nameById = new Map<number, string>();
+    // Resolve role names for exactly this resource's roleIDs (an `in` query, so
+    // there is no page cap to miss a real role). A roleID the Roles entity does
+    // not return is a hidden SYSTEM role — e.g. 110/112, held by ~9 GDS
+    // resources in Administration with no name and never used for time
+    // (verified live 2026-09-29) — flagged roleExists:false. If the lookup
+    // itself fails, roleExists is null (unknown), never false.
+    let nameById: Map<number, string> | null = null;
+    const roleIDs = [...new Set(links.map((l) => Number(l.roleID)).filter((id) => Number.isFinite(id)))];
     try {
-      const roles = await this.searchRoles({ pageSize: 500 });
-      nameById = new Map(roles.map((r) => [Number(r.id), String(r.name)]));
-    } catch { /* names are a nicety */ }
+      nameById = new Map();
+      for (let i = 0; i < roleIDs.length; i += 200) {
+        const roles = await http.query<{ id: number; name?: string }>('Roles', [{ op: 'in', field: 'id', value: roleIDs.slice(i, i + 200) }], { includeFields: ['id', 'name'], maxRecords: 500 });
+        for (const r of roles) nameById.set(Number(r.id), String(r.name));
+      }
+    } catch { nameById = null; /* names are a nicety */ }
     // Department + queue names give an LLM the context to pick the right role
     // when a resource has several (e.g. Engineer in IT vs Administrative in Admin).
     let deptById = new Map<number, string>();
@@ -2774,7 +2783,8 @@ export class AutotaskService {
     } catch { /* best-effort */ }
     return links.map((l) => ({
       ...l,
-      roleName: nameById.get(Number(l.roleID)) ?? null,
+      roleName: nameById?.get(Number(l.roleID)) ?? null,
+      roleExists: nameById ? nameById.has(Number(l.roleID)) : null,
       departmentName: l.departmentID != null ? (deptById.get(Number(l.departmentID)) ?? null) : null,
       queueName: l.queueID != null ? (queueById.get(Number(l.queueID)) ?? null) : null,
       isDefaultServiceDeskRole: defaultRoleID != null && Number(l.roleID) === Number(defaultRoleID),
@@ -2817,8 +2827,10 @@ export class AutotaskService {
     | { invalidRole: number; validRoles: RoleChoice[] }
     | { error: string }
   > {
-    // Inactive ResourceRoles rows are not roles the resource can log time in.
-    const roles = (await this.getResourceRoles(resourceID)).filter((r) => r.roleID != null && r.isActive !== false);
+    // Inactive ResourceRoles rows, and hidden system roles the Roles entity
+    // doesn't return (roleExists:false — unnamed, not meant for billable
+    // work), are not roles to log time in: neither offered nor accepted.
+    const roles = (await this.getResourceRoles(resourceID)).filter((r) => r.roleID != null && r.isActive !== false && r.roleExists !== false);
     if (!roles.length) {
       return { error: `Resource ${resourceID} has no active roles assigned — ticket/task time entries require a role. Assign one in Autotask, then re-run.` };
     }

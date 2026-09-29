@@ -87,6 +87,7 @@ describe('resolveWorkTimeEntryRole selection context', () => {
         { id: 1, resourceID: 5, roleID: 111, isActive: true }, { id: 2, resourceID: 5, roleID: 222, isActive: true },
       ] }));
       if (/\/Resources\/5$/.test(url)) return Promise.resolve(res(200, { item: { id: 5, defaultServiceDeskRoleID: 222 } }));
+      if (/\/Roles\/query$/.test(url)) return Promise.resolve(res(200, { items: [{ id: 111, name: 'Tech' }, { id: 222, name: 'Lead' }] }));
       return Promise.resolve(res(200, { items: [] }));
     });
     const out = await new AutotaskService(config, logger).resolveWorkTimeEntryRole(5);
@@ -101,6 +102,7 @@ describe('resolveWorkTimeEntryRole selection context', () => {
         { id: 2, resourceID: 6, roleID: 111, isActive: true, queueID: 8 }, // same role, different assoc
       ] }));
       if (/\/Resources\/6$/.test(url)) return Promise.resolve(res(200, { item: { id: 6, defaultServiceDeskRoleID: null } }));
+      if (/\/Roles\/query$/.test(url)) return Promise.resolve(res(200, { items: [{ id: 111, name: 'Tech' }] }));
       return Promise.resolve(res(200, { items: [] }));
     });
     const out = await new AutotaskService(config, logger).resolveWorkTimeEntryRole(6);

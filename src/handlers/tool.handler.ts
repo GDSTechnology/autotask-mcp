@@ -1734,7 +1734,7 @@ export class AutotaskToolHandler {
       }],
       ['autotask_get_resource_roles', async (a) => {
         const r = await s.getResourceRoles(a.resourceID);
-        const summary = r.map((x) => `${x.roleID}=${x.roleName ?? '?'}${x.departmentName ? ` [${x.departmentName}]` : ''}${x.isDefaultServiceDeskRole ? ' (default)' : ''}`).join('; ');
+        const summary = r.map((x) => `${x.roleID}=${x.roleExists === false ? '(hidden system role — not for time entry)' : (x.roleName ?? '?')}${x.departmentName ? ` [${x.departmentName}]` : ''}${x.isDefaultServiceDeskRole ? ' (default)' : ''}`).join('; ');
         return { result: r, message: `Resource ${a.resourceID} has ${r.length} role association(s): ${summary}` };
       }],
       ['autotask_report_resource_burden', async (a) => {

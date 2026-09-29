@@ -1,10 +1,26 @@
 # GDS Autotask MCP — Deploy & Rollback Runbook
 
 Production target: **the production host** (the existing GDS environment — do not
-introduce a second VPS). This runbook covers building a traceable, pinned image
-and deploying it with a documented rollback. It follows the traceability rules in
-the implementation brief §7.34: the deployed version is proven from the running
-container's `/health`, never inferred from a repo/tag alone.
+introduce a second VPS). This runbook covers deploying the published image and
+rolling it back. It follows the traceability rules in the implementation brief
+§7.34: the deployed version is proven from the running container's `/health`,
+never inferred from a repo/tag alone.
+
+## Current production layout (verified 2026-09-29)
+
+| What | Value |
+|---|---|
+| Host | the production host |
+| Compose project | `n8n`, file `/opt/n8n/docker-compose.yml` |
+| Service / container | `autotask-mcp` / `n8n-autotask-mcp-1` |
+| Port | `127.0.0.1:18080 -> 8080` |
+| Image | `ghcr.io/gdstechnology/autotask-mcp:latest` |
+| Sibling containers | `gds-openai-autotask-tunnel` (`ghcr.io/openai/tunnel-client:v0.0.11`), `n8n-autotask-cron-scheduler-1` |
+
+Prod runs a **single** MCP instance that serves every consumer (ChatGPT via the
+tunnel, n8n, cron). There is **no** `autotask-mcp-gpt` / `:18081` instance.
+[`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) describes a
+two-instance split as the reference **target** design, not what is running.
 
 ## 0. Traceability principle
 
@@ -20,11 +36,14 @@ fork, so the image builds with **no registry token**.
 
 ## 1. Prerequisites
 
-- Docker on the build host and on the production host.
-- Access to push/pull the image registry (default `ghcr.io/gdstechnology/autotask-mcp`;
-  override with `IMAGE_NAME`). For an air-gapped path you can `docker save`/`load`
-  instead of a registry — see step 4.
-- The Autotask API credentials for the GDS tenant (below).
+- A shell on the production host with Docker + the compose plugin, and pull access to
+  `ghcr.io/gdstechnology/autotask-mcp`.
+- A published release: `.github/workflows/release.yml` (semantic-release) builds
+  and pushes `:<version>` **and** `:latest` on every releasable push to `main`,
+  baking in VERSION/COMMIT_SHA/BUILD_DATE. Note the version it released (GitHub
+  Release / tag) — that is what `/health` must report after the deploy.
+- The Autotask API credentials for the GDS tenant (below), already configured for
+  the `autotask-mcp` service in the `n8n` compose project.
 
 ## 2. Environment variables
 
@@ -51,98 +70,106 @@ Behavior / safety (set as needed):
 
 Keep secrets in the server's env file / secret store — never in the image.
 
-## 3. Build a traceable image
+## 3. Where the image comes from
 
-From a **clean checkout of the release commit on `main`**:
+The routine path needs no manual build: the release workflow publishes
+`ghcr.io/gdstechnology/autotask-mcp:<version>` and `:latest` from the release
+commit with VERSION/COMMIT_SHA/BUILD_DATE baked in. The GitHub Release records
+the version + commit.
 
-```bash
-scripts/build-image.sh 2.19.0            # or your chosen version
-```
-
-It bakes VERSION/COMMIT_SHA/BUILD_DATE, tags the image by both version and short
-SHA, and prints the image **digest** to pin. Record the version + commit + digest
-in the release notes.
-
-Push (or export for transfer):
-
-```bash
-docker push ghcr.io/gdstechnology/autotask-mcp:2.19.0
-docker push ghcr.io/gdstechnology/autotask-mcp:<short-sha>
-# air-gapped alternative:
-# docker save ghcr.io/gdstechnology/autotask-mcp:2.19.0 | gzip > autotask-mcp-2.19.0.tar.gz
-```
+`scripts/build-image.sh <version>` remains for out-of-band builds (e.g. an
+air-gapped `docker save` / `docker load` transfer). It bakes the same three facts
+and prints the digest, but it is **not** part of the routine deploy.
 
 ## 4. Deploy on the production host
 
-**Back up the current deployment first** (so rollback is trivial):
+**Back up what is running first** (so rollback is trivial). Record the image ID
+of the live container, the version it reports, and a copy of the compose file:
 
 ```bash
-# record what is running now
-docker inspect autotask-mcp --format '{{.Config.Image}}' > ~/autotask-mcp-prev-image.txt
-docker inspect autotask-mcp --format '{{index .Config.Env}}' > ~/autotask-mcp-prev-env.txt
-cp /path/to/autotask-mcp.env ~/autotask-mcp.env.bak   # your env file
+docker inspect n8n-autotask-mcp-1 --format '{{.Image}}' > ~/autotask-mcp-prev-image.txt
+curl -s http://127.0.0.1:18080/health > ~/autotask-mcp-prev-health.json
+cp /opt/n8n/docker-compose.yml ~/n8n-docker-compose.yml.bak
 ```
 
-Pull (or `docker load`) the new image, then run it **pinned by digest** (not a
-floating tag):
+`{{.Image}}` is the local image ID (`sha256:...`). It is immutable and stays in
+the local image store after `:latest` moves on, so it is what rollback pins to.
+(Don't `docker image prune` between the deploy and the verify.)
+
+Pull and recreate **only** the `autotask-mcp` service — the tunnel and cron
+scheduler are left untouched:
 
 ```bash
-docker pull ghcr.io/gdstechnology/autotask-mcp:2.19.0
-DIGEST=$(docker inspect ghcr.io/gdstechnology/autotask-mcp:2.19.0 --format '{{index .RepoDigests 0}}')
-
-docker rm -f autotask-mcp 2>/dev/null || true
-docker run -d --name autotask-mcp \
-  --restart unless-stopped \
-  --env-file /path/to/autotask-mcp.env \
-  -p 8080:8080 \
-  "$DIGEST"
+cd /opt/n8n && docker compose pull autotask-mcp && docker compose up -d autotask-mcp && sleep 3 && curl -s http://127.0.0.1:18080/health
 ```
 
-Pinning to `$DIGEST` (e.g. `...@sha256:...`) is what makes the deploy immutable —
-a re-pull of `:2.19.0` can never silently change what runs.
+The health JSON reports `version` — it must equal the version the release
+workflow just published.
 
 ## 5. Verify (acceptance — brief §7.34)
 
 More than a health ping:
 
 ```bash
-# 1. Version matches the release you built
-curl -s http://localhost:8080/health | jq '{status, version}'
-#    -> version must equal 2.19.0
+# 1. Version matches the release that was published
+curl -s http://127.0.0.1:18080/health | jq '{status, version}'
+#    -> version must equal the new release version
 
-# 2. A real MCP read works end-to-end (initialize + a read tool), not just /health.
+# 2. The container is running the newly pulled image
+docker inspect n8n-autotask-mcp-1 --format '{{.Image}}'
+#    -> differs from ~/autotask-mcp-prev-image.txt (unless nothing new was released)
+
+# 3. A real MCP read works end-to-end (initialize + a read tool), not just /health.
 #    From the ChatGPT connector / n8n, call autotask_test_connection (read-only,
 #    changes nothing) and confirm a successful response.
 ```
 
-Then confirm the **MCP tunnel and the ChatGPT connector** reach the server and
-list tools. For the n8n path, confirm it calls this MCP directly (no Hermes/LLM
-hop) and that a controlled run verifies business fields + audit-note readback.
+Then confirm the **MCP tunnel (`gds-openai-autotask-tunnel`) and the ChatGPT
+connector** reach the server and list tools. For the n8n path, confirm it calls
+this MCP directly (no Hermes/LLM hop) and that a controlled run verifies business
+fields + audit-note readback.
 
 ## 6. Rollback
 
-If verification fails, roll straight back to the previous image:
+If verification fails, re-pin the previous image ID in the compose file and
+recreate the service. `:latest` already points at the bad build, so rolling back
+means replacing the tag — re-pulling it would fetch the same bad image.
 
 ```bash
-PREV=$(cat ~/autotask-mcp-prev-image.txt)
-docker rm -f autotask-mcp
-docker run -d --name autotask-mcp \
-  --restart unless-stopped \
-  --env-file ~/autotask-mcp.env.bak \
-  -p 8080:8080 \
-  "$PREV"
-curl -s http://localhost:8080/health | jq '{status, version}'   # confirm old version restored
+cat ~/autotask-mcp-prev-image.txt      # sha256:...
 ```
 
-Because the previous image is referenced by its digest/ID and the env file is
-backed up, rollback is a single `docker run` with no rebuild.
+Edit `/opt/n8n/docker-compose.yml` and set the `autotask-mcp` service's image to
+that ID:
+
+```yaml
+  autotask-mcp:
+    image: sha256:<id from ~/autotask-mcp-prev-image.txt>   # ROLLBACK — was ghcr.io/gdstechnology/autotask-mcp:latest
+```
+
+Recreate **without pulling** and confirm the old version is back:
+
+```bash
+cd /opt/n8n && docker compose up -d autotask-mcp && sleep 3 && curl -s http://127.0.0.1:18080/health
+```
+
+`version` must match `~/autotask-mcp-prev-health.json`. Because the previous
+image is referenced by its immutable ID, rollback needs no rebuild and no
+registry. (A version tag, `ghcr.io/gdstechnology/autotask-mcp:<prev-version>`,
+is an equivalent portable pin — the release workflow keeps every version tag.)
+
+**While pinned, `docker compose pull` will not pick up new releases.** Once a
+fixed release is published, restore
+`image: ghcr.io/gdstechnology/autotask-mcp:latest` (or restore
+`~/n8n-docker-compose.yml.bak`) and run the §4 deploy again.
 
 ## 7. Release checklist
 
-- [ ] `main` green in CI (unit tests + Docker build).
-- [ ] Built from a clean checkout; recorded VERSION + COMMIT_SHA + digest.
-- [ ] Backed up current image + env on the production host.
-- [ ] Deployed pinned by digest.
-- [ ] `/health` reports the expected version.
+- [ ] `main` green in CI; release workflow published `:<version>` + `:latest`.
+- [ ] Released VERSION + COMMIT_SHA recorded (GitHub Release).
+- [ ] Backed up `docker inspect n8n-autotask-mcp-1 --format '{{.Image}}'`, the
+      current `/health`, and `/opt/n8n/docker-compose.yml`.
+- [ ] `docker compose pull autotask-mcp && docker compose up -d autotask-mcp` in `/opt/n8n`.
+- [ ] `/health` on `127.0.0.1:18080` reports the expected version.
 - [ ] `autotask_test_connection` succeeds through the ChatGPT connector.
-- [ ] Rollback steps confirmed available (previous digest + env saved).
+- [ ] Rollback available (previous image ID saved; compose file backed up).

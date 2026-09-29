@@ -76,6 +76,12 @@ remember.
 
 ## Recommended topology: one instance per consumer class
 
+> **Target design, not current prod.** Production today runs a **single**
+> instance (`autotask-mcp` on `:18080`) that serves every consumer. There is no
+> `autotask-mcp-gpt` / `:18081`. For the live deploy and rollback procedure, see
+> [`DEPLOY.md`](../DEPLOY.md). This section and the migration below describe
+> where the layout is headed.
+
 Rather than sniff the network to tell consumers apart, isolate them by instance.
 See [`deploy/docker-compose.prod.yml`](../deploy/docker-compose.prod.yml):
 
@@ -87,9 +93,11 @@ See [`deploy/docker-compose.prod.yml`](../deploy/docker-compose.prod.yml):
 "Which container" = which port received it, and the security boundary is set by
 config, not by a spoofable field.
 
-## Rollout on the server (MA-BOS-S-KVM1)
+## Migrating to the two-instance split
 
-Commands below run **on the KVM host**, in the compose project directory.
+Commands below run **on the production host**, in the compose project directory
+that already holds the `autotask-mcp` service. Take the backups in
+[`DEPLOY.md`](../DEPLOY.md) §4 first.
 
 1. Add the second service and the new env keys to the live `docker-compose.yml`
    (model it on `deploy/docker-compose.prod.yml`), keeping the existing
@@ -102,9 +110,12 @@ Commands below run **on the KVM host**, in the compose project directory.
    mode is >= 3.2.0.
 
    ```bash
-   docker compose pull      # fetch the newest :latest image
-   docker compose up -d     # recreate only the services whose image changed
+   docker compose pull autotask-mcp autotask-mcp-gpt    # fetch the newest :latest image
+   docker compose up -d autotask-mcp autotask-mcp-gpt   # recreate just these two
    ```
+
+   Name the services explicitly. If the compose project also runs n8n or other
+   stacks, a bare `pull` / `up -d` would pull and recreate those too.
 
    To pin a known-good build or roll back, replace `:latest` with a specific tag
    (`:3.2.0`) or a digest and re-run `up -d`.

@@ -8,6 +8,7 @@
 import { AutotaskService } from '../services/autotask.service.js';
 import { PicklistCache } from '../services/picklist.cache.js';
 import { Logger } from '../utils/logger.js';
+import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
 
 export const TICKET_CARD_RESOURCE_URI = 'ui://autotask/ticket-card.html';
 
@@ -83,6 +84,8 @@ export interface TicketCard {
 }
 
 const CARD_NOTE_LIMIT = 5;
+/** One child-query page — enough to find the newest human notes past the system ones. */
+const CARD_NOTE_FETCH = 500;
 const CARD_NOTE_MAX_LENGTH = 500;
 
 /**
@@ -121,9 +124,20 @@ export async function buildTicketCard(
   if (queue) card.queue = queue;
 
   // Recent notes give the card (and its add-note round-trip) visible context.
+  // Autotask returns notes oldest-first and much of a ticket's note stream is
+  // its own bookkeeping (workflow-rule / notification logs), so the first N
+  // were the ticket's creation noise. Read one page, drop system notes, keep
+  // the NEWEST N human notes, and show them oldest→newest (the card appends
+  // a newly added note at the bottom).
   try {
-    const notes = await service.searchTicketNotes(ticket.id, { pageSize: CARD_NOTE_LIMIT });
-    card.notes = notes.slice(0, CARD_NOTE_LIMIT).map((n) => {
+    const all = await service.searchTicketNotes(ticket.id, { pageSize: CARD_NOTE_FETCH });
+    const { human } = partitionTicketNotes(all);
+    const recent = human
+      .map((n, i) => ({ n, i, t: Date.parse(String(n.createDateTime ?? '')) }))
+      .sort((a, b) => (Number.isNaN(a.t) || Number.isNaN(b.t) ? a.i - b.i : a.t - b.t || a.i - b.i))
+      .slice(-CARD_NOTE_LIMIT)
+      .map((x) => x.n);
+    card.notes = recent.map((n) => {
       const note: TicketCard['notes'][number] = {
         description: String(n.description ?? '').slice(0, CARD_NOTE_MAX_LENGTH),
       };

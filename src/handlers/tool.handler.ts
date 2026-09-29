@@ -13,6 +13,7 @@ import { mapWithConcurrency } from '../utils/concurrency.js';
 import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } from '../utils/create-result.js';
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
+import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
 
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
 // confirm gate treats an omitted dryRun as a dry-run (plan only, no confirm),
@@ -2101,7 +2102,18 @@ export class AutotaskToolHandler {
         const r = await s.getTicketNote(a.ticketId, a.noteId); return { result: r, message: 'Ticket note retrieved successfully' };
       }],
       ['autotask_search_ticket_notes', async (a) => {
-        const r = await s.searchTicketNotes(a.ticketId, { pageSize: a.pageSize }); return { result: r, message: `Found ${r.length} ticket notes` };
+        const pageSize = Math.min(Math.max(Number(a.pageSize) || 25, 1), 100);
+        if (a.includeSystemNotes === true) {
+          const r = await s.searchTicketNotes(a.ticketId, { pageSize });
+          return { result: r, message: `Found ${r.length} ticket notes (system notes included)` };
+        }
+        // Hide Autotask bookkeeping (workflow-rule / notification / forward
+        // notes). Read one full page so pageSize counts HUMAN notes, and say how
+        // many were hidden — a silent drop would read as "that's all there is".
+        const { human, systemHidden } = partitionTicketNotes(await s.searchTicketNotes(a.ticketId, { pageSize: 500 }));
+        const r = human.slice(0, pageSize);
+        const hidden = systemHidden ? ` (${systemHidden} system note(s) hidden — workflow-rule, Service Desk Notification and forward/modify logs; pass includeSystemNotes:true to include them)` : '';
+        return { result: r, message: `Found ${r.length} ticket notes${hidden}` };
       }],
       ['autotask_create_ticket_note', async (a) => {
         if (a.noteType === undefined || a.noteType === null) {

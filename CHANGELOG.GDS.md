@@ -10,6 +10,19 @@ Each entry lists the merge commit and the PR number. Brief section references
 
 ---
 
+## Unreleased — Deploy runbook matches the live layout
+
+- `DEPLOY.md` described a `scripts/build-image.sh` + `docker run --name autotask-mcp`
+  deploy that is not what runs. Prod (verified 2026-09-29) is a single `autotask-mcp`
+  service in the `n8n` compose project (`/opt/n8n`, container `n8n-autotask-mcp-1`,
+  `127.0.0.1:18080`) tracking the `:latest` image published by `release.yml`. The
+  runbook now covers that path: back up `{{.Image}}` of the live container, then
+  `docker compose pull/up -d autotask-mcp`, then check `version` in `/health`.
+  Rollback re-pins the saved image ID in the compose file.
+- `deploy/docker-compose.prod.yml` is kept but now opens with a header saying it
+  is the reference **target** two-instance design. There is no `autotask-mcp-gpt` /
+  `:18081` in prod.
+
 ## Unreleased — Phase 2 P0 repair & foundation
 
 Completes the P0 "Repair & Foundation" block of the Phase 2 Development &

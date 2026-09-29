@@ -1,4 +1,14 @@
-# Production reference: one MCP instance PER consumer class.
+# ============================================================================
+# REFERENCE TARGET DESIGN — NOT WHAT PRODUCTION RUNS TODAY.
+#
+# Current prod (verified 2026-09-29) is a SINGLE instance: service
+# `autotask-mcp` (container `n8n-autotask-mcp-1`, 127.0.0.1:18080) in the
+# `n8n` compose project at /opt/n8n/docker-compose.yml on the production host.
+# There is no `autotask-mcp-gpt` / :18081 instance. Do not deploy from
+# this file; the live deploy/rollback procedure is in DEPLOY.md.
+# ============================================================================
+#
+# Target design: one MCP instance PER consumer class.
 #
 # Why two instances instead of one shared server: on a single shared instance
 # every consumer (ChatGPT via the tunnel, n8n on the compose network, cron on

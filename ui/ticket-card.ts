@@ -46,7 +46,15 @@ interface TicketCard {
   createDate?: string;
   dueDateTime?: string;
   estimatedHours?: number;
-  notes: Array<{ title?: string; description: string }>;
+  summary: {
+    hoursLogged: number;
+    timeEntries: number;
+    techs: string[];
+    lastActivity?: string;
+    systemNotesHidden: number;
+  };
+  activity: Array<{ kind: "time" | "note"; when?: string; who?: string; hours?: number; text: string }>;
+  ticketUrl?: string;
   noteDefaults?: { noteType: number; publish: number };
 }
 
@@ -104,13 +112,31 @@ function badge(text: string | undefined, cls: string): HTMLElement | null {
   return text ? el("span", `badge ${cls}`, text) : null;
 }
 
-function noteEl(n: { title?: string; description: string }): HTMLElement {
-  return el(
-    "div",
-    "note",
-    n.title ? el("span", "note__title", `${n.title}: `) : null,
-    n.description,
-  );
+function fmtDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** "2.1 h logged · 4 entries · Travis Stives, Tricia Clearman · last Sep 29" */
+function summaryEl(t: TicketCard): HTMLElement {
+  const s = t.summary;
+  const parts: string[] = [];
+  parts.push(s.timeEntries ? `${s.hoursLogged} h logged · ${s.timeEntries} ${s.timeEntries === 1 ? "entry" : "entries"}` : "No time logged");
+  if (s.techs.length) parts.push(s.techs.slice(0, 3).join(", ") + (s.techs.length > 3 ? ` +${s.techs.length - 3}` : ""));
+  if (s.lastActivity) parts.push(`last ${fmtDay(s.lastActivity)}`);
+  return el("div", "summary", parts.join(" · "));
+}
+
+/** One activity row: a short meta line + a single-line headline (never the full body). */
+function activityEl(a: TicketCard["activity"][number]): HTMLElement {
+  const meta = [
+    a.kind === "time" ? "Time" : "Note",
+    a.who,
+    a.hours != null ? `${a.hours} h` : undefined,
+    a.when ? fmtDay(a.when) : undefined,
+  ].filter(Boolean).join(" · ");
+  return el("div", `act act--${a.kind}`, el("div", "act__meta", meta), el("div", "act__text", a.text));
 }
 
 function render(t: TicketCard): void {
@@ -128,8 +154,18 @@ function render(t: TicketCard): void {
   }
   if (brandName) brandId.append(el("span", "brand", brandName));
 
-  const notesSection = el("div", "notes", el("div", "notes__h", `Notes (${t.notes.length})`));
-  for (const n of t.notes) notesSection.append(noteEl(n));
+  const notesSection = el("div", "notes", el("div", "notes__h", "Work summary"), summaryEl(t));
+  if (t.activity.length) {
+    notesSection.append(el("div", "notes__h notes__h--sub", "Recent activity"));
+    for (const a of t.activity) notesSection.append(activityEl(a));
+  }
+  if (t.ticketUrl) {
+    // The card runs in a sandboxed iframe: ask the host to open the link.
+    const open = el("button", "btn btn--link", "Open in Autotask") as HTMLButtonElement;
+    const url = t.ticketUrl;
+    open.addEventListener("click", () => { void app.openLink({ url }); });
+    notesSection.append(el("div", "openrow", open));
+  }
 
   if (t.noteDefaults) {
     const input = document.createElement("input");
@@ -158,7 +194,7 @@ function render(t: TicketCard): void {
         });
         // The note tool returns the created note ID, not the ticket — append
         // optimistically and re-render.
-        current.notes = [...current.notes, { description }];
+        current.activity = [...current.activity, { kind: "note", who: "You", when: new Date().toISOString(), text: description }];
         render(current);
       } catch {
         btn.disabled = false;

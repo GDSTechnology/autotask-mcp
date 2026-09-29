@@ -6,7 +6,7 @@
 // silently drops filters), so we now bypass it entirely. Zero new runtime
 // deps — only Node 18+ built-in `fetch` via AutotaskHttpClient.
 
-import { resolveAutotaskApiUrl } from '../utils/config';
+import { resolveAutotaskApiUrl, resolveAutotaskWebUrl } from '../utils/config';
 import { AutotaskHttpClient, QueryFilter } from './autotask-http';
 import {
   classifyReferenceMatches,
@@ -359,6 +359,18 @@ export class AutotaskService {
   // =====================================================
   // Contacts
   // =====================================================
+
+  /**
+   * Deep link that opens a ticket in the Autotask web UI, via Autotask's
+   * documented AutotaskExtend "OpenTicketDetail" command. Null when the web
+   * UI base can't be determined (set AUTOTASK_WEB_URL to force it). Runs after
+   * any API call has resolved the zone, so the zone's webUrl is cached.
+   */
+  getTicketWebUrl(ticketId: number): string | null {
+    const { username, apiUrl } = this.config.autotask;
+    const web = resolveAutotaskWebUrl(username, apiUrl);
+    return web ? `${web}Autotask/AutotaskExtend/ExecuteCommand.aspx?Code=OpenTicketDetail&TicketID=${encodeURIComponent(String(ticketId))}` : null;
+  }
 
   async getContact(id: number): Promise<AutotaskContact | null> {
     const http = await this.ensureClient();

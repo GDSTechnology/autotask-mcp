@@ -179,10 +179,35 @@ export function mergeWithMcpConfig(envConfig: EnvironmentConfig, mcpArgs?: Recor
 const zoneUrlCache = new Map<string, string>();
 
 /**
+ * The tenant's Autotask WEB UI base (zoneInformation `webUrl`, e.g.
+ * https://ww3.autotask.net/), keyed like zoneUrlCache. Used to build "open in
+ * Autotask" links; captured from the same lookup, so it costs nothing extra.
+ */
+const zoneWebUrlCache = new Map<string, string>();
+
+/**
  * Reset the zone URL cache. Intended for tests only.
  */
 export function _resetZoneUrlCache(): void {
   zoneUrlCache.clear();
+  zoneWebUrlCache.clear();
+}
+
+/**
+ * The Autotask web UI base URL (trailing slash), or null when unknown.
+ * Precedence: AUTOTASK_WEB_URL env override → the zone lookup's `webUrl` →
+ * derived from the API host (Autotask pairs webservicesN with wwN, e.g.
+ * webservices3 → ww3; zoneInformation reports exactly that pair).
+ */
+export function resolveAutotaskWebUrl(username: string | undefined, apiUrl: string | undefined): string | null {
+  const withSlash = (u: string) => (u.endsWith('/') ? u : `${u}/`);
+  const override = process.env.AUTOTASK_WEB_URL?.trim();
+  if (override) return withSlash(override);
+  const cached = username ? zoneWebUrlCache.get(username.toLowerCase()) : undefined;
+  if (cached) return withSlash(cached);
+  const api = apiUrl ?? (username ? zoneUrlCache.get(username.toLowerCase()) : undefined);
+  const m = api?.match(/^https:\/\/webservices(\d+)\.autotask\.net/i);
+  return m ? `https://ww${m[1]}.autotask.net/` : null;
 }
 
 /**
@@ -307,6 +332,7 @@ export async function resolveAutotaskApiUrl(
   logger.info(`Auto-detected Autotask zone "${zoneName}" for user ${username}: ${url}`);
 
   zoneUrlCache.set(cacheKey, url);
+  if (typeof body?.webUrl === 'string' && body.webUrl) zoneWebUrlCache.set(cacheKey, body.webUrl);
   return url;
 }
 

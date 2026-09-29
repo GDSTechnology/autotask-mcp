@@ -1963,13 +1963,17 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_search_ticket_notes',
-    description: 'Search for notes on a specific ticket. Iterating across many tickets trips Autotask\'s per-integration API threshold — scope the parent list first.',
+    description: 'Search for notes on a specific ticket. By default returns only notes PEOPLE wrote (techs, contacts, portal, email): Autotask\'s own bookkeeping — "Workflow Rule … fired" notes, "Service Desk Notification" email-recipient logs, forward/modify records — is hidden and counted in the message; pass includeSystemNotes:true for the raw stream. Iterating across many tickets trips Autotask\'s per-integration API threshold — scope the parent list first.',
     inputSchema: {
       type: 'object',
       properties: {
         ticketId: {
           type: 'number',
           description: 'The ticket ID to search notes for'
+        },
+        includeSystemNotes: {
+          type: 'boolean',
+          description: 'Include Autotask system notes (workflow-rule, Service Desk Notification, forward/modify). Default false.'
         },
         pageSize: {
           type: 'number',

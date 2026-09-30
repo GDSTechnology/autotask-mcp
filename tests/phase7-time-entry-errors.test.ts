@@ -185,26 +185,36 @@ describe('get_ticket_details carries an Open-in-Autotask link', () => {
   });
 });
 
-describe('service-call resource assignment validates an explicit role', () => {
+// ServiceCallTicketResources / ServiceCallTaskResources have exactly resourceID
+// + the parent id — NO roleID (live entityInformation, 2026-09-30; asking the
+// API for roleID returns "Unable to find roleID in the ServiceCallTicketResource
+// Entity"). A roleID from a caller must never be sent.
+describe('service-call resource assignment sends no role (the entity has none)', () => {
   test.each([
-    ['autotask_create_service_call_ticket_resource', 'createServiceCallTicketResource', { serviceCallTicketID: 1 }],
-    ['autotask_create_service_call_task_resource', 'createServiceCallTaskResource', { serviceCallTaskID: 1 }],
-  ])('%s: a role the resource does not hold is refused, nothing assigned', async (tool, method, ids) => {
+    ['ServiceCallTickets', 'createServiceCallTicketResource', { serviceCallTicketID: 11 }, { resourceID: 30683829, serviceCallTicketID: 11 }],
+    ['ServiceCallTasks', 'createServiceCallTaskResource', { serviceCallTaskID: 22 }, { resourceID: 30683829, serviceCallTaskID: 22 }],
+  ])('%s child create body is exactly resourceID + parent id', async (parent, method, ids, expectedBody) => {
     const s = mk();
-    jest.spyOn(s, 'getResourceRoles').mockResolvedValue(ROLES);
-    const create = jest.spyOn(s as any, method).mockResolvedValue(1);
-    const b = body(await new AutotaskToolHandler(s, logger).callTool(tool, { ...ids, resourceID: 30683829, roleID: 112 }));
-    expect(create).not.toHaveBeenCalled();
-    expect(b.data).toEqual(expect.objectContaining({ status: 'invalid_role', requestedRoleID: 112 }));
+    const childCreate = jest.fn().mockResolvedValue(9);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ childCreate });
+    await (s as any)[method]({ ...ids, resourceID: 30683829, roleID: 29683355 });
+    expect(childCreate).toHaveBeenCalledWith(parent, Object.values(ids)[0], 'Resources', expectedBody);
   });
 
-  test('a valid role, or no role at all, assigns as before', async () => {
-    const s = mk();
-    jest.spyOn(s, 'getResourceRoles').mockResolvedValue(ROLES);
-    const create = jest.spyOn(s, 'createServiceCallTicketResource').mockResolvedValue(1 as any);
-    const h = new AutotaskToolHandler(s, logger);
-    await h.callTool('autotask_create_service_call_ticket_resource', { serviceCallTicketID: 1, resourceID: 30683829, roleID: 29683355 });
-    await h.callTool('autotask_create_service_call_ticket_resource', { serviceCallTicketID: 1, resourceID: 30683829 });
-    expect(create).toHaveBeenCalledTimes(2);
+  test.each(['autotask_create_service_call_ticket_resource', 'autotask_create_service_call_task_resource'])(
+    '%s: a passed roleID is ignored and the result says so', async (tool) => {
+      const s = mk();
+      jest.spyOn(s, 'createServiceCallTicketResource').mockResolvedValue(9 as any);
+      jest.spyOn(s, 'createServiceCallTaskResource').mockResolvedValue(9 as any);
+      const b = body(await new AutotaskToolHandler(s, logger).callTool(tool, { serviceCallTicketID: 11, serviceCallTaskID: 22, resourceID: 30683829, roleID: 112 }));
+      expect(b.data?.id ?? b.data).toBe(9);
+      expect(b.message).toMatch(/roleID 112 ignored/);
+    });
+
+  test('the schemas no longer advertise roleID', () => {
+    const { TOOL_DEFINITIONS } = require('../src/handlers/tool.definitions');
+    for (const name of ['autotask_create_service_call_ticket_resource', 'autotask_create_service_call_task_resource']) {
+      expect(TOOL_DEFINITIONS.find((t: any) => t.name === name).inputSchema.properties).not.toHaveProperty('roleID');
+    }
   });
 });

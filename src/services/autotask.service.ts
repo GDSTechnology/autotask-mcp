@@ -7287,8 +7287,12 @@ export class AutotaskService {
       );
     }
     try {
-      this.logger.debug('Creating service call ticket resource:', data);
-      const id = await http.childCreate('ServiceCallTickets', serviceCallTicketID, 'Resources', data);
+      // The entity has exactly resourceID + serviceCallTicketID (live
+      // entityInformation, 2026-09-30) — no roleID. Send only those; an unknown
+      // field makes Autotask reject the whole create.
+      const body = { resourceID: data.resourceID, serviceCallTicketID };
+      this.logger.debug('Creating service call ticket resource:', body);
+      const id = await http.childCreate('ServiceCallTickets', serviceCallTicketID, 'Resources', body);
       this.logger.info(`Service call ticket resource created with ID: ${id}`);
       return id;
     } catch (error) {
@@ -7412,8 +7416,10 @@ export class AutotaskService {
       );
     }
     try {
-      this.logger.debug('Creating service call task resource:', data);
-      const id = await http.childCreate('ServiceCallTasks', serviceCallTaskID, 'Resources', data);
+      // Exactly resourceID + serviceCallTaskID (no roleID) — see the ticket variant.
+      const body = { resourceID: data.resourceID, serviceCallTaskID };
+      this.logger.debug('Creating service call task resource:', body);
+      const id = await http.childCreate('ServiceCallTasks', serviceCallTaskID, 'Resources', body);
       this.logger.info(`Service call task resource created with ID: ${id}`);
       return id;
     } catch (error) {

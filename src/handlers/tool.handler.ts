@@ -1894,6 +1894,18 @@ export class AutotaskToolHandler {
           message: `ITIL SLA framework: ${r.priorityScheme.length}-level priority scheme + ${r.targets.length} target row(s) across ${new Set(r.targets.map((t) => t.tier)).size} tier(s). Advisory only — enter in the Autotask UI${mig}.`,
         };
       }],
+      ['autotask_search_notification_history', async (a) => {
+        const r = await s.searchNotificationHistory({
+          ticketID: a.ticketID, timeEntryID: a.timeEntryID, taskID: a.taskID, projectID: a.projectID,
+          initiatingResourceID: a.initiatingResourceID, recipientEmail: a.recipientEmail, templateName: a.templateName,
+          from: a.from, to: a.to, page: a.page, pageSize: a.pageSize,
+        });
+        const ext = r.sends.filter((x) => x.toExternal).length;
+        const msg = r.totalSends === 0
+          ? 'No notification e-mails found for that scope — Autotask sent nothing matching (the API cannot send notifications; only UI actions and workflow rules do).'
+          : `Found ${r.totalSends} notification send(s) (${r.rowsScanned} recipient rows); showing ${r.sends.length}, newest first${r.internalDomains.length ? ` — ${ext} on this page reached someone outside ${r.internalDomains.join(', ')}` : ''}${r.truncated ? '. Row cap reached — narrow the scope for older sends' : ''}.`;
+        return { result: r, message: msg, pagination: { page: r.page, pageSize: r.pageSize, hasMore: r.hasMore } };
+      }],
       ['autotask_report_activity_without_time', async (a) => {
         const ids: number[] = Array.isArray(a.resourceIDs) ? a.resourceIDs.map(Number).filter(Number.isFinite) : [];
         if (a.resourceID != null) ids.unshift(Number(a.resourceID));

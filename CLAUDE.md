@@ -4,6 +4,39 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-09-30
+
+- **`TimeEntries.hoursToBill` is read-only** (entityInformation `isReadOnly`).
+  Autotask derives it from `hoursWorked − offsetHours` plus contract/work-type
+  rounding and silently ignores a supplied value — an update "succeeds" and
+  changes nothing. `offsetHours` is the only API lever (#139).
+- **`ResourceRoles` is query-only** (no create/update/delete) and has an
+  `isActive` column. Roles 110/112 on many resources are hidden system roles:
+  the `Roles` entity doesn't return them. Resolve role names with an exact
+  `in` lookup of the resource's roleIDs, not one capped Roles page (#141).
+- **Resource 4 is "Autotask Administrator"**, the built-in system account. It
+  writes workflow-rule notes AND "Notification sent via Workflow Rule" notes
+  as `noteType` 1 (the human type), so note type alone can't spot system notes.
+  `noteType` 2 ("Task Detail") is almost all automation (#143/#144).
+- Techs record their work in **time-entry summaries**, not ticket notes — a
+  ticket can have 17 notes and none human. Anything summarising "what was
+  done" must read TimeEntries (#144).
+- **Notifications can't be sent through the API**: `NotificationHistory` is
+  query-only and no create call triggers the UI's "notify" emails. But
+  **workflow rules DO fire on API edits** (verified: API closes of client
+  tickets in business hours fired "Ticket Closed - Billing Cross Check"), so
+  close notifications belong in an Autotask workflow rule, not in code.
+- The timesheet lock on a time-entry **create** is only knowable from the
+  error (no timesheet entity); `utils/time-entry-errors.ts` maps it. Its exact
+  create-time wording is still unconfirmed — extend the classifier from the
+  first real case.
+- GitHub occasionally **drops the push event of a merge** (no CI, no Release).
+  `release.yml` has `workflow_dispatch` for that; semantic-release refuses to
+  publish from a commit behind `main`, so a later merge releases everything
+  since the last tag (#142).
+- Ticket deep link: `<webUrl>Autotask/AutotaskExtend/ExecuteCommand.aspx?Code=OpenTicketDetail&TicketID=<id>`;
+  `webUrl` comes from zoneInformation (cached with the API url).
+
 ## Learnings - 2026-09-16
 
 - Search-tool params drift from their schemas in two directions, and **nothing

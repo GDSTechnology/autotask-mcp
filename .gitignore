@@ -59,3 +59,8 @@ graphify-out/
 # Local dev stack (staged, not synchronized): portable Postgres binaries, the
 # data cluster, logs. Managed by dev-postgres/local-db.ps1. Never committed.
 dev-postgres/.runtime/
+
+# Local live-API probe/test scripts (underscore-prefixed, repo root). They read
+# the operator's Autotask credentials from ../autotask-node/.env and must never
+# be committed to this public repo.
+/_*.mjs

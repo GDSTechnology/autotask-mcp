@@ -9,6 +9,7 @@ import { AutotaskService } from '../services/autotask.service.js';
 import { PicklistCache } from '../services/picklist.cache.js';
 import { Logger } from '../utils/logger.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
+import type { AutotaskQueryOptionsExtended } from '../types/autotask.js';
 
 export const TICKET_CARD_RESOURCE_URI = 'ui://autotask/ticket-card.html';
 
@@ -79,14 +80,53 @@ export interface TicketCard {
   createDate?: string;
   dueDateTime?: string;
   estimatedHours?: number;
-  notes: Array<{ title?: string; description: string }>;
+  /** At-a-glance work totals — the card is a summary, not the full record. */
+  summary: CardSummary;
+  /** Newest activity, one headline line each, oldest→newest. */
+  activity: CardActivity[];
+  /** Opens the ticket in the Autotask web UI for the full detail. */
+  ticketUrl?: string;
   noteDefaults?: { noteType: number; publish: number };
 }
 
-const CARD_NOTE_LIMIT = 5;
+export interface CardSummary {
+  hoursLogged: number;
+  timeEntries: number;
+  /** Distinct people who logged time, most hours first. */
+  techs: string[];
+  lastActivity?: string;
+  /** Autotask/integration bookkeeping notes left off the card. */
+  systemNotesHidden: number;
+}
+
+export interface CardActivity {
+  kind: 'time' | 'note';
+  when?: string;
+  who?: string;
+  hours?: number;
+  /** One-line headline of the entry/note — never the full body. */
+  text: string;
+}
+
+const CARD_ACTIVITY_LIMIT = 5;
 /** One child-query page — enough to find the newest human notes past the system ones. */
-const CARD_NOTE_FETCH = 500;
-const CARD_NOTE_MAX_LENGTH = 500;
+const CARD_FETCH = 500;
+const CARD_HEADLINE_MAX = 160;
+
+/**
+ * One line from a multi-line note/summary: lines joined with " · ", bullet
+ * markers dropped, capped at CARD_HEADLINE_MAX. "Remote Support\n- Remotely
+ * accessed …" → "Remote Support · Remotely accessed …".
+ */
+export function headline(text: unknown): string {
+  const line = String(text ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\s*[-*•]+\s*/, '').trim())
+    .filter(Boolean)
+    .join(' · ')
+    .replace(/\s+/g, ' ');
+  return line.length > CARD_HEADLINE_MAX ? `${line.slice(0, CARD_HEADLINE_MAX - 1).trimEnd()}…` : line;
+}
 
 /**
  * Build the renderable card from an (already enhanced) ticket. `ticket` is the
@@ -107,7 +147,8 @@ export async function buildTicketCard(
     id: ticket.id,
     ticketNumber: String(ticket.ticketNumber),
     title: String(ticket.title),
-    notes: [],
+    summary: { hoursLogged: 0, timeEntries: 0, techs: [], systemNotesHidden: 0 },
+    activity: [],
   };
   if (typeof ticket.company === 'string') card.company = ticket.company;
   if (typeof ticket.assignedTo === 'string') card.assignedTo = ticket.assignedTo;
@@ -123,35 +164,87 @@ export async function buildTicketCard(
   if (priority) card.priority = priority;
   if (queue) card.queue = queue;
 
-  // Recent notes give the card (and its add-note round-trip) visible context.
-  // Autotask returns notes oldest-first and much of a ticket's note stream is
-  // its own bookkeeping (workflow-rule / notification logs), so the first N
-  // were the ticket's creation noise. Read one page, drop system notes, keep
-  // the NEWEST N human notes, and show them oldest→newest (the card appends
-  // a newly added note at the bottom).
+  // The card is an at-a-glance SUMMARY of what has been done — totals plus a
+  // one-line headline per recent item — with a link to the ticket in Autotask
+  // for the full detail. Techs record their work in time-entry summaries, not
+  // notes, and most of a ticket's note stream is Autotask / integration
+  // bookkeeping (T20260921.0086: 17 notes, none human; the work is in 3 time
+  // entries). Each source is best-effort — one failing never blanks the other.
+  type Raw = { at: number; seq: number; kind: CardActivity['kind']; when?: string | undefined; resourceID?: unknown; contact: boolean; hours?: number | undefined; text: string };
+  const raw: Raw[] = [];
+  let seq = 0;
+  let timeRows: Array<{ resourceID?: unknown; hours: number }> = [];
   try {
-    const all = await service.searchTicketNotes(ticket.id, { pageSize: CARD_NOTE_FETCH });
-    const { human } = partitionTicketNotes(all);
-    const recent = human
-      .map((n, i) => ({ n, i, t: Date.parse(String(n.createDateTime ?? '')) }))
-      .sort((a, b) => (Number.isNaN(a.t) || Number.isNaN(b.t) ? a.i - b.i : a.t - b.t || a.i - b.i))
-      .slice(-CARD_NOTE_LIMIT)
-      .map((x) => x.n);
-    card.notes = recent.map((n) => {
-      const note: TicketCard['notes'][number] = {
-        description: String(n.description ?? '').slice(0, CARD_NOTE_MAX_LENGTH),
-      };
-      if (n.title) note.title = String(n.title);
-      return note;
-    });
+    const { human, systemHidden } = partitionTicketNotes(await service.searchTicketNotes(ticket.id, { pageSize: CARD_FETCH }));
+    card.summary.systemNotesHidden = systemHidden;
+    for (const n of human) {
+      const text = headline(n.title && !/^\[external\]/i.test(String(n.title)) ? `${n.title}\n${n.description ?? ''}` : n.description);
+      if (!text) continue;
+      raw.push({ at: Date.parse(String(n.createDateTime ?? '')), seq: seq++, kind: 'note', when: n.createDateTime ? String(n.createDateTime) : undefined,
+        resourceID: n.creatorResourceID, contact: n.createdByContactID != null, text });
+    }
   } catch (error) {
     logger.debug('Ticket card: note fetch failed, rendering without notes', error);
+  }
+  try {
+    const query: AutotaskQueryOptionsExtended & { ticketId: number } = { ticketId: ticket.id, pageSize: CARD_FETCH };
+    const entries = (await service.searchTimeEntries(query)).items;
+    timeRows = entries.map((e) => ({ resourceID: e.resourceID, hours: Number(e.hoursWorked) || 0 }));
+    for (const e of entries) {
+      const when = e.startDateTime ?? e.createDateTime ?? e.dateWorked;
+      raw.push({ at: Date.parse(String(when ?? '')), seq: seq++, kind: 'time', when: when ? String(when) : undefined,
+        resourceID: e.resourceID, contact: false, hours: e.hoursWorked != null ? Number(e.hoursWorked) : undefined,
+        text: headline(e.summaryNotes) || '(no summary)' });
+    }
+  } catch (error) {
+    logger.debug('Ticket card: time-entry fetch failed, rendering without time entries', error);
+  }
+
+  const ordered = raw.sort((a, b) => (Number.isNaN(a.at) || Number.isNaN(b.at) ? a.seq - b.seq : a.at - b.at || a.seq - b.seq));
+  const recent = ordered.slice(-CARD_ACTIVITY_LIMIT);
+  const names = await resourceNames(service, [...recent.map((r) => r.resourceID), ...timeRows.map((t) => t.resourceID)]);
+  card.activity = recent.map((r) => {
+    const a: CardActivity = { kind: r.kind, text: r.text };
+    if (r.when) a.when = r.when;
+    const who = r.contact ? 'Client contact' : names.get(Number(r.resourceID));
+    if (who) a.who = who;
+    if (r.hours != null) a.hours = Math.round(r.hours * 100) / 100;
+    return a;
+  });
+  const byTech = new Map<string, number>();
+  for (const t of timeRows) {
+    const who = names.get(Number(t.resourceID)) ?? `Resource ${t.resourceID}`;
+    byTech.set(who, (byTech.get(who) ?? 0) + t.hours);
+  }
+  card.summary.timeEntries = timeRows.length;
+  card.summary.hoursLogged = Math.round(timeRows.reduce((s, t) => s + t.hours, 0) * 100) / 100;
+  card.summary.techs = [...byTech.entries()].sort((a, b) => b[1] - a[1]).map(([who]) => who);
+  const last = ordered[ordered.length - 1];
+  if (last?.when) card.summary.lastActivity = last.when;
+
+  try {
+    const ticketUrl = service.getTicketWebUrl(ticket.id);
+    if (ticketUrl) card.ticketUrl = ticketUrl;
+  } catch (error) {
+    logger.debug('Ticket card: web URL unavailable, rendering without the Autotask link', error);
   }
 
   const noteDefaults = await resolveNoteDefaults(picklists, logger);
   if (noteDefaults) card.noteDefaults = noteDefaults;
 
   return card;
+}
+
+/** Best-effort "First Last" for each distinct resource id (misses are simply absent). */
+async function resourceNames(service: AutotaskService, ids: unknown[]): Promise<Map<number, string>> {
+  const unique = [...new Set(ids.map(Number).filter((id) => Number.isFinite(id)))];
+  const names = new Map<number, string>();
+  await Promise.all(unique.map(async (id) => {
+    const r = await service.getResource(id).catch(() => null) as { firstName?: string; lastName?: string } | null;
+    const name = r ? [r.firstName, r.lastName].filter(Boolean).join(' ') : '';
+    if (name) names.set(id, name);
+  }));
+  return names;
 }
 
 async function picklistLabel(

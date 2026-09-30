@@ -150,7 +150,8 @@ describe('MCP Apps ticket card', () => {
         company: 'Acme Corp',
         assignedTo: 'Dana Ruiz',
         estimatedHours: 4,
-        notes: [{ title: 'Triage', description: 'Assigned to network team' }],
+        activity: [{ kind: 'note', text: 'Triage · Assigned to network team' }],
+        summary: { hoursLogged: 0, timeEntries: 0, techs: [], systemNotesHidden: 0 },
       });
     });
 
@@ -208,7 +209,7 @@ describe('MCP Apps ticket card', () => {
         failingService as never,
         logger,
       );
-      expect(card).toMatchObject({ id: 48217, notes: [] });
+      expect(card).toMatchObject({ id: 48217, activity: [] });
       expect(card?.status).toBeUndefined();
       expect(card?.noteDefaults).toBeUndefined();
     });

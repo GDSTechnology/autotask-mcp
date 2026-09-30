@@ -3842,6 +3842,27 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Time-entry compliance report', readOnlyHint: true }
   },
   {
+    name: 'autotask_report_activity_without_time',
+    description: "Activity without time — the Autotask side of a billable-time leakage audit (read-only). For each tech × day, lists TICKETS where Autotask shows evidence of their work but they logged NO time on that ticket that day. Evidence is graded: HIGH = a substantive note they wrote; MEDIUM = a ticket they completed; bare 'Closed' / 'Closed - <reason>' resolution notes and notification e-mails they sent are attached as supporting context but never create a gap on their own. Time on the same ticket within toleranceDays (default 1) either side counts as covered. Excluded by default and counted under 'excluded': internal-company tickets, monitoring alerts, mail-loop junk (auto-replies/bounces), and backlog cleanup (an old ticket closed with no substantive note). Each gap carries ticket number/title/company, the evidence lines, the tech's time on that ticket on other days, and an Open-in-Autotask link — a lead to confirm (then backfill with autotask_create_time_entry), not proof. Days are the tech's local days. Window default: last 7 days, max 31. External evidence (Teams, email, meetings, phone) is not read here — correlate it separately.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceID: { type: 'number', description: 'The tech to audit (or use resourceIDs)' },
+        resourceIDs: { type: 'array', items: { type: 'number' }, maxItems: 10, description: 'Up to 10 techs to audit' },
+        from: { type: 'string', description: 'First local day (YYYY-MM-DD); default 6 days before `to`' },
+        to: { type: 'string', description: 'Last local day (YYYY-MM-DD); default today' },
+        timeZone: { type: 'string', description: 'IANA timezone for day boundaries; default each tech\'s location timezone' },
+        toleranceDays: { type: 'number', minimum: 0, maximum: 7, description: 'Time on the ticket this many days either side counts as covered (default 1)' },
+        minConfidence: { type: 'string', enum: ['high', 'medium'], description: 'Report only high, or high + medium (default)' },
+        includeMonitoring: { type: 'boolean', description: 'Also flag completed monitoring-alert tickets (default false)' },
+        includeInternal: { type: 'boolean', description: 'Also flag tickets on your own (internal) company — not client-billable (default false)' },
+        staleDays: { type: 'number', minimum: 1, description: 'A ticket at least this many days old, closed with no substantive note, counts as backlog cleanup, not a gap (default 30)' }
+      },
+      required: []
+    },
+    annotations: { title: 'Activity without time report', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_tickets_needing_scheduling',
     description: "Tickets needing scheduling (read-only, #100). Open tickets that should be on the calendar but aren't — extends the service-call reconciliation in report_service_call_leakage (that fixes leakage on tickets that HAD a service call; this catches the ones that never got one). Classifies each candidate as unscheduled (no service call linked), past_service_call (only stale/past calls — likely needs rescheduling), or scheduled (a future service call; excluded from the list, still counted). By default limits to open tickets with hoursToBeScheduled > 0 (the native 'hours remain to schedule' signal); pass requireHoursToSchedule:false to consider every open ticket, or ticketType to scope to install/project types. Returns the needs-scheduling list (worst backlog first — most hours, then oldest) with age + due date, counts, total hours to schedule, and optional grouping. For n8n/chat dashboards.",
     inputSchema: {
@@ -5674,7 +5695,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_activity_without_time', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

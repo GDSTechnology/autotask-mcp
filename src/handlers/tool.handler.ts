@@ -1907,6 +1907,19 @@ export class AutotaskToolHandler {
           message: `ITIL SLA framework: ${r.priorityScheme.length}-level priority scheme + ${r.targets.length} target row(s) across ${new Set(r.targets.map((t) => t.tier)).size} tier(s). Advisory only — enter in the Autotask UI${mig}.`,
         };
       }],
+      ['autotask_report_activity_without_time', async (a) => {
+        const ids: number[] = Array.isArray(a.resourceIDs) ? a.resourceIDs.map(Number).filter(Number.isFinite) : [];
+        if (a.resourceID != null) ids.unshift(Number(a.resourceID));
+        const resourceIDs = [...new Set(ids)].slice(0, 10);
+        if (!resourceIDs.length) return { result: null, message: 'resourceID (or resourceIDs, up to 10) is required — whose activity to audit.' };
+        const r = await s.reportActivityWithoutTime({
+          resourceIDs, from: a.from, to: a.to, timeZone: a.timeZone,
+          toleranceDays: a.toleranceDays, minConfidence: a.minConfidence, includeMonitoring: a.includeMonitoring,
+          includeInternal: a.includeInternal, staleDays: a.staleDays,
+        });
+        const per = r.resources.map((x) => `${x.resourceName ?? `Resource ${x.resourceID}`}: ${x.counts.high} high / ${x.counts.medium} medium (${x.hoursLogged} h logged)`).join('; ');
+        return { result: r, message: `Activity without time ${r.from}..${r.to}: ${r.totals.high} high-confidence and ${r.totals.medium} medium gap(s) — ${per}. Each gap is a lead to confirm before backfilling.` };
+      }],
       ['autotask_report_time_entry_compliance', async (a) => {
         const r = await s.getTimeEntryComplianceReport({
           from: a.from, to: a.to, bucket: a.bucket, resourceID: a.resourceID,

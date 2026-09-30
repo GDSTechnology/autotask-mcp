@@ -516,7 +516,6 @@ export interface AutotaskServiceCallTicketResource {
   id?: number;
   serviceCallTicketID?: number;
   resourceID?: number;
-  roleID?: number;
   [key: string]: any;
 }
 
@@ -531,7 +530,6 @@ export interface AutotaskServiceCallTaskResource {
   id?: number;
   serviceCallTaskID?: number;
   resourceID?: number;
-  roleID?: number;
   [key: string]: any;
 }
 

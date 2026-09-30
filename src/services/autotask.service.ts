@@ -45,6 +45,7 @@ import {
   SlaCoverageResult, PicklistOption, AssignInput, ContractLite,
 } from '../utils/contract-sla';
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
+import { computeActivityWithoutTime, AwtNote, AwtCompletion, AwtEmail, AwtTimeEntry, AwtTicket, AwtResourceResult, GapConfidence } from '../utils/activity-without-time';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
 import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhookPayload, validateWebhookCreate, buildWebhookFieldRow, WebhookParams, WebhookFieldSpec } from '../utils/webhook-entities';
@@ -6458,6 +6459,120 @@ export class AutotaskService {
     });
     if (entries.length >= max) result.truncated = true;
     return result;
+  }
+
+  /**
+   * Activity without time — the Autotask side of the billable-time leakage
+   * audit. Per resource × local day: tickets with evidence of their work
+   * (substantive notes they wrote, tickets they completed; close notes and
+   * e-mails they sent as supporting context) but NO time entry by them on the
+   * ticket that day (± toleranceDays). Read-only. Days are the resource's local
+   * days (their location's timezone unless timeZone is given). See
+   * utils/activity-without-time for the grading.
+   */
+  async reportActivityWithoutTime(opts: {
+    resourceIDs: number[]; from?: string; to?: string; timeZone?: string;
+    toleranceDays?: number; minConfidence?: GapConfidence; includeMonitoring?: boolean;
+    includeInternal?: boolean; staleDays?: number;
+  }): Promise<{ from: string; to: string; resources: AwtResourceResult[]; totals: { high: number; medium: number; resources: number }; notes: string[] }> {
+    const http = await this.ensureClient();
+    const day = (d: Date) => d.toISOString().slice(0, 10);
+    const to = opts.to ?? day(new Date());
+    const from = opts.from ?? day(new Date(Date.parse(`${to}T00:00:00Z`) - 6 * 86_400_000));
+    const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+    if (!(spanDays >= 0) || spanDays > 31) throw new Error('from/to must be a window of 0–31 days (YYYY-MM-DD, from <= to).');
+    const tolerance = Math.min(Math.max(opts.toleranceDays ?? 1, 0), 7);
+    // Pad the UTC fetch window a day each side so local days at the edges are whole.
+    const utcFrom = `${day(new Date(Date.parse(`${from}T00:00:00Z`) - 86_400_000))}T00:00:00Z`;
+    const utcTo = `${day(new Date(Date.parse(`${to}T00:00:00Z`) + 2 * 86_400_000))}T00:00:00Z`;
+    const timeFrom = day(new Date(Date.parse(`${from}T00:00:00Z`) - tolerance * 86_400_000));
+    const timeTo = day(new Date(Date.parse(`${to}T00:00:00Z`) + tolerance * 86_400_000));
+
+    // Monitoring-alert tickets (auto-generated) — by source / queue / type /
+    // category label (live GDS picklists: source "Monitoring Alert"/"RMM", queues
+    // "Monitoring Alert"/"Managed Services Alert"/"Alerts", type "Alert",
+    // categories "AEM Alert"/"Datto Alert").
+    const monitoringValues = { source: new Set<string>(), queueID: new Set<string>(), ticketType: new Set<string>(), ticketCategory: new Set<string>() };
+    try {
+      const fields = await this.getFieldInfo('Tickets');
+      for (const f of ['source', 'queueID', 'ticketType', 'ticketCategory'] as const) {
+        for (const v of fields.find((x) => x.name === f)?.picklistValues ?? []) {
+          if (/monitor|rmm|alert|datto|auvik|backup/i.test(v.label)) monitoringValues[f].add(String(v.value));
+        }
+      }
+    } catch { /* best-effort: nothing excluded as monitoring */ }
+
+    const resources: AwtResourceResult[] = [];
+    for (const resourceID of opts.resourceIDs) {
+      const tz = opts.timeZone ?? (await this.resolveResourceTimeZone(resourceID)) ?? 'America/New_York';
+      const [notes, completions, emails, timeEntries, resource] = await Promise.all([
+        http.query<AwtNote>('TicketNotes', [{ op: 'eq', field: 'creatorResourceID', value: resourceID }, { op: 'gte', field: 'createDateTime', value: utcFrom }, { op: 'lt', field: 'createDateTime', value: utcTo }],
+          { includeFields: ['id', 'ticketID', 'noteType', 'title', 'description', 'createDateTime', 'creatorResourceID'], maxRecords: 5000 }),
+        http.query<AwtCompletion>('Tickets', [{ op: 'eq', field: 'completedByResourceID', value: resourceID }, { op: 'gte', field: 'completedDate', value: utcFrom }, { op: 'lt', field: 'completedDate', value: utcTo }],
+          { includeFields: ['id', 'completedDate'], maxRecords: 5000 }),
+        http.query<AwtEmail>('NotificationHistory', [{ op: 'eq', field: 'initiatingResourceID', value: resourceID }, { op: 'gte', field: 'notificationSentTime', value: utcFrom }, { op: 'lt', field: 'notificationSentTime', value: utcTo }],
+          { includeFields: ['id', 'ticketID', 'timeEntryID', 'notificationSentTime', 'templateName', 'recipientEmailAddress'], maxRecords: 5000 }).catch(() => [] as AwtEmail[]),
+        http.query<AwtTimeEntry>('TimeEntries', [{ op: 'eq', field: 'resourceID', value: resourceID }, { op: 'gte', field: 'dateWorked', value: timeFrom }, { op: 'lte', field: 'dateWorked', value: timeTo }],
+          { includeFields: ['id', 'ticketID', 'dateWorked', 'hoursWorked'], maxRecords: 5000 }),
+        this.getResource(resourceID).catch(() => null) as Promise<{ firstName?: string; lastName?: string } | null>,
+      ]);
+
+      // Ticket context for every ticket that carries evidence.
+      const ids = [...new Set([...notes.map((n) => n.ticketID), ...completions.map((c) => c.id)].filter((x): x is number => x != null))];
+      const tickets = new Map<number, AwtTicket>();
+      const companyIDs = new Set<number>();
+      type RawTicket = { id: number; ticketNumber?: string; title?: string; companyID?: number; source?: number; queueID?: number; ticketType?: number; ticketCategory?: number; createDate?: string };
+      const raw: RawTicket[] = [];
+      for (let i = 0; i < ids.length; i += 200) {
+        raw.push(...await http.query<RawTicket>('Tickets', [{ op: 'in', field: 'id', value: ids.slice(i, i + 200) }],
+          { includeFields: ['id', 'ticketNumber', 'title', 'companyID', 'source', 'queueID', 'ticketType', 'ticketCategory', 'createDate'], maxRecords: 500 }));
+      }
+      const hit = (set: Set<string>, v: number | undefined) => v != null && set.has(String(v));
+      for (const t of raw) if (t.companyID != null) companyIDs.add(t.companyID);
+      const companyNames = new Map<number, string>();
+      const cids = [...companyIDs];
+      for (let i = 0; i < cids.length; i += 200) {
+        try {
+          for (const c of await http.query<{ id: number; companyName?: string }>('Companies', [{ op: 'in', field: 'id', value: cids.slice(i, i + 200) }], { includeFields: ['id', 'companyName'], maxRecords: 500 })) {
+            if (c.companyName) companyNames.set(c.id, c.companyName);
+          }
+        } catch { /* names are a nicety */ }
+      }
+      const linkFor = (id: number): string | null => { try { return this.getTicketWebUrl(id); } catch { return null; } };
+      for (const t of raw) {
+        const url = linkFor(t.id);
+        tickets.set(t.id, {
+          id: t.id,
+          ...(t.ticketNumber ? { ticketNumber: t.ticketNumber } : {}),
+          ...(t.title ? { title: t.title } : {}),
+          companyName: t.companyID != null ? (companyNames.get(t.companyID) ?? null) : null,
+          isMonitoring: hit(monitoringValues.source, t.source) || hit(monitoringValues.queueID, t.queueID) || hit(monitoringValues.ticketType, t.ticketType) || hit(monitoringValues.ticketCategory, t.ticketCategory),
+          // companyID 0 is always the tenant's own company in Autotask.
+          isInternal: t.companyID === 0,
+          createDate: t.createDate ?? null,
+          ticketUrl: url,
+        });
+      }
+      const name = resource ? [resource.firstName, resource.lastName].filter(Boolean).join(' ') : '';
+      resources.push(computeActivityWithoutTime(resourceID, { notes, completions, emails, timeEntries, tickets }, {
+        timeZone: tz, from, to, toleranceDays: tolerance,
+        ...(opts.minConfidence ? { minConfidence: opts.minConfidence } : {}),
+        ...(opts.includeMonitoring != null ? { includeMonitoring: opts.includeMonitoring } : {}),
+        ...(opts.includeInternal != null ? { includeInternal: opts.includeInternal } : {}),
+        ...(opts.staleDays != null ? { staleDays: opts.staleDays } : {}),
+      }, name || undefined));
+    }
+
+    return {
+      from, to, resources,
+      totals: { high: resources.reduce((s, r) => s + r.counts.high, 0), medium: resources.reduce((s, r) => s + r.counts.medium, 0), resources: resources.length },
+      notes: [
+        'A gap is Autotask evidence of work with no time by that tech on that ticket that day — a lead to confirm, not proof of unbilled work (some work is legitimately non-billable or logged elsewhere).',
+        'Excluded by default (counted per resource under "excluded"): internal-company tickets, monitoring alerts, mail-loop junk (auto-replies/bounces), and backlog cleanup (an old ticket closed with no substantive note).',
+        `Time on the same ticket within ${tolerance} day(s) either side counts as covered.`,
+        'External evidence (Teams, email, meetings, phone) is not read here — correlate it separately.',
+      ],
+    };
   }
 
   /**

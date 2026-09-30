@@ -45,6 +45,7 @@ import {
   SlaCoverageResult, PicklistOption, AssignInput, ContractLite,
 } from '../utils/contract-sla';
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
+import { groupNotificationSends, emailDomain, NotificationRow, NotificationSend } from '../utils/notification-history';
 import { computeActivityWithoutTime, AwtNote, AwtCompletion, AwtEmail, AwtTimeEntry, AwtTicket, AwtResourceResult, GapConfidence } from '../utils/activity-without-time';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
@@ -6459,6 +6460,70 @@ export class AutotaskService {
     });
     if (entries.length >= max) result.truncated = true;
     return result;
+  }
+
+  /**
+   * Notification history (read-only): the e-mails Autotask sent, grouped into
+   * SENDS (one row per recipient upstream; see utils/notification-history).
+   * Scoped by subject (ticket / time entry / task / project), initiator,
+   * recipient, template and/or a sent-time window. Autotask can't sort query
+   * results, so matching rows are fetched (capped), grouped, sorted newest
+   * first, and paged by SEND — a send's recipients never split across pages.
+   */
+  async searchNotificationHistory(opts: {
+    ticketID?: number; timeEntryID?: number; taskID?: number; projectID?: number;
+    initiatingResourceID?: number; recipientEmail?: string; templateName?: string;
+    from?: string; to?: string; page?: number; pageSize?: number; maxRows?: number;
+  }): Promise<{ sends: NotificationSend[]; page: number; pageSize: number; hasMore: boolean; totalSends: number; rowsScanned: number; truncated: boolean; internalDomains: string[] }> {
+    const http = await this.ensureClient();
+    const filters: QueryFilter[] = [];
+    pushEq(filters, 'ticketID', opts.ticketID);
+    pushEq(filters, 'timeEntryID', opts.timeEntryID);
+    pushEq(filters, 'taskID', opts.taskID);
+    pushEq(filters, 'projectID', opts.projectID);
+    pushEq(filters, 'initiatingResourceID', opts.initiatingResourceID);
+    if (opts.recipientEmail) filters.push({ op: 'contains', field: 'recipientEmailAddress', value: opts.recipientEmail });
+    if (opts.templateName) filters.push({ op: 'contains', field: 'templateName', value: opts.templateName });
+    const scoped = filters.length > 0;
+    if (opts.from) filters.push({ op: 'gte', field: 'notificationSentTime', value: opts.from.length === 10 ? `${opts.from}T00:00:00Z` : opts.from });
+    if (opts.to) filters.push({ op: 'lt', field: 'notificationSentTime', value: opts.to.length === 10 ? new Date(Date.parse(`${opts.to}T00:00:00Z`) + 86_400_000).toISOString() : opts.to });
+    if (!scoped) {
+      // An unscoped scan of the whole e-mail log is never what a caller wants.
+      const span = opts.from && opts.to ? (Date.parse(opts.to) - Date.parse(opts.from)) / 86_400_000 : Infinity;
+      if (!(span <= 31)) throw new Error('Scope the search: pass ticketID / timeEntryID / taskID / projectID / initiatingResourceID / recipientEmail / templateName, or a from+to window of at most 31 days.');
+    }
+    const maxRows = Math.min(Math.max(opts.maxRows ?? 2000, 1), 10000);
+    const rows = await http.query<NotificationRow>('NotificationHistory', filters, {
+      includeFields: ['id', 'notificationSentTime', 'notificationHistoryTypeID', 'templateName', 'recipientEmailAddress', 'recipientDisplayName',
+        'initiatingResourceID', 'initiatingContactID', 'ticketID', 'timeEntryID', 'taskID', 'projectID', 'opportunityID', 'quoteID', 'companyID', 'entityNumber', 'entityTitle'],
+      maxRecords: maxRows,
+    });
+
+    const typeLabels = new Map<number, string>();
+    try {
+      const f = (await this.getFieldInfo('NotificationHistory')).find((x) => x.name === 'notificationHistoryTypeID');
+      for (const v of f?.picklistValues ?? []) typeLabels.set(Number(v.value), v.label);
+    } catch { /* labels are a nicety */ }
+    const resourceNames = new Map<number, string>();
+    const domains = new Set((process.env.AUTOTASK_INTERNAL_EMAIL_DOMAINS ?? '').split(',').map((d) => d.trim().toLowerCase().replace(/^@/, '')).filter(Boolean));
+    const ids = [...new Set(rows.map((r) => r.initiatingResourceID).filter((x): x is number => x != null))];
+    for (let i = 0; i < ids.length; i += 200) {
+      try {
+        for (const r of await http.query<{ id: number; firstName?: string; lastName?: string; email?: string }>('Resources', [{ op: 'in', field: 'id', value: ids.slice(i, i + 200) }], { includeFields: ['id', 'firstName', 'lastName', 'email'], maxRecords: 500 })) {
+          resourceNames.set(r.id, [r.firstName, r.lastName].filter(Boolean).join(' ') || `Resource ${r.id}`);
+          // A tech's own address marks the tenant's internal domain(s).
+          const dom = emailDomain(r.email);
+          if (dom) domains.add(dom);
+        }
+      } catch { /* names are a nicety */ }
+    }
+
+    const internalDomains = [...domains];
+    const all = groupNotificationSends(rows, { typeLabels, resourceNames, internalDomains });
+    const page = Math.max(1, opts.page || 1);
+    const pageSize = Math.min(Math.max(opts.pageSize || 25, 1), 200);
+    const sends = all.slice((page - 1) * pageSize, page * pageSize);
+    return { sends, page, pageSize, hasMore: all.length > page * pageSize, totalSends: all.length, rowsScanned: rows.length, truncated: rows.length >= maxRows, internalDomains };
   }
 
   /**

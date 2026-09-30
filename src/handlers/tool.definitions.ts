@@ -3842,6 +3842,28 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     annotations: { title: 'Time-entry compliance report', readOnlyHint: true }
   },
   {
+    name: 'autotask_search_notification_history',
+    description: "Notification history (read-only): the e-mails Autotask actually SENT — ticket/time-entry notifications, workflow-rule e-mails, quote notes, surveys — and to whom. Use it to verify \"was the customer told?\" after a ticket update, time entry or close. Rows are grouped into SENDS (Autotask stores one row per recipient): each send has sentAt, type, template, who initiated it (a tech, a contact, or Autotask for workflow/system e-mails), the subject (ticket/time entry/task/project + number/title), the recipient list, and toExternal (true when anyone outside your own e-mail domain(s) received it). Newest first, paged by send. Scope with ticketID / timeEntryID / taskID / projectID / initiatingResourceID / recipientEmail / templateName, or a from+to window of at most 31 days. NOTE: the Autotask API cannot SEND notifications — this only reads what was sent; ticket-close e-mails belong in an Autotask workflow rule (they fire on API edits too).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'E-mails about this ticket' },
+        timeEntryID: { type: 'number', description: 'E-mails sent from this time entry' },
+        taskID: { type: 'number', description: 'E-mails about this project task' },
+        projectID: { type: 'number', description: 'E-mails about this project' },
+        initiatingResourceID: { type: 'number', description: 'E-mails triggered by this tech' },
+        recipientEmail: { type: 'string', description: 'Recipient address contains this (e.g. a customer domain)' },
+        templateName: { type: 'string', description: 'Template name contains this (e.g. "Ticket Ready to Bill")' },
+        from: { type: 'string', description: 'Sent on/after (YYYY-MM-DD or ISO)' },
+        to: { type: 'string', description: 'Sent on/before (YYYY-MM-DD inclusive, or ISO)' },
+        page: { type: 'number', minimum: 1, description: 'Page of SENDS (default 1)' },
+        pageSize: { type: 'number', minimum: 1, maximum: 200, description: 'Sends per page (default 25, max 200)' }
+      },
+      required: []
+    },
+    annotations: { title: 'Search notification history', readOnlyHint: true }
+  },
+  {
     name: 'autotask_report_activity_without_time',
     description: "Activity without time — the Autotask side of a billable-time leakage audit (read-only). For each tech × day, lists TICKETS where Autotask shows evidence of their work but they logged NO time on that ticket that day. Evidence is graded: HIGH = a substantive note they wrote; MEDIUM = a ticket they completed; bare 'Closed' / 'Closed - <reason>' resolution notes and notification e-mails they sent are attached as supporting context but never create a gap on their own. Time on the same ticket within toleranceDays (default 1) either side counts as covered. Excluded by default and counted under 'excluded': internal-company tickets, monitoring alerts, mail-loop junk (auto-replies/bounces), and backlog cleanup (an old ticket closed with no substantive note). Each gap carries ticket number/title/company, the evidence lines, the tech's time on that ticket on other days, and an Open-in-Autotask link — a lead to confirm (then backfill with autotask_create_time_entry), not proof. Days are the tech's local days. Window default: last 7 days, max 31. External evidence (Teams, email, meetings, phone) is not read here — correlate it separately.",
     inputSchema: {
@@ -5681,8 +5703,8 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
     tools: ['autotask_search_contacts', 'autotask_create_contact', 'autotask_update_contact', 'autotask_find_or_create_contact']
   },
   tickets: {
-    description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
+    description: 'Search, create, update tickets and manage ticket notes, attachments, charges, audit history, and the notification e-mails Autotask sent',
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_notification_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

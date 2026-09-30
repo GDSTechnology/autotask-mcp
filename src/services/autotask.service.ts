@@ -53,6 +53,7 @@ import { normalizeTimestamp } from '../utils/timezone';
 import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { RoleChoice, RoleSource } from '../utils/time-entry-role';
+import { classifyTimeEntryWriteError } from '../utils/time-entry-errors';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import { applyBillingTreatment, BillingTreatment } from '../utils/billing-treatment';
 import { summarizeUnbilledTime, UnbilledTimeEntry, UnbilledTimeSummary } from '../utils/unbilled-time';
@@ -1650,19 +1651,27 @@ export class AutotaskService {
     if (!dryRun && !hasErrors) {
       for (const p of plan) {
         if (p.row.status !== 'would_create') continue; // skip duplicates
-        const res = await this.logTimeIdempotent({
-          resourceID: p.row.resourceID as number,
-          dateWorked,
-          taskID,
-          summaryNotes: p.entry.summaryNotes,
-          hoursWorked: p.entry.hoursWorked,
-          ...(p.row.roleID != null ? { roleID: p.row.roleID } : {}),
-          ...(p.entry.internalNotes ? { internalNotes: p.entry.internalNotes } : {}),
-          ...(p.entry.startDateTime ? { startDateTime: p.entry.startDateTime } : {}),
-          ...(p.entry.endDateTime ? { endDateTime: p.entry.endDateTime } : {}),
-        } as any);
-        if (res.created) { p.row.status = 'created'; p.row.id = res.id; }
-        else { p.row.status = 'duplicate'; p.row.duplicateOf = res.duplicateOf ?? res.id; p.row.id = res.id; }
+        // One entry's Autotask rejection (e.g. that attendee's timesheet is
+        // locked) is recorded on its row with the explained reason; the others
+        // still write. Rerun-safe: the idempotent path won't double-post.
+        try {
+          const res = await this.logTimeIdempotent({
+            resourceID: p.row.resourceID as number,
+            dateWorked,
+            taskID,
+            summaryNotes: p.entry.summaryNotes,
+            hoursWorked: p.entry.hoursWorked,
+            ...(p.row.roleID != null ? { roleID: p.row.roleID } : {}),
+            ...(p.entry.internalNotes ? { internalNotes: p.entry.internalNotes } : {}),
+            ...(p.entry.startDateTime ? { startDateTime: p.entry.startDateTime } : {}),
+            ...(p.entry.endDateTime ? { endDateTime: p.entry.endDateTime } : {}),
+          } as any);
+          if (res.created) { p.row.status = 'created'; p.row.id = res.id; }
+          else { p.row.status = 'duplicate'; p.row.duplicateOf = res.duplicateOf ?? res.id; p.row.id = res.id; }
+        } catch (e) {
+          p.row.status = 'error';
+          p.row.error = classifyTimeEntryWriteError(e)?.reason ?? (e instanceof Error ? e.message : String(e));
+        }
       }
     }
 
@@ -1819,17 +1828,26 @@ export class AutotaskService {
           ...(p.timeZone ? { timeZone: p.timeZone } : {}),
         };
         applyBillingTreatment(entry, p.billingTreatment);
-        const res = await this.logTimeIdempotent(entry as any);
-        if (res.created) { row.status = 'created'; row.id = res.id; }
-        else { row.status = 'duplicate'; row.duplicateOf = res.duplicateOf ?? res.id; row.id = res.id; }
+        // Per-row failure with the explained reason (see the bulk-task path).
+        try {
+          const res = await this.logTimeIdempotent(entry as any);
+          if (res.created) { row.status = 'created'; row.id = res.id; }
+          else { row.status = 'duplicate'; row.duplicateOf = res.duplicateOf ?? res.id; row.id = res.id; }
+        } catch (e) {
+          row.status = 'error';
+          row.error = classifyTimeEntryWriteError(e)?.reason ?? (e instanceof Error ? e.message : String(e));
+        }
       }
     }
 
-    // Note last — only when time succeeded (no resolution errors), idempotent if keyed.
+    // Note last — only when time succeeded (no resolution OR write errors), idempotent if keyed.
     let noteResult: { status: 'would_create' | 'created' | 'duplicate' | 'skipped'; noteId?: number } | undefined;
+    const writeFailed = plan.some((x) => x.row.status === 'error');
     if (note?.description) {
       if (dryRun || hasErrors) {
         noteResult = { status: 'would_create' };
+      } else if (writeFailed) {
+        noteResult = { status: 'skipped' }; // re-run after fixing the failed row(s)
       } else if (note.idempotencyKey) {
         const nr = await this.createTicketNoteIdempotent(ticketID, { title: note.title ?? 'Ticket note', description: note.description, ...(note.noteType != null ? { noteType: note.noteType } : {}), ...(note.publish != null ? { publish: note.publish } : {}) } as any, note.idempotencyKey);
         noteResult = { status: nr.created ? 'created' : 'duplicate', noteId: nr.noteId };
@@ -1937,6 +1955,42 @@ export class AutotaskService {
       .filter((c) => c.name != null)
       .map((c) => ({ id: c.id, name: String(c.name), active: c.isActive !== false }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private readonly WORK_TYPE_USE_TYPE = 1;
+
+  /** Ticket/task WORK TYPES (BillingCodes useType 1): { id, name, active }. Read-only. */
+  async getWorkTypes(): Promise<Array<{ id: number; name: string; active: boolean }>> {
+    const http = await this.ensureClient();
+    const codes = await http.query<{ id: number; name?: string | null; isActive?: boolean }>(
+      'BillingCodes',
+      [{ op: 'eq', field: 'useType', value: this.WORK_TYPE_USE_TYPE }],
+      { maxRecords: 500, includeFields: ['id', 'name', 'isActive', 'useType'] }
+    );
+    return codes
+      .filter((c) => c.name != null)
+      .map((c) => ({ id: c.id, name: String(c.name), active: c.isActive !== false }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Pre-flight a ticket/task time entry's billingCodeID. Autotask rejects a bad
+   * one with "The given allocation code is not an active general allocation
+   * code." — which doesn't say whether the id doesn't exist, is inactive, or is
+   * the wrong KIND (e.g. a Regular Time category, useType 3, passed as a work
+   * type). This says which, with the active work types to choose from.
+   */
+  async validateWorkType(billingCodeID: number): Promise<
+    | { ok: true; name: string | null }
+    | { ok: false; reason: 'not_found' | 'inactive' | 'not_a_work_type'; name: string | null; useType: number | null; validWorkTypes: Array<{ id: number; name: string }> }
+  > {
+    const bc = (await this.getBillingCode(billingCodeID)) as { name?: string | null; useType?: number | null; isActive?: boolean } | null;
+    const name = bc?.name != null ? String(bc.name) : null;
+    const useType = bc?.useType != null ? Number(bc.useType) : null;
+    const reason = !bc ? 'not_found' : useType !== this.WORK_TYPE_USE_TYPE ? 'not_a_work_type' : bc.isActive === false ? 'inactive' : null;
+    if (!reason) return { ok: true, name };
+    const validWorkTypes = (await this.getWorkTypes().catch(() => [])).filter((w) => w.active).map(({ id, name }) => ({ id, name }));
+    return { ok: false, reason, name, useType, validWorkTypes };
   }
 
   /** Names of active Regular Time categories (for prompts). */

@@ -546,7 +546,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_get_ticket_details',
-    description: 'Get full ticket details including notes, time entries, and custom fields.',
+    description: 'Get full ticket details including notes, time entries, and custom fields. The result carries `ticketUrl` — a link that opens the ticket in the Autotask web UI; give it to the user when they want the full detail rather than pasting long notes into chat.',
     _meta: TICKET_CARD_META,
     inputSchema: {
       type: 'object',
@@ -5020,7 +5020,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         roleID: {
           type: 'number',
-          description: 'The role ID for the resource on this service call (optional)'
+          description: 'The role ID for the resource on this service call (optional). When given it must be one of the resource\'s active roles (autotask_get_resource_roles) — an invalid role returns the valid choices and assigns nothing.'
         }
       },
       required: ['serviceCallTicketID', 'resourceID']
@@ -5119,7 +5119,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       properties: {
         serviceCallTaskID: { type: 'number', description: 'The service call task ID to assign the resource to' },
         resourceID: { type: 'number', description: 'The resource ID to assign' },
-        roleID: { type: 'number', description: 'The role ID for the resource on this service call (optional)' }
+        roleID: { type: 'number', description: 'The role ID for the resource on this service call (optional). When given it must be one of the resource\'s active roles (autotask_get_resource_roles) — an invalid role returns the valid choices and assigns nothing.' }
       },
       required: ['serviceCallTaskID', 'resourceID']
     }

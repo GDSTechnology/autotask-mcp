@@ -80,6 +80,7 @@ describe('autotask_update_time_entry (expanded)', () => {
   test('billingTreatment:non_billable is translated; billingTreatment/timeZone are not sent as fields', async () => {
     const svc = new AutotaskService(config, logger);
     const upd = jest.spyOn(svc, 'updateTimeEntry').mockResolvedValue();
+    jest.spyOn(svc, 'validateWorkType').mockResolvedValue({ ok: true, name: 'Remote Support' }); // work type is pre-flighted
     const handler = new AutotaskToolHandler(svc, logger);
 
     await handler.callTool('autotask_update_time_entry', { id: 55371, billingCodeID: 29682860, billingTreatment: 'non_billable' });

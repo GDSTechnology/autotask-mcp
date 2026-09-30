@@ -14,6 +14,7 @@ import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } f
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
+import { classifyTimeEntryWriteError } from '../utils/time-entry-errors.js';
 
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
 // confirm gate treats an omitted dryRun as a dry-run (plan only, no confirm),
@@ -990,6 +991,50 @@ export class AutotaskToolHandler {
       message: `Found ${p.items.length} ${noun}`,
       pagination: { page: p.page, pageSize: p.pageSize, hasMore: p.hasMore },
     });
+    // Run a time-entry write; an Autotask rejection we can explain (timesheet
+    // lock, posted entry, bad work type, completed task, role) comes back as an
+    // actionable status instead of the raw API error. Anything else rethrows.
+    const explainTimeEntryWrite = async <T>(write: () => Promise<T>): Promise<{ ok: T } | { stop: { result: unknown; message: string } }> => {
+      try {
+        return { ok: await write() };
+      } catch (e) {
+        const c = classifyTimeEntryWriteError(e);
+        if (!c) throw e;
+        return { stop: { result: { status: c.status, autotaskError: c.autotaskError }, message: c.reason } };
+      }
+    };
+    // An OPTIONAL role on a resource assignment (service-call ticket/task): when
+    // given, it must be one of the resource's active roles — same rule as time
+    // entries, so a wrong role never reaches the calendar/billing. Omitted →
+    // unchanged (no auto-pick). Best-effort: a failed role lookup lets it through.
+    const checkAssignmentRole = async (resourceID: unknown, roleID: unknown): Promise<{ result: unknown; message: string } | null> => {
+      if (roleID == null || resourceID == null) return null;
+      let rr: Awaited<ReturnType<typeof s.resolveWorkTimeEntryRole>> | null;
+      try { rr = await s.resolveWorkTimeEntryRole(Number(resourceID), Number(roleID)); } catch { return null; }
+      if ('invalidRole' in rr) {
+        return { result: { status: 'invalid_role', requestedRoleID: rr.invalidRole, needsSelection: rr.validRoles }, message: invalidRoleMessage(rr.invalidRole, Number(resourceID), rr.validRoles) };
+      }
+      if ('error' in rr) return { result: { status: 'invalid_role' }, message: rr.error };
+      return null;
+    };
+    // Pre-flight a supplied work type so a bad one is named (not found /
+    // inactive / a Regular Time category) with the active choices, instead of
+    // Autotask's "not an active general allocation code". Best-effort: a failed
+    // lookup lets the write proceed (Autotask still enforces it).
+    const checkWorkType = async (billingCodeID: unknown): Promise<{ result: unknown; message: string } | null> => {
+      if (billingCodeID == null) return null;
+      let v: Awaited<ReturnType<typeof s.validateWorkType>>;
+      try { v = await s.validateWorkType(Number(billingCodeID)); } catch { return null; }
+      if (v.ok) return null;
+      const what = v.reason === 'not_found' ? 'does not exist'
+        : v.reason === 'inactive' ? `is inactive ("${v.name}")`
+        : `is not a ticket/task work type ("${v.name}" is useType ${v.useType}${v.useType === 3 ? ' — a Regular Time category; pass it as `category` with no ticket/task' : ''})`;
+      const choices = v.validWorkTypes.map((w) => `${w.id} = ${w.name}`).join('; ');
+      return {
+        result: { status: 'invalid_work_type', billingCodeID: Number(billingCodeID), reason: v.reason, validWorkTypes: v.validWorkTypes },
+        message: `billingCodeID ${billingCodeID} ${what} — nothing was written. Re-run with an active work type${choices ? `: ${choices}` : ''}, or omit billingCodeID to use the default.`,
+      };
+    };
     // hoursToBill is read-only: Autotask derives it and ignores a supplied value.
     // Say so when a caller asked for a value the stored entry doesn't carry.
     const hoursToBillWarning = (requested: unknown, stored: unknown): string | null => {
@@ -1091,7 +1136,15 @@ export class AutotaskToolHandler {
         return paged(await s.searchTickets(opts), 'tickets');
       }],
       ['autotask_get_ticket_details', async (a) => {
-        const r = await s.getTicket(a.ticketID, a.fullDetails); return { result: r, message: 'Ticket details retrieved successfully' };
+        const r = await s.getTicket(a.ticketID, a.fullDetails);
+        // A plain-text "open in Autotask" link the model can hand the tech, so the
+        // full detail is one click away even where the card's button can't open
+        // links. Best-effort: no resolvable web UI base → no link.
+        const ticketUrl = ((): string | null => {
+          try { return r?.id != null ? s.getTicketWebUrl(Number(r.id)) : null; } catch { return null; }
+        })();
+        if (r && ticketUrl) (r as Record<string, unknown>).ticketUrl = ticketUrl;
+        return { result: r, message: `Ticket details retrieved successfully${ticketUrl ? ` — open in Autotask: ${ticketUrl}` : ''}` };
       }],
       ['autotask_create_ticket', async (a) => {
         const payload = buildTicketPayload(a);
@@ -1271,6 +1324,8 @@ export class AutotaskToolHandler {
         return { result: r, message: `Found ${r.length} service call ticket resources` };
       }],
       ['autotask_create_service_call_ticket_resource', async (a) => {
+        const badRole = await checkAssignmentRole(a.resourceID, a.roleID);
+        if (badRole) return badRole;
         const id = await s.createServiceCallTicketResource(a);
         return { result: id, message: `Successfully assigned resource to service call ticket, record ID: ${id}` };
       }],
@@ -1299,6 +1354,8 @@ export class AutotaskToolHandler {
         return { result: r, message: `Found ${r.length} service call task resource(s)` };
       }],
       ['autotask_create_service_call_task_resource', async (a) => {
+        const badRole = await checkAssignmentRole(a.resourceID, a.roleID);
+        if (badRole) return badRole;
         const id = await s.createServiceCallTaskResource(a);
         return { result: id, message: `Successfully assigned resource to service call task, record ID: ${id}` };
       }],
@@ -1378,12 +1435,18 @@ export class AutotaskToolHandler {
         // Ticket/task time: default/sole role, a pick, or validate the chosen one.
         const role = await resolveTimeEntryRole(a);
         if ('stop' in role) return role.stop;
+        if (a.ticketID || a.taskID) {
+          const badWorkType = await checkWorkType(a.billingCodeID);
+          if (badWorkType) return badWorkType;
+        }
         // High-level billing intent -> Autotask field combo (explicit fields win).
         const billingTreatment = a.billingTreatment; delete a.billingTreatment;
         applyBillingTreatment(a, billingTreatment);
         // hoursToBill is read-only (Autotask derives it); kept only to warn below.
         const requestedHoursToBill = a.hoursToBill; delete a.hoursToBill;
-        const id = await s.createTimeEntry(a);
+        const written = await explainTimeEntryWrite(() => s.createTimeEntry(a));
+        if ('stop' in written) return written.stop;
+        const id = written.ok;
         // Rich readback so timezone/billing/role errors are visible immediately
         // (who, which role, how much, where), not just the id.
         const stored = await s.getTimeEntry(id).catch(() => null);
@@ -1485,10 +1548,16 @@ export class AutotaskToolHandler {
         // Ticket/task time: default/sole role, a pick, or validate the chosen one.
         const role = await resolveTimeEntryRole(a);
         if ('stop' in role) return role.stop;
+        if (!isRegular) {
+          const badWorkType = await checkWorkType(a.billingCodeID);
+          if (badWorkType) return badWorkType;
+        }
         const dateWorked = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked)
           ? a.dateWorked.slice(0, 10)
           : new Date().toISOString().slice(0, 10);
-        const r = await s.logTimeIdempotent({ ...a, dateWorked });
+        const written = await explainTimeEntryWrite(() => s.logTimeIdempotent({ ...a, dateWorked }));
+        if ('stop' in written) return written.stop;
+        const r = written.ok;
         const roleInfo = a.roleID != null ? { roleID: a.roleID, roleName: role.roleName, roleSource: role.roleSource } : {};
         return { result: { ...r, ...roleInfo }, message: r.created ? `Logged time entry ${r.id}` : `Skipped — duplicate of existing time entry ${r.duplicateOf}` };
       }],
@@ -2656,6 +2725,8 @@ export class AutotaskToolHandler {
           const role = await resolveTimeEntryRole({ ...entry, roleID: updates.roleID });
           if ('stop' in role) return role.stop;
         }
+        const badWorkType = await checkWorkType(updates.billingCodeID);
+        if (badWorkType) return badWorkType;
         // Timezone-normalize any local start/end (offset-aware or missing tz = passthrough).
         if (updates.startDateTime) updates.startDateTime = normalizeTimestamp(updates.startDateTime, timeZone);
         if (updates.endDateTime) updates.endDateTime = normalizeTimestamp(updates.endDateTime, timeZone);
@@ -2667,7 +2738,8 @@ export class AutotaskToolHandler {
         if (span != null && updates.hoursWorked != null && Math.abs(span - updates.hoursWorked) > 0.02) {
           warnings.push(`hoursWorked=${updates.hoursWorked} does not match the ${span.toFixed(4)}h start/end interval`);
         }
-        await s.updateTimeEntry(id, updates);
+        const written = await explainTimeEntryWrite(() => s.updateTimeEntry(id, updates));
+        if ('stop' in written) return { result: { id, ...(written.stop.result as Record<string, unknown>) }, message: written.stop.message };
         if (requestedHoursToBill != null) {
           const after = await s.getTimeEntry(id).catch(() => null);
           const w = hoursToBillWarning(requestedHoursToBill, after?.hoursToBill);

@@ -5016,11 +5016,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         resourceID: {
           type: 'number',
-          description: 'The resource (technician) ID to assign'
-        },
-        roleID: {
-          type: 'number',
-          description: 'The role ID for the resource on this service call (optional). When given it must be one of the resource\'s active roles (autotask_get_resource_roles) — an invalid role returns the valid choices and assigns nothing.'
+          description: 'The resource (technician) ID to assign. (Autotask service-call assignments carry no role — the role goes on the time entry.)'
         }
       },
       required: ['serviceCallTicketID', 'resourceID']
@@ -5118,8 +5114,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       type: 'object',
       properties: {
         serviceCallTaskID: { type: 'number', description: 'The service call task ID to assign the resource to' },
-        resourceID: { type: 'number', description: 'The resource ID to assign' },
-        roleID: { type: 'number', description: 'The role ID for the resource on this service call (optional). When given it must be one of the resource\'s active roles (autotask_get_resource_roles) — an invalid role returns the valid choices and assigns nothing.' }
+        resourceID: { type: 'number', description: 'The resource ID to assign. (Autotask service-call assignments carry no role — the role goes on the time entry.)' }
       },
       required: ['serviceCallTaskID', 'resourceID']
     }

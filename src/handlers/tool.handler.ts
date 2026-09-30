@@ -1003,20 +1003,11 @@ export class AutotaskToolHandler {
         return { stop: { result: { status: c.status, autotaskError: c.autotaskError }, message: c.reason } };
       }
     };
-    // An OPTIONAL role on a resource assignment (service-call ticket/task): when
-    // given, it must be one of the resource's active roles — same rule as time
-    // entries, so a wrong role never reaches the calendar/billing. Omitted →
-    // unchanged (no auto-pick). Best-effort: a failed role lookup lets it through.
-    const checkAssignmentRole = async (resourceID: unknown, roleID: unknown): Promise<{ result: unknown; message: string } | null> => {
-      if (roleID == null || resourceID == null) return null;
-      let rr: Awaited<ReturnType<typeof s.resolveWorkTimeEntryRole>> | null;
-      try { rr = await s.resolveWorkTimeEntryRole(Number(resourceID), Number(roleID)); } catch { return null; }
-      if ('invalidRole' in rr) {
-        return { result: { status: 'invalid_role', requestedRoleID: rr.invalidRole, needsSelection: rr.validRoles }, message: invalidRoleMessage(rr.invalidRole, Number(resourceID), rr.validRoles) };
-      }
-      if ('error' in rr) return { result: { status: 'invalid_role' }, message: rr.error };
-      return null;
-    };
+    // Service-call resource assignments (ticket/task) have NO role field in
+    // Autotask (entityInformation: resourceID + serviceCallTicketID/TaskID only).
+    // A roleID from an older caller is dropped, and the result says so.
+    const roleIgnoredNote = (roleID: unknown): string =>
+      roleID != null ? ` (roleID ${roleID} ignored — Autotask service-call resource assignments have no role; the role is set on the ticket/task time entry instead)` : '';
     // Pre-flight a supplied work type so a bad one is named (not found /
     // inactive / a Regular Time category) with the active choices, instead of
     // Autotask's "not an active general allocation code". Best-effort: a failed
@@ -1324,10 +1315,8 @@ export class AutotaskToolHandler {
         return { result: r, message: `Found ${r.length} service call ticket resources` };
       }],
       ['autotask_create_service_call_ticket_resource', async (a) => {
-        const badRole = await checkAssignmentRole(a.resourceID, a.roleID);
-        if (badRole) return badRole;
         const id = await s.createServiceCallTicketResource(a);
-        return { result: id, message: `Successfully assigned resource to service call ticket, record ID: ${id}` };
+        return { result: id, message: `Successfully assigned resource to service call ticket, record ID: ${id}${roleIgnoredNote(a.roleID)}` };
       }],
       ['autotask_delete_service_call_ticket_resource', async (a) => {
         await s.deleteServiceCallTicketResource(a.serviceCallTicketResourceId);
@@ -1354,10 +1343,8 @@ export class AutotaskToolHandler {
         return { result: r, message: `Found ${r.length} service call task resource(s)` };
       }],
       ['autotask_create_service_call_task_resource', async (a) => {
-        const badRole = await checkAssignmentRole(a.resourceID, a.roleID);
-        if (badRole) return badRole;
         const id = await s.createServiceCallTaskResource(a);
-        return { result: id, message: `Successfully assigned resource to service call task, record ID: ${id}` };
+        return { result: id, message: `Successfully assigned resource to service call task, record ID: ${id}${roleIgnoredNote(a.roleID)}` };
       }],
       ['autotask_delete_service_call_task_resource', async (a) => {
         await s.deleteServiceCallTaskResource(a.serviceCallTaskResourceId);

@@ -58,12 +58,34 @@ describe('isSystemTicketNote', () => {
 describe('ticket card — summary of what has been done', () => {
   const picklists = { getPicklistValues: jest.fn(async () => []) };
   const ticket = { id: 209477, ticketNumber: 'T20260928.0084', title: 'Shippan Landing =-290 EV Chargers' };
-  const svc = (over: Record<string, any>) => ({
-    searchTicketNotes: jest.fn(async () => []),
-    searchTimeEntries: jest.fn(async () => ({ items: [] })),
-    getResource: jest.fn(async () => null),
-    getTicketWebUrl: jest.fn(() => null),
-    ...over,
+  // Names come from ONE batched lookup (getResourceNames); tests describe them
+  // with a per-id getResource and the helper derives the batch from it.
+  const svc = (over: Record<string, any>) => {
+    const getResource = over.getResource ?? jest.fn(async () => null);
+    return {
+      searchTicketNotes: jest.fn(async () => []),
+      searchTimeEntries: jest.fn(async () => ({ items: [] })),
+      getTicketWebUrl: jest.fn(() => null),
+      getResourceNames: jest.fn(async (ids: unknown[]) => {
+        const m = new Map<number, string>();
+        for (const id of new Set(ids.map(Number))) {
+          const r = await getResource(id);
+          if (r) m.set(id, [r.firstName, r.lastName].filter(Boolean).join(' '));
+        }
+        return m;
+      }),
+      ...over,
+    };
+  };
+
+  test('tech names are ONE batched lookup, never a GET per tech', async () => {
+    const getResourceNames = jest.fn(async () => new Map([[30683890, 'Travis Stives']]));
+    const getResource = jest.fn();
+    const service = svc({ getResource, getResourceNames, searchTimeEntries: jest.fn(async () => ({ items: [{ resourceID: 30683890, hoursWorked: 1, summaryNotes: 'x', startDateTime: '2026-09-22T14:00:00Z' }, { resourceID: 30683890, hoursWorked: 1, summaryNotes: 'y', startDateTime: '2026-09-23T14:00:00Z' }] })) });
+    const card = await buildTicketCard(ticket, picklists as never, service as never, logger);
+    expect(getResourceNames).toHaveBeenCalledTimes(1);
+    expect(getResource).not.toHaveBeenCalled();
+    expect(card!.summary.techs).toEqual(['Travis Stives']);
   });
 
   test('activity keeps the NEWEST 5 human notes, oldest→newest, system notes dropped and counted', async () => {

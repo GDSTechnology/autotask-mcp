@@ -3287,7 +3287,9 @@ export class AutotaskToolHandler {
         const data = enhanced[0] || result;
         // MCP Apps: attach the normalized card payload the ui:// ticket card
         // renders from. Best-effort — a null card just means no UI surface.
-        if (name === 'autotask_get_ticket_details') {
+        // Skipped for declared unattended callers (n8n / cron): they never
+        // render it, and building it costs extra Autotask calls per ticket.
+        if (name === 'autotask_get_ticket_details' && ctx.source !== 'n8n' && ctx.source !== 'cron') {
           const card = await buildTicketCard(data, this.picklistCache, this.autotaskService, this.logger);
           if (card) data._card = card;
         }

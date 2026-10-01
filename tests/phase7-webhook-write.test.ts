@@ -44,7 +44,8 @@ describe('service webhook writes', () => {
     jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ create });
     const r = await s.createWebhook('tickets', { ...base, subscribeUpdate: true, excludedResourceIDs: [30683829] });
     expect(r.status).toBe('dry_run');
-    expect(r.plannedExcludedResources).toEqual([30683829]);
+    expect(r.plannedExcludedResources).toEqual([{ resourceID: 30683829, reason: 'requested' }]);
+    expect((r.plannedWebhook as any).secretKey).toBe('<provided — hidden>'); // never echoed
     expect((r.plannedWebhook as any).sendThresholdExceededNotification).toBe(false); // defaulted
     expect(create).not.toHaveBeenCalled();
   });

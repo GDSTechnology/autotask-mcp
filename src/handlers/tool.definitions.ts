@@ -5618,7 +5618,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_create_webhook',
-    description: "Create an outbound webhook on a webhook-capable entity (STANDING CONFIGURATION). SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written — it returns the planned webhook, fields, and excluded resources. Creates the parent webhook then its monitored `fields` and `excludedResourceIDs`. IMPORTANT (loop prevention): put the MCP integration user's resourceID in `excludedResourceIDs` so the MCP's own writes don't re-trigger the webhook. Autotask REQUIRES name, https webhookUrl, https deactivationUrl (called if the webhook auto-deactivates), secretKey (signs the payload), and at least one event subscription. Returns the write-plan envelope (status: dry_run | validation_failed | created | created_with_errors).",
+    description: "Create an outbound webhook on a webhook-capable entity (STANDING CONFIGURATION). SAFE BY DEFAULT: unless you pass dryRun:false, NOTHING is written — it returns the planned webhook, fields, and excluded resources. Creates the parent webhook then its monitored `fields` and `excludedResourceIDs`. LOOP PREVENTION IS AUTOMATIC: this MCP's own API user is excluded by default (its writes — and any automation sharing that user — won't re-trigger the webhook), plus any ids in AUTOTASK_WEBHOOK_EXCLUDE_RESOURCE_IDS; the dry run lists every excluded resource with why. SECRET: omit secretKey — the MCP uses AUTOTASK_WEBHOOK_SECRET from the host so the secret never appears in chat (give the receiver, e.g. n8n, the same variable to verify the X-Hook-Signature: sha1=<base64 HMAC-SHA1 of the raw body>). A secret is never echoed back. Autotask REQUIRES name, https webhookUrl, https deactivationUrl (called if the webhook auto-deactivates), a secret (10–64 chars), and at least one event subscription. Returns the write-plan envelope (status: dry_run | validation_failed | created | created_with_errors).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -5626,7 +5626,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         name: { type: 'string', description: 'Webhook name' },
         webhookUrl: { type: 'string', description: 'The https:// callback URL (e.g. an n8n webhook node)' },
         deactivationUrl: { type: 'string', description: 'REQUIRED https:// URL Autotask calls if it auto-deactivates the webhook' },
-        secretKey: { type: 'string', description: 'REQUIRED secret used to sign (HMAC) the webhook payload' },
+        secretKey: { type: 'string', description: 'Usually OMIT: the MCP uses AUTOTASK_WEBHOOK_SECRET from its host so the secret never enters the conversation. Only pass one if that variable is not set. 10–64 characters; never echoed back.' },
         isActive: { type: 'boolean', description: 'Active on create (default true)' },
         subscribeCreate: { type: 'boolean', description: 'Fire on record create' },
         subscribeUpdate: { type: 'boolean', description: 'Fire on record update' },
@@ -5637,10 +5637,11 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'array', description: 'Standard fields to monitor. Each: { fieldID, isSubscribedField?, isDisplayAlwaysField? } (isSubscribedField default true).',
           items: { type: 'object', properties: { fieldID: { type: 'number' }, isSubscribedField: { type: 'boolean' }, isDisplayAlwaysField: { type: 'boolean' } }, required: ['fieldID'] }
         },
-        excludedResourceIDs: { type: 'array', items: { type: 'number' }, description: 'Resource ids whose changes do NOT fire the webhook — include the MCP integration user to avoid loops' },
+        excludedResourceIDs: { type: 'array', items: { type: 'number' }, description: 'EXTRA resource ids whose changes do NOT fire the webhook (e.g. another automation\'s API user). This MCP\'s own API user is added automatically.' },
+        excludeSelf: { type: 'boolean', description: 'Exclude this MCP\'s own API user (default true). Set false only if the webhook SHOULD fire on the MCP\'s own writes.' },
         dryRun: { type: 'boolean', description: 'Default true — plan only, no writes. Pass false to create.' }
       },
-      required: ['entity', 'name', 'webhookUrl', 'deactivationUrl', 'secretKey']
+      required: ['entity', 'name', 'webhookUrl', 'deactivationUrl']
     },
     annotations: { title: 'Create webhook' }
   },
@@ -5661,7 +5662,8 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         subscribeDelete: { type: 'boolean' },
         sendThresholdExceededNotification: { type: 'boolean' },
         notificationEmailAddress: { type: 'string' },
-        secretKey: { type: 'string' },
+        secretKey: { type: 'string', description: 'New secret (avoid: it enters the chat). Prefer useEnvSecret.' },
+        useEnvSecret: { type: 'boolean', description: 'Rotate the secret to AUTOTASK_WEBHOOK_SECRET from the MCP host — the secret never appears in chat. Update the receiver (n8n) to the same value at the same time.' },
         dryRun: { type: 'boolean', description: 'Default true — plan only. Pass false to apply.' }
       },
       required: ['entity', 'id']

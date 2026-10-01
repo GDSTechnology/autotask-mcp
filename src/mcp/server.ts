@@ -30,6 +30,7 @@ import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
 import { parseActingHeaders, TrustedActing } from '../utils/impersonation.js';
 import { extractRequestOrigin } from '../utils/origin.js';
 import { runWithRequestContext } from '../utils/request-context.js';
+import { usageSnapshot } from '../services/http-cache.js';
 
 export class AutotaskMcpServer {
   private config: McpServerConfig;
@@ -352,12 +353,18 @@ export class AutotaskMcpServer {
         // Streamable HTTP), not whether the service is served over HTTP/HTTPS.
         // `version` is included so operators can curl-check which build is
         // running without going through the MCP handshake.
+        // Single-tenant only: a compact Autotask-budget summary (counts only —
+        // the per-entity breakdown is behind the authenticated
+        // autotask_get_api_usage tool).
+        const apiUser = !isGatewayMode ? this.envConfig?.autotask?.username : undefined;
+        const u = apiUser ? usageSnapshot(apiUser.toLowerCase(), 0) : null;
         res.end(JSON.stringify({
           status: 'ok',
           version: getServerVersion(this.envConfig?.server?.version),
           mcpTransport: 'http',
           authMode: isGatewayMode ? 'gateway' : 'env',
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          ...(u ? { apiUsage: { upstreamLastHour: u.upstreamLastHour, upstreamLastFiveMinutes: u.upstreamLastFiveMinutes, savedPct: u.savedPct, rateLimited: u.rateLimited, cacheEnabled: u.cacheEnabled } } : {}),
         }));
         return;
       }

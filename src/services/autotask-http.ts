@@ -10,6 +10,7 @@ import { resolveAutotaskApiUrl, invalidateZoneUrlCache } from '../utils/config';
 import { mapWithConcurrency } from '../utils/concurrency';
 import { getImpersonationResourceId } from '../utils/request-context';
 import { Logger } from '../utils/logger';
+import { cachedRead, invalidateAfterWrite, isRead, recordRateLimited, recordUpstream } from './http-cache';
 
 export interface QueryFilter {
   op: string;
@@ -268,17 +269,41 @@ export class AutotaskHttpClient {
   }
 
   /**
-   * Shared low-level request wrapper. `path` is either a leading-slash path
-   * (resolved against the zone base URL) or an absolute URL (used by
-   * pageDetails.nextPageUrl pagination).
+   * Every Autotask call goes through here. READS (GET, POST …/query) are served
+   * from the per-tenant read cache when fresh, share an identical in-flight
+   * call, or go upstream once; WRITES go upstream and then invalidate the
+   * cache (see http-cache.ts). Keyed by API user + impersonated identity.
    */
   private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    isZoneRetry = false,
+    opts: { allowEmptyBody?: boolean } = {}
+  ): Promise<T> {
+    const tenant = this.username.toLowerCase();
+    if (isRead(method, path)) {
+      const key = `${method.toUpperCase()} ${path} ${body === undefined ? '' : JSON.stringify(body)} imp=${getImpersonationResourceId() ?? ''}`;
+      return cachedRead<T>(tenant, key, path, () => this.send<T>(method, path, body, isZoneRetry, opts));
+    }
+    const { value } = await this.send<T>(method, path, body, isZoneRetry, opts);
+    invalidateAfterWrite(tenant, path);
+    return value;
+  }
+
+  /**
+   * The actual upstream call. `path` is either a leading-slash path (resolved
+   * against the zone base URL) or an absolute URL (used by
+   * pageDetails.nextPageUrl pagination). Returns the parsed body plus its size
+   * (for the cache's size cap).
+   */
+  private async send<T>(
     method: string,
     path: string,
     body?: any,
     isZoneRetry = false,
     opts: { allowEmptyBody?: boolean } = {}
-  ): Promise<T> {
+  ): Promise<{ value: T; bytes: number }> {
     // Cooldown gate: while this tenant is inside a known 429 window, fail
     // fast locally instead of sending more requests upstream. See
     // rateLimitCooldowns.
@@ -300,6 +325,7 @@ export class AutotaskHttpClient {
     const url = path.startsWith('http') ? path : `${await this.baseUrl()}${path.startsWith('/') ? '' : '/'}${path}`;
 
     this.logger.debug(`Autotask HTTP ${method} ${url}`);
+    recordUpstream(cooldownKey, method, path);
 
     let response: Response;
     try {
@@ -318,7 +344,7 @@ export class AutotaskHttpClient {
     }
 
     if (response.status === 204) {
-      return undefined as unknown as T;
+      return { value: undefined as unknown as T, bytes: 0 };
     }
 
     // Read the body defensively but do NOT silently swallow a read failure.
@@ -348,7 +374,7 @@ export class AutotaskHttpClient {
         );
         this.resolvedBaseUrl = null;
         invalidateZoneUrlCache(this.username);
-        return this.request<T>(method, path, body, true, opts);
+        return this.send<T>(method, path, body, true, opts);
       }
       let detail = text.slice(0, 1000);
       try {
@@ -360,6 +386,7 @@ export class AutotaskHttpClient {
         /* fall through with raw text */
       }
       if (response.status === 429) {
+        recordRateLimited(cooldownKey);
         const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
         // Arm the per-tenant cooldown gate so any further calls (including
         // LLM retry-spam and mapping-cache lookups) fail fast locally until
@@ -397,11 +424,11 @@ export class AutotaskHttpClient {
       // Writes (update/delete) legitimately answer some 2xx with an empty body;
       // they opt in via allowEmptyBody. For reads/creates an empty 2xx body is
       // an anomaly, not "not found" (404) or "no records" (an empty items array).
-      if (opts.allowEmptyBody) return undefined as unknown as T;
+      if (opts.allowEmptyBody) return { value: undefined as unknown as T, bytes: 0 };
       throw new AutotaskResponseError(method, path, response.status, 'empty response body on a successful (non-204) response');
     }
     try {
-      return JSON.parse(text) as T;
+      return { value: JSON.parse(text) as T, bytes: text.length };
     } catch (err) {
       // Non-empty body that will not parse is the truncation signature — the
       // exact case §2 calls out ("transport, or truncation loses the payload").
@@ -414,6 +441,11 @@ export class AutotaskHttpClient {
         err
       );
     }
+  }
+
+  /** Autotask's own live request counter for this integration (never cached). */
+  async thresholdInformation(): Promise<{ externalRequestThreshold?: number; requestThresholdTimeframe?: number; currentTimeframeRequestCount?: number }> {
+    return this.request('GET', '/ThresholdInformation');
   }
 
   /**

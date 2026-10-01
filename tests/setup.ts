@@ -19,6 +19,13 @@ beforeAll(() => {
   }
 });
 
+// The Autotask read cache is module-level (per API user) — start every test
+// cold so a response cached by one test can never be served to the next.
+import { _resetHttpCache } from '../src/services/http-cache';
+beforeEach(() => {
+  _resetHttpCache();
+});
+
 // Global test cleanup
 afterAll(() => {
   // Any cleanup operations

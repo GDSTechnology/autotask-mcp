@@ -1054,6 +1054,18 @@ export class AutotaskToolHandler {
     };
     return new Map<string, H>([
       // Connection
+      ['autotask_get_api_usage', async () => {
+        const r = await s.getApiUsage();
+        const at = 'error' in r.autotask
+          ? `Autotask counter unavailable (${r.autotask.error})`
+          : `Autotask: ${r.autotask.used ?? '?'} of ${r.autotask.limit ?? '?'} requests used in the current ${r.autotask.windowMinutes ?? '?'}-minute window (${r.autotask.usedPct ?? '?'}%) — all callers on this API user`;
+        const sv = r.server;
+        const top = sv.topUpstream.slice(0, 3).map((t) => `${t.call} ×${t.count}`).join(', ');
+        return {
+          result: r,
+          message: `${at}. This server: ${sv.upstreamLastHour} upstream call(s) in the last hour (${sv.upstreamLastFiveMinutes} in 5 min), ${sv.cacheHits} cache hit(s) + ${sv.coalesced} shared read(s)${sv.savedPct != null ? ` (${sv.savedPct}% of reads saved)` : ''}, ${sv.rateLimited} 429(s) since ${sv.since}${top ? `. Top: ${top}` : ''}.`,
+        };
+      }],
       ['autotask_test_connection', async () => {
         const ok = await s.testConnection();
         if (!ok) {

@@ -54,6 +54,12 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: []
     }
   },
+  {
+    name: 'autotask_get_api_usage',
+    description: "Autotask API budget (read-only, one upstream call). Use when Autotask returns HTTP 429 / 'threshold exceeded', or to check headroom before a big job. Returns (1) Autotask's OWN live counter for this integration — requests used vs the limit in the current window, which counts EVERY caller sharing the API user (n8n, ChatGPT, automations), and (2) this MCP server's view since it started: upstream calls in the last hour / 5 minutes, the top upstream calls by method + entity (what is eating the budget), read-cache hits and shared in-flight reads (calls saved), and how many 429s it saw.",
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    annotations: { title: 'Autotask API usage', readOnlyHint: true }
+  },
 
   // Company tools
   {
@@ -5692,7 +5698,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
+    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

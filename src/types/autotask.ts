@@ -672,6 +672,8 @@ export interface AutotaskQueryOptionsExtended extends AutotaskQueryOptions {
   contactID?: number;
   opportunityId?: number;
   searchTerm?: string;
+  /** Ticket title contains (case-insensitive keyword search). */
+  title?: string;
   status?: number;
   priority?: number;
   queueID?: number;

@@ -1,0 +1,140 @@
+// On-demand company names (default) + title keyword search on search_tickets.
+// 2026-09-30: one ticket search cost 13 upstream calls — 1 ticket query plus a
+// walk of every company (~4.5k, 9+ pages) to name the rows; and search_tickets
+// had no title filter, so finding an existing ticket meant listing a whole
+// company's open tickets page by page.
+
+jest.mock('autotask-node', () => ({
+  AutotaskClient: { create: jest.fn().mockRejectedValue(new Error('Mock: no API')) },
+}));
+
+import { MappingService, _resetTenantCacheStore } from '../src/utils/mapping.service';
+import { AutotaskService } from '../src/services/autotask.service';
+import { Logger } from '../src/utils/logger';
+import type { McpServerConfig } from '../src/types/mcp';
+
+const logger = new Logger('error');
+const config: McpServerConfig = { name: 't', version: '0', autotask: { username: 'u@e.com', secret: 's', integrationCode: 'ic', apiUrl: 'https://webservices3.autotask.net/ATServicesRest/' } };
+
+const svc = (names: Record<number, string> = { 1: 'Chesterbrook', 2: '600 Washington Blvd', 3: 'DBR - David Rubenstein' }) => ({
+  listAllCompanies: jest.fn(async () => []),
+  getCompanyNamesByIds: jest.fn(async (ids: number[]) => ids.filter((id) => names[id]).map((id) => ({ id, companyName: names[id]! }))),
+  getCompany: jest.fn(async () => null),
+  searchResources: jest.fn(async () => ({ items: [], page: 1, pageSize: 500, hasMore: false })),
+  listAllResources: jest.fn(async () => []),
+  getResource: jest.fn(async () => null),
+});
+
+beforeEach(() => { _resetTenantCacheStore(); delete process.env.AUTOTASK_COMPANY_PREWARM; });
+
+describe('MappingService — on-demand company names (default)', () => {
+  test('creating the service does NOT walk every company', async () => {
+    const s = svc();
+    await MappingService.create(s as unknown as AutotaskService, logger, { tenantKey: 'u@e.com' });
+    expect(s.listAllCompanies).not.toHaveBeenCalled();
+  });
+
+  test('primeCompanies looks up only the missing ids, in ONE batch; then serves from memory', async () => {
+    const s = svc();
+    const m = await MappingService.create(s as unknown as AutotaskService, logger, { tenantKey: 'u@e.com' });
+    await m.primeCompanies([1, 2, 2, null, undefined, 3]);
+    expect(s.getCompanyNamesByIds).toHaveBeenCalledTimes(1);
+    expect(s.getCompanyNamesByIds).toHaveBeenCalledWith([1, 2, 3]);
+    expect(await m.getCompanyName(2)).toBe('600 Washington Blvd');
+    await m.primeCompanies([1, 3]);
+    expect(s.getCompanyNamesByIds).toHaveBeenCalledTimes(1); // all known — no call
+    expect(s.getCompany).not.toHaveBeenCalled(); // never a per-id GET
+  });
+
+  test('a name past cacheExpiryMs is re-fetched', async () => {
+    const s = svc();
+    const m = new MappingService(s as unknown as AutotaskService, logger, 60_000, false, 'u@e.com');
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    await m.primeCompanies([1]);
+    now.mockReturnValue(1_000_000 + 59_000);
+    await m.primeCompanies([1]);
+    now.mockReturnValue(1_000_000 + 61_000);
+    await m.primeCompanies([1]);
+    expect(s.getCompanyNamesByIds).toHaveBeenCalledTimes(2);
+    now.mockRestore();
+  });
+
+  test('getCompanyName alone batches the single id; a failed lookup keeps known names', async () => {
+    const s = svc();
+    const m = await MappingService.create(s as unknown as AutotaskService, logger, { tenantKey: 'u@e.com' });
+    expect(await m.getCompanyName(3)).toBe('DBR - David Rubenstein');
+    s.getCompanyNamesByIds.mockRejectedValueOnce(new Error('429'));
+    expect(await m.getCompanyName(9)).toBeNull();
+    expect(await m.getCompanyName(3)).toBe('DBR - David Rubenstein');
+  });
+
+  test('names stay per tenant (2026-06-03 isolation invariant)', async () => {
+    const a = svc({ 1: 'Tenant A Co' });
+    const b = svc({ 1: 'Tenant B Co' });
+    const ma = await MappingService.create(a as unknown as AutotaskService, logger, { tenantKey: 'a@x.com' });
+    const mb = await MappingService.create(b as unknown as AutotaskService, logger, { tenantKey: 'b@x.com' });
+    expect(await ma.getCompanyName(1)).toBe('Tenant A Co');
+    expect(await mb.getCompanyName(1)).toBe('Tenant B Co');
+  });
+
+  test('AUTOTASK_COMPANY_PREWARM=on restores the full walk', async () => {
+    process.env.AUTOTASK_COMPANY_PREWARM = 'on';
+    const s = svc();
+    await MappingService.create(s as unknown as AutotaskService, logger, { tenantKey: 'u@e.com' });
+    expect(s.listAllCompanies).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('getCompanyNamesByIds', () => {
+  test('one `in` query per 200 ids, names only', async () => {
+    const s = new AutotaskService(config, logger);
+    const query = jest.fn(async (_e: string, _f: unknown, _o?: unknown) => [{ id: 1, companyName: 'Chesterbrook' }, { id: 2 }]);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ query });
+    const ids = Array.from({ length: 250 }, (_, i) => i + 1);
+    const out = await s.getCompanyNamesByIds(ids);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[0]![1]).toEqual([{ op: 'in', field: 'id', value: ids.slice(0, 200) }]);
+    expect(query.mock.calls[0]![2]).toEqual(expect.objectContaining({ includeFields: ['id', 'companyName'] }));
+    expect(out).toEqual([{ id: 1, companyName: 'Chesterbrook' }, { id: 1, companyName: 'Chesterbrook' }]);
+  });
+});
+
+describe('search_tickets — title keyword search (filter payload sent upstream)', () => {
+  const ticketFilters = async (args: Record<string, unknown>) => {
+    const s = new AutotaskService(config, logger);
+    const query = jest.fn(async (_e: string, _f: unknown, _o?: unknown) => [] as unknown[]);
+    jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ query });
+    await s.searchTickets(args as never);
+    return query.mock.calls.find((c) => c[0] === 'Tickets')![1] as unknown[];
+  };
+
+  test('title + companyID → server-side contains on title, scoped to the company', async () => {
+    expect(await ticketFilters({ title: 'ThreatLocker', companyId: 29684117 })).toEqual([
+      { op: 'contains', field: 'title', value: 'ThreatLocker' },
+      { op: 'noteq', field: 'status', value: 5 },
+      { op: 'eq', field: 'companyID', value: 29684117 },
+    ]);
+  });
+
+  test.each([
+    ['T20260921.0086', { op: 'beginsWith', field: 'ticketNumber', value: 'T20260921.0086' }],
+    ['T20260921', { op: 'beginsWith', field: 'ticketNumber', value: 'T20260921' }],
+    ['20260921.0086', { op: 'beginsWith', field: 'ticketNumber', value: 'T20260921.0086' }],
+    ['Lenel', { op: 'contains', field: 'title', value: 'Lenel' }],
+    ['  passkey  ', { op: 'contains', field: 'title', value: 'passkey' }],
+  ])('searchTerm %j → %j', async (term, filter) => {
+    expect((await ticketFilters({ searchTerm: term }))[0]).toEqual(filter);
+  });
+
+  test('the handler treats a title-only search as filtered (no date prompt) and passes it through', async () => {
+    const { AutotaskToolHandler } = require('../src/handlers/tool.handler');
+    const s = new AutotaskService(config, logger);
+    const search = jest.spyOn(s, 'searchTickets').mockResolvedValue({ items: [], page: 1, pageSize: 25, hasMore: false } as never);
+    const h = new AutotaskToolHandler(s, logger);
+    const elicit = jest.spyOn(h as any, 'elicitDateRange');
+    (h as any).mcpServer = {};
+    await h.callTool('autotask_search_tickets', { title: 'ThreatLocker', companyID: 29684117 });
+    expect(elicit).not.toHaveBeenCalled();
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ title: 'ThreatLocker', companyId: 29684117 }));
+  });
+});

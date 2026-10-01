@@ -18,6 +18,11 @@ import { MappingService, _resetTenantCacheStore } from '../src/utils/mapping.ser
 import { AutotaskService } from '../src/services/autotask.service';
 import { Logger } from '../src/utils/logger';
 
+// These suites exercise the OPT-IN full company pre-warm (the default is
+// on-demand batched lookups — see tests/mapping-on-demand.test.ts).
+beforeAll(() => { process.env.AUTOTASK_COMPANY_PREWARM = 'on'; });
+afterAll(() => { delete process.env.AUTOTASK_COMPANY_PREWARM; });
+
 jest.mock('../src/services/autotask.service');
 
 const mockLogger = new Logger('error');

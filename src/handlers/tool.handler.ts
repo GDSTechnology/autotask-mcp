@@ -228,6 +228,9 @@ export class AutotaskToolHandler {
   private async enhanceItems(items: any[]): Promise<any[]> {
     try {
       const mappingService = await this.getMappingService();
+      // One batched lookup for every company in the result, up front — the
+      // per-row getCompanyName calls below are then cache hits.
+      await mappingService.primeCompanies(items.map((i) => i?.companyID));
       // Bound the fan-out: one item may trigger up to a few Autotask API
       // calls (company + resource names), and Autotask 429s past its
       // concurrent-thread limit. mapWithConcurrency keeps us under it so
@@ -1126,7 +1129,7 @@ export class AutotaskToolHandler {
       // Tickets
       ['autotask_search_tickets', async (a) => {
         // Elicitation for zero-filter ticket searches
-        const hasFilters = a.searchTerm || a.companyID || a.contactID || a.status !== undefined ||
+        const hasFilters = a.searchTerm || a.title || a.companyID || a.contactID || a.status !== undefined ||
           a.priority !== undefined || a.queueID !== undefined ||
           a.assignedResourceID || a.unassigned || a.createdAfter || a.createdBefore || a.lastActivityAfter ||
           a.externalID;

@@ -8,6 +8,8 @@ import { Logger } from './logger.js';
 
 export interface MappingCache {
   companies: Map<number, string>;
+  /** On-demand mode: when each company name was fetched (per-entry expiry). */
+  companyFetchedAt?: Map<number, number>;
   resources: Map<number, string>;
   lastUpdated: {
     companies: Date | null;
@@ -57,6 +59,7 @@ function tenantCacheFor(tenantKey: string): MappingCache {
   if (!entry) {
     entry = {
       companies: new Map<number, string>(),
+      companyFetchedAt: new Map<number, number>(),
       resources: new Map<number, string>(),
       lastUpdated: { companies: null, resources: null },
     };
@@ -84,6 +87,12 @@ export class MappingService {
   // Max time any caller may block on a cache warm-up/refresh before
   // proceeding with whatever data is available. See WARM_WAIT_BUDGET_MS.
   private warmWaitMs: number;
+  // Company names: ON-DEMAND by default — batch-look-up just the ids a result
+  // needs (one `in` query) and keep each for cacheExpiryMs. The old eager
+  // pre-warm walked EVERY company (~4.5k at GDS, 9+ calls, 30s+) to name the
+  // handful in a response; it stays available as an opt-in
+  // (AUTOTASK_COMPANY_PREWARM=on, or the companyPrewarm option).
+  private companyPrewarm: boolean;
 
   public constructor(
     autotaskService: AutotaskService,
@@ -92,7 +101,9 @@ export class MappingService {
     lazyLoading: boolean = false,
     tenantKey?: string,
     warmWaitMs: number = WARM_WAIT_BUDGET_MS,
+    companyPrewarm: boolean = /^(on|true|1|yes)$/i.test(process.env.AUTOTASK_COMPANY_PREWARM ?? ''),
   ) { // 30 minutes default
+    this.companyPrewarm = companyPrewarm;
     this.autotaskService = autotaskService;
     this.logger = logger;
     this.cacheExpiryMs = cacheExpiryMs;
@@ -105,6 +116,7 @@ export class MappingService {
       ? tenantCacheFor(tenantKey.toLowerCase())
       : {
           companies: new Map<number, string>(),
+          companyFetchedAt: new Map<number, number>(),
           resources: new Map<number, string>(),
           lastUpdated: {
             companies: null,
@@ -131,6 +143,7 @@ export class MappingService {
       lazyLoading?: boolean;
       tenantKey?: string | undefined;
       warmWaitMs?: number | undefined;
+      companyPrewarm?: boolean | undefined;
     } = {},
   ): Promise<MappingService> {
     const instance = new MappingService(
@@ -140,6 +153,7 @@ export class MappingService {
       options.lazyLoading,
       options.tenantKey,
       options.warmWaitMs,
+      ...(options.companyPrewarm !== undefined ? [options.companyPrewarm] : []),
     );
     // Kick off the warm-up but only block for the budget: the full company
     // pre-warm takes 30s+ on large tenants, which is longer than the
@@ -205,7 +219,7 @@ export class MappingService {
       );
       return;
     }
-    if (this.isCacheValid('companies') && this.isCacheValid('resources')) {
+    if ((!this.companyPrewarm || this.isCacheValid('companies')) && this.isCacheValid('resources')) {
       return;
     }
 
@@ -215,7 +229,7 @@ export class MappingService {
     // valid for the full expiry window — with the shared tenant store that
     // would pin an empty cache on every request for that tenant.
     await Promise.all([
-      this.refreshCompanyCache(),
+      ...(this.companyPrewarm ? [this.refreshCompanyCache()] : []),
       this.refreshResourceCache()
     ]);
     this.logger.info('Mapping cache initialized successfully', {
@@ -245,7 +259,7 @@ export class MappingService {
   private async refreshCacheIfNeeded(): Promise<void> {
     if (this.lazyLoading) return;
     const promises: Promise<void>[] = [];
-    if (!this.isCacheValid('companies')) promises.push(this.refreshCompanyCache());
+    if (this.companyPrewarm && !this.isCacheValid('companies')) promises.push(this.refreshCompanyCache());
     if (!this.isCacheValid('resources')) promises.push(this.refreshResourceCache());
     if (promises.length > 0) await Promise.all(promises);
   }
@@ -261,6 +275,15 @@ export class MappingService {
    * would then be served to every subsequent caller for 30 minutes.
    */
   public async getCompanyName(companyId: number): Promise<string | null> {
+    if (!this.companyPrewarm && !this.lazyLoading) {
+      try {
+        await this.primeCompanies([companyId]);
+        return this.cache.companies.get(companyId) ?? null;
+      } catch (error) {
+        this.logger.warn(`Failed to get company name for ID ${companyId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        return this.cache.companies.get(companyId) ?? null;
+      }
+    }
     try {
       // Budget-bounded: an expired cache triggers a refresh, but we serve
       // the previous (stale) entries rather than stalling the response for
@@ -285,6 +308,31 @@ export class MappingService {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.warn(`Failed to get company name for ID ${companyId}: ${errorMessage}`);
       return null;
+    }
+  }
+
+  /**
+   * On-demand company names: look up every id not already known (or expired)
+   * in ONE batched list query, and keep each for cacheExpiryMs. Call with all
+   * the ids a result needs before naming its rows, so a page of N tickets
+   * costs at most one Companies call instead of N GETs or a full walk. A
+   * failed lookup keeps whatever names were already known.
+   */
+  public async primeCompanies(ids: unknown[]): Promise<void> {
+    if (this.companyPrewarm || this.lazyLoading) return;
+    const fetchedAt = (this.cache.companyFetchedAt ??= new Map<number, number>());
+    const now = Date.now();
+    // Skip null/undefined/'' BEFORE Number(): Number(null) is 0, and company 0 is real (the tenant's own).
+    const missing = [...new Set(ids.filter((x) => x != null && x !== '').map(Number).filter((x) => Number.isFinite(x)))]
+      .filter((id) => !this.cache.companies.has(id) || now - (fetchedAt.get(id) ?? 0) >= this.cacheExpiryMs);
+    if (!missing.length) return;
+    try {
+      for (const c of await this.autotaskService.getCompanyNamesByIds(missing)) {
+        this.cache.companies.set(c.id, c.companyName);
+        fetchedAt.set(c.id, now);
+      }
+    } catch (error) {
+      this.logger.warn(`Batched company-name lookup failed (${missing.length} id(s)); using known names only: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

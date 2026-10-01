@@ -440,26 +440,6 @@ export class AutotaskService {
   }
 
   /**
-   * Autotask API budget: this server's upstream calls (by method + entity),
-   * cache hits and shared in-flight reads, plus Autotask's OWN live counter
-   * for the integration (ThresholdInformation — counts every caller sharing
-   * the API user, not just this server). Read-only; one upstream call.
-   */
-  async getApiUsage(): Promise<{ server: ApiUsageSnapshot; autotask: { used: number | null; limit: number | null; windowMinutes: number | null; usedPct: number | null } | { error: string } }> {
-    // Snapshot AFTER the live probe so the server view includes it.
-    const snap = () => usageSnapshot(this.config.autotask.username?.toLowerCase() ?? '');
-    try {
-      const http = await this.ensureClient();
-      const t = await http.thresholdInformation();
-      const used = t.currentTimeframeRequestCount ?? null;
-      const limit = t.externalRequestThreshold ?? null;
-      return { server: snap(), autotask: { used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, usedPct: used != null && limit ? Math.round((used / limit) * 1000) / 10 : null } };
-    } catch (error) {
-      return { server: snap(), autotask: { error: error instanceof Error ? error.message : String(error) } };
-    }
-  }
-
-  /**
    * Deep link that opens a ticket in the Autotask web UI, via Autotask's
    * documented AutotaskExtend "OpenTicketDetail" command. Null when the web
    * UI base can't be determined (set AUTOTASK_WEB_URL to force it). Runs after

@@ -317,6 +317,23 @@ export class AutotaskService {
     return companies;
   }
 
+  /**
+   * Company names for just these ids — one `in` LIST query per 200, sequential
+   * (the same list endpoint as the full walk, so names agree with it, unlike a
+   * single-record GET for merged/renamed companies). Replaces walking every
+   * company (~4.5k at GDS = 9+ calls) to name the handful in a result.
+   */
+  async getCompanyNamesByIds(ids: number[]): Promise<Array<{ id: number; companyName: string }>> {
+    const http = await this.ensureClient();
+    const unique = [...new Set(ids.filter((x) => Number.isFinite(x)))];
+    const out: Array<{ id: number; companyName: string }> = [];
+    for (let i = 0; i < unique.length; i += 200) {
+      const rows = await http.query<{ id: number; companyName?: string }>('Companies', [{ op: 'in', field: 'id', value: unique.slice(i, i + 200) }], { includeFields: ['id', 'companyName'], maxRecords: 500 });
+      for (const r of rows) if (r.companyName) out.push({ id: r.id, companyName: r.companyName });
+    }
+    return out;
+  }
+
   async createCompany(company: Partial<AutotaskCompany>): Promise<number> {
     const http = await this.ensureClient();
     // Hard gate (brief §7.31): refuse to create a company from a value that
@@ -607,8 +624,23 @@ export class AutotaskService {
 
       const filters: QueryFilter[] = [];
 
+      // searchTerm: a ticket-number-looking value ("T20260921", "T20260921.0086",
+      // "20260921") keeps the ticket-number PREFIX match; anything else is a
+      // keyword and searches the TITLE (Autotask `contains`, case-insensitive).
+      // Before, a keyword here matched no ticket number and silently returned
+      // nothing — so callers listed a whole company's open tickets to scan
+      // titles themselves, page after page (each emulated page re-fetches the
+      // ones before it). `title` is the explicit keyword filter.
       if (options.searchTerm) {
-        filters.push({ op: 'beginsWith', field: 'ticketNumber', value: options.searchTerm });
+        const term = String(options.searchTerm).trim();
+        if (/^T?\d{4,8}(\.\d{0,4})?$/i.test(term)) {
+          filters.push({ op: 'beginsWith', field: 'ticketNumber', value: /^\d/.test(term) ? `T${term}` : term });
+        } else {
+          filters.push({ op: 'contains', field: 'title', value: term });
+        }
+      }
+      if (options.title) {
+        filters.push({ op: 'contains', field: 'title', value: String(options.title).trim() });
       }
 
       if (options.status !== undefined) {

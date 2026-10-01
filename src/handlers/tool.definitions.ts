@@ -483,13 +483,17 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   // Ticket tools
   {
     name: 'autotask_search_tickets',
-    description: 'Search tickets by company, queue, status, priority. Use autotask_get_ticket_details for full data. Max 500/page.',
+    description: 'Search tickets by title keyword, ticket number, company, contact, queue, status, priority, assignee, dates. To find an EXISTING ticket about something (e.g. before creating one, or when reconciling a meeting), search by `title` keyword + `companyID` — Autotask filters server-side, so it is ONE call returning only the matches. Do NOT list a whole company\'s open tickets and scan titles: every page re-fetches the pages before it and burns the shared Autotask API budget. Open tickets only unless `status` is given. Use autotask_get_ticket_details for full data. Max 500/page.',
     inputSchema: {
       type: 'object',
       properties: {
+        title: {
+          type: 'string',
+          description: 'Keyword(s) the ticket TITLE contains (case-insensitive), e.g. "ThreatLocker", "Lenel", "passkey". Combine with companyID to find a specific existing ticket.'
+        },
         searchTerm: {
           type: 'string',
-          description: 'Search by ticket number prefix'
+          description: 'A ticket number or prefix (e.g. "T20260921.0086", "T20260921") matches ticket numbers; any other text is treated as a title keyword (same as `title`).'
         },
         companyID: {
           type: 'number',

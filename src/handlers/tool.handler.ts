@@ -1657,9 +1657,12 @@ export class AutotaskToolHandler {
           subscribeCreate: a.subscribeCreate, subscribeUpdate: a.subscribeUpdate, subscribeDelete: a.subscribeDelete,
           sendThresholdExceededNotification: a.sendThresholdExceededNotification, notificationEmailAddress: a.notificationEmailAddress,
           secretKey: a.secretKey,
-          fields: a.fields, excludedResourceIDs: a.excludedResourceIDs, dryRun: a.dryRun,
+          fields: a.fields, excludedResourceIDs: a.excludedResourceIDs, excludeSelf: a.excludeSelf, dryRun: a.dryRun,
         });
-        const msg = r.status === 'dry_run' ? `Dry run: would create a ${a.entity} webhook → ${a.webhookUrl} with ${(r.plannedFields as any[])?.length ?? 0} field(s), ${(r.plannedExcludedResources as any[])?.length ?? 0} excluded resource(s); nothing written`
+        const ex = (r.plannedExcludedResources ?? r.excludedResources) as Array<{ resourceID: number; reason: string }> | undefined;
+        const exText = ex?.length ? ` — excluded resources: ${ex.map((e) => `${e.resourceID} (${e.reason})`).join(', ')}` : ` — NO excluded resources (the MCP's own writes WILL fire it)`;
+        const warn = (r.warnings as string[] | undefined)?.length ? ` WARNING: ${(r.warnings as string[]).join(' ')}` : '';
+        const msg = r.status === 'dry_run' ? `Dry run: would create a ${a.entity} webhook → ${a.webhookUrl} with ${(r.plannedFields as unknown[])?.length ?? 0} field(s)${exText}; secret from ${a.secretKey ? 'the argument (hidden)' : 'AUTOTASK_WEBHOOK_SECRET'}; nothing written.${warn}`
           : r.status === 'validation_failed' ? `Validation failed: ${JSON.stringify(r.errors ?? r.detail)}`
           : `Created ${a.entity} webhook ${r.webhookID}` + ((r.errors as any[])?.length ? ` with ${(r.errors as any[]).length} child error(s)` : '');
         return { result: r, message: msg };
@@ -1669,7 +1672,7 @@ export class AutotaskToolHandler {
           name: a.name, webhookUrl: a.webhookUrl, deactivationUrl: a.deactivationUrl, isActive: a.isActive,
           subscribeCreate: a.subscribeCreate, subscribeUpdate: a.subscribeUpdate, subscribeDelete: a.subscribeDelete,
           sendThresholdExceededNotification: a.sendThresholdExceededNotification, notificationEmailAddress: a.notificationEmailAddress,
-          secretKey: a.secretKey,
+          secretKey: a.secretKey, useEnvSecret: a.useEnvSecret,
         }, a.dryRun);
         const msg = r.status === 'dry_run' ? `Dry run: would update ${a.entity} webhook ${a.id} — ${Object.keys(r.plannedPatch as object).join(', ')}; nothing written`
           : r.status === 'validation_failed' ? `Validation failed: ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`

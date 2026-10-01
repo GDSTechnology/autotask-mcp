@@ -47,6 +47,7 @@ import {
 } from '../utils/contract-sla';
 import { computeTimeEntryCompliance, TimeEntryComplianceResult } from '../utils/time-entry-compliance';
 import { groupNotificationSends, emailDomain, NotificationRow, NotificationSend } from '../utils/notification-history';
+import { resolveWebhookSecret, secretErrors, secretWarnings, maskSecret, buildExclusions, SecretSource, WEBHOOK_SECRET_ENV } from '../utils/webhook-safety';
 import { computeActivityWithoutTime, AwtNote, AwtCompletion, AwtEmail, AwtTimeEntry, AwtTicket, AwtResourceResult, GapConfidence } from '../utils/activity-without-time';
 import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, ServiceCallLite } from '../utils/tickets-needing-scheduling';
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
@@ -6922,26 +6923,48 @@ export class AutotaskService {
   async createWebhook(entityKey: string, params: WebhookParams & {
     fields?: WebhookFieldSpec[];
     excludedResourceIDs?: number[];
+    /** Exclude this MCP's own API user (loop prevention). Default true. */
+    excludeSelf?: boolean;
     dryRun?: boolean;
   }): Promise<WritePlanResult> {
     const wp = new WritePlan();
     const map = this.webhookMapOrThrow(entityKey);
-    const errors = validateWebhookCreate(params);
+    // The secret comes from the argument or (preferred) AUTOTASK_WEBHOOK_SECRET,
+    // so it need never appear in chat; it is never echoed back either way.
+    const { secret, source: secretSource } = resolveWebhookSecret(params.secretKey);
+    const errors = [
+      ...secretErrors(secret),
+      ...validateWebhookCreate({ ...params, secretKey: secret ?? 'placeholder-checked-above' }),
+    ];
     if (errors.length) return wp.fail('input', { errors });
-    wp.ok('input', { entity: map.key });
+    wp.ok('input', { entity: map.key, secretSource });
 
     // Defaults for required fields Autotask expects on create (verified live).
     const payload = buildWebhookPayload({
       ...params,
+      secretKey: secret!,
       isActive: params.isActive ?? true,
       sendThresholdExceededNotification: params.sendThresholdExceededNotification ?? false,
     });
     const fields = params.fields ?? [];
-    const excluded = [...new Set(params.excludedResourceIDs ?? [])];
+    // Loop prevention: requested ids + this MCP's own API user + env ids.
+    const self = params.excludeSelf === false ? null : await this.resolveApiUserResourceId();
+    const exclusions = buildExclusions(params.excludedResourceIDs, self, params.excludeSelf !== false);
+    const excluded = exclusions.map((e) => e.resourceID);
+    const warnings: string[] = [...secretWarnings(secret)];
+    if (params.excludeSelf !== false && self == null) {
+      warnings.push("Could not resolve this MCP's own API-user resource to exclude it — add it to excludedResourceIDs (or AUTOTASK_WEBHOOK_EXCLUDE_RESOURCE_IDS) or the MCP's own writes may re-trigger this webhook.");
+    }
     wp.ok('plan', { fields: fields.length, excludedResources: excluded.length });
 
     if (params.dryRun !== false) {
-      return wp.dryRun({ entity: map.key, plannedWebhook: payload, plannedFields: fields.map((f) => buildWebhookFieldRow(0, f)), plannedExcludedResources: excluded });
+      return wp.dryRun({
+        entity: map.key,
+        plannedWebhook: maskSecret(payload, secretSource),
+        plannedFields: fields.map((f) => buildWebhookFieldRow(0, f)),
+        plannedExcludedResources: exclusions,
+        ...(warnings.length ? { warnings } : {}),
+      });
     }
 
     const http = await this.ensureClient();
@@ -6958,8 +6981,40 @@ export class AutotaskService {
     return wp.done(childErrors.length ? 'created_with_errors' : 'created', {
       entity: map.key, webhookID, fieldsCreated: fields.length - childErrors.filter((e) => e.step.startsWith('field')).length,
       excludedResourcesCreated: excluded.length - childErrors.filter((e) => e.step.startsWith('excludedResource')).length,
+      excludedResources: exclusions,
+      secretSource,
+      ...(warnings.length ? { warnings } : {}),
       ...(childErrors.length ? { errors: childErrors } : {}),
     });
+  }
+
+  /**
+   * The Resource id of the API user this MCP authenticates as — the identity
+   * its own writes are attributed to, and so the one to exclude from webhooks.
+   * An API user's Resource `userName` is the local part of the API username
+   * (verified live 2026-10-01); falls back to email == username. Memoised;
+   * null when it can't be resolved.
+   */
+  private apiUserResourceId: number | null | undefined;
+  async resolveApiUserResourceId(): Promise<number | null> {
+    if (this.apiUserResourceId !== undefined) return this.apiUserResourceId;
+    const username = this.config.autotask.username ?? '';
+    if (!username) return (this.apiUserResourceId = null);
+    try {
+      const http = await this.ensureClient();
+      const local = username.split('@')[0] ?? username;
+      for (const filter of [
+        [{ op: 'eq', field: 'userName', value: local }],
+        [{ op: 'eq', field: 'email', value: username }],
+      ] as QueryFilter[][]) {
+        const rows = await http.query<{ id: number }>('Resources', filter, { includeFields: ['id'], maxRecords: 2 });
+        if (rows.length === 1) return (this.apiUserResourceId = rows[0]!.id);
+      }
+    } catch (error) {
+      this.logger.warn('Could not resolve the API user resource for webhook exclusion', error);
+      return null; // transient: don't memoise a failure
+    }
+    return (this.apiUserResourceId = null);
   }
 
   /**
@@ -6967,16 +7022,30 @@ export class AutotaskService {
    * subscriptions, notifications). Dry-run-first. Child fields/excluded resources
    * are managed via their own tools.
    */
-  async updateWebhook(entityKey: string, id: number, patch: WebhookParams, dryRun?: boolean): Promise<WritePlanResult> {
+  async updateWebhook(entityKey: string, id: number, patch: WebhookParams & { useEnvSecret?: boolean }, dryRun?: boolean): Promise<WritePlanResult> {
     const wp = new WritePlan();
     const map = this.webhookMapOrThrow(entityKey);
     if (id == null) return wp.fail('input', 'webhook id is required');
-    const payload = buildWebhookPayload(patch);
+    // Secret rotation without the secret in chat: useEnvSecret takes it from
+    // AUTOTASK_WEBHOOK_SECRET. A secret is only ever shown masked.
+    const { useEnvSecret, ...rest } = patch;
+    let secretSource: SecretSource | null = rest.secretKey ? 'argument' : null;
+    if (useEnvSecret && !rest.secretKey) {
+      const env = resolveWebhookSecret(undefined);
+      if (!env.secret) return wp.fail('input', `useEnvSecret is set but ${WEBHOOK_SECRET_ENV} is not configured on the MCP host`);
+      rest.secretKey = env.secret;
+      secretSource = 'env';
+    }
+    if (rest.secretKey) {
+      const errs = secretErrors(rest.secretKey);
+      if (errs.length) return wp.fail('input', { errors: errs });
+    }
+    const payload = buildWebhookPayload(rest);
     if (Object.keys(payload).length === 0) return wp.fail('input', 'no updatable fields supplied');
     if (payload.webhookUrl && !/^https:\/\//i.test(String(payload.webhookUrl))) return wp.fail('input', 'webhookUrl must be an https:// URL');
     wp.ok('input', { entity: map.key, id, fields: Object.keys(payload) });
 
-    if (dryRun !== false) return wp.dryRun({ entity: map.key, id, plannedPatch: payload });
+    if (dryRun !== false) return wp.dryRun({ entity: map.key, id, plannedPatch: maskSecret(payload, secretSource) });
 
     const http = await this.ensureClient();
     await http.update(map.parent, id, payload);

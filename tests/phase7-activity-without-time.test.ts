@@ -145,7 +145,7 @@ describe('reportActivityWithoutTime — filters sent upstream', () => {
     const query = jest.fn(async (_entity: string, _filter: unknown, _opts?: unknown) => [] as unknown[]);
     jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ query });
     jest.spyOn(s, 'getFieldInfo').mockResolvedValue([] as any);
-    jest.spyOn(s, 'getResource').mockResolvedValue({ firstName: 'Brian', lastName: 'Smith' } as any);
+    jest.spyOn(s, 'getResourceNames').mockResolvedValue(new Map([[R, 'Brian Smith']]));
     const r = await s.reportActivityWithoutTime({ resourceIDs: [R], from: '2026-09-22', to: '2026-09-29', timeZone: TZ, toleranceDays: 2 });
     const filterFor = (entity: string) => query.mock.calls.find((c) => c[0] === entity)![1];
     expect(filterFor('TicketNotes')).toEqual([

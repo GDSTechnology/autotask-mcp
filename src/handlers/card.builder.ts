@@ -236,15 +236,17 @@ export async function buildTicketCard(
 }
 
 /** Best-effort "First Last" for each distinct resource id (misses are simply absent). */
+/**
+ * Best-effort "First Last" for each distinct resource id — ONE batched,
+ * memoised lookup (never a parallel GET per id: that burst tripped Autotask's
+ * concurrent-request 429 when a busy caller rendered many cards).
+ */
 async function resourceNames(service: AutotaskService, ids: unknown[]): Promise<Map<number, string>> {
-  const unique = [...new Set(ids.map(Number).filter((id) => Number.isFinite(id)))];
-  const names = new Map<number, string>();
-  await Promise.all(unique.map(async (id) => {
-    const r = await service.getResource(id).catch(() => null) as { firstName?: string; lastName?: string } | null;
-    const name = r ? [r.firstName, r.lastName].filter(Boolean).join(' ') : '';
-    if (name) names.set(id, name);
-  }));
-  return names;
+  try {
+    return await service.getResourceNames(ids);
+  } catch {
+    return new Map();
+  }
 }
 
 async function picklistLabel(

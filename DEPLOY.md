@@ -68,7 +68,46 @@ Behavior / safety (set as needed):
 | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` in production |
 | `LAZY_LOADING` | Progressive tool discovery (optional) |
 
+Webhooks (set when the MCP creates Autotask webhooks for n8n):
+
+| Var | Purpose |
+|---|---|
+| `AUTOTASK_WEBHOOK_SECRET` | Shared signing secret (≤ 64 chars; Autotask recommends 10+). `autotask_create_webhook` uses it when `secretKey` is omitted, so the secret never appears in chat, and it is never echoed back. The **n8n service needs the same value** to verify `X-Hook-Signature` |
+| `AUTOTASK_WEBHOOK_EXCLUDE_RESOURCE_IDS` | Extra resource IDs (comma-separated) whose changes must not fire new webhooks. The MCP's own API user is excluded automatically (`excludeSelf`, default on) |
+
+Read cache and lookups (defaults are fine; tune only if needed):
+
+| Var | Purpose |
+|---|---|
+| `AUTOTASK_CACHE` | `off` disables the Autotask read cache (on by default; writes always invalidate) |
+| `AUTOTASK_CACHE_TTL_FIELDS_SECONDS` | Field/picklist metadata TTL (default `3600`) |
+| `AUTOTASK_CACHE_TTL_REFERENCE_SECONDS` | Reference data, e.g. roles, work types (default `900`) |
+| `AUTOTASK_CACHE_TTL_SLOW_REFERENCE_SECONDS` | Companies / contacts / contracts (default `300`) |
+| `AUTOTASK_CACHE_TTL_VOLATILE_SECONDS` | Tickets, notes, time entries (default `30`) |
+| `AUTOTASK_COMPANY_PREWARM` | `on` restores the eager walk of every company at startup. Off by default: company names are looked up on demand |
+
 Keep secrets in the server's env file / secret store — never in the image.
+
+**Sharing the webhook secret with n8n.** In the production layout `autotask-mcp`
+reads `/opt/n8n/autotask-mcp.env` (`env_file`), and the `n8n` service has only an
+`environment:` map. Put the secret in both `autotask-mcp.env` and `/opt/n8n/.env`
+(Compose reads `.env` for `${…}` interpolation, `chmod 600` both), and reference
+it from n8n's block, so the value is never written into the compose file:
+
+```yaml
+    environment:
+      AUTOTASK_WEBHOOK_SECRET: ${AUTOTASK_WEBHOOK_SECRET}
+```
+
+Recreate both (`docker compose up -d autotask-mcp n8n`) and confirm they match
+without printing the secret:
+
+```bash
+cd /opt/n8n && for s in autotask-mcp n8n; do echo "$s: $(docker compose exec -T $s sh -c 'printf %s "$AUTOTASK_WEBHOOK_SECRET" | sha256sum | cut -c1-8')"; done
+```
+
+To rotate: change it in both files, recreate both services, then run
+`autotask_update_webhook` with `useEnvSecret: true` on each webhook.
 
 ## 3. Where the image comes from
 

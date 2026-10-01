@@ -381,6 +381,64 @@ export class AutotaskService {
   // Contacts
   // =====================================================
 
+  /** id → "First Last", memoised briefly: names rarely change, and every ticket card / report wants them. */
+  private resourceNameCache = new Map<number, { name: string; at: number }>();
+  private static readonly RESOURCE_NAME_TTL_MS = 10 * 60_000;
+
+  /**
+   * Names for a set of resource ids in ONE `in` query per 200 (sequential),
+   * served from a 10-minute memo where possible. Replaces per-id GETs fired in
+   * parallel, which burst past Autotask's per-integration concurrent-request
+   * limit (HTTP 429) when a busy caller rendered many ticket cards. Misses are
+   * simply absent; a failed lookup returns what the memo has.
+   */
+  async getResourceNames(ids: unknown[]): Promise<Map<number, string>> {
+    const now = Date.now();
+    const out = new Map<number, string>();
+    const missing: number[] = [];
+    for (const id of new Set(ids.map(Number).filter((x) => Number.isFinite(x)))) {
+      const hit = this.resourceNameCache.get(id);
+      if (hit && now - hit.at < AutotaskService.RESOURCE_NAME_TTL_MS) out.set(id, hit.name);
+      else missing.push(id);
+    }
+    if (!missing.length) return out;
+    try {
+      const http = await this.ensureClient();
+      for (let i = 0; i < missing.length; i += 200) {
+        const rows = await http.query<{ id: number; firstName?: string; lastName?: string }>('Resources', [{ op: 'in', field: 'id', value: missing.slice(i, i + 200) }], { includeFields: ['id', 'firstName', 'lastName'], maxRecords: 500 });
+        for (const r of rows) {
+          const name = [r.firstName, r.lastName].filter(Boolean).join(' ');
+          if (!name) continue;
+          out.set(r.id, name);
+          this.resourceNameCache.set(r.id, { name, at: now });
+        }
+      }
+    } catch (error) {
+      this.logger.debug('Resource name lookup failed; returning cached names only', error);
+    }
+    return out;
+  }
+
+  /**
+   * Autotask API budget: this server's upstream calls (by method + entity),
+   * cache hits and shared in-flight reads, plus Autotask's OWN live counter
+   * for the integration (ThresholdInformation — counts every caller sharing
+   * the API user, not just this server). Read-only; one upstream call.
+   */
+  async getApiUsage(): Promise<{ server: ApiUsageSnapshot; autotask: { used: number | null; limit: number | null; windowMinutes: number | null; usedPct: number | null } | { error: string } }> {
+    // Snapshot AFTER the live probe so the server view includes it.
+    const snap = () => usageSnapshot(this.config.autotask.username?.toLowerCase() ?? '');
+    try {
+      const http = await this.ensureClient();
+      const t = await http.thresholdInformation();
+      const used = t.currentTimeframeRequestCount ?? null;
+      const limit = t.externalRequestThreshold ?? null;
+      return { server: snap(), autotask: { used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, usedPct: used != null && limit ? Math.round((used / limit) * 1000) / 10 : null } };
+    } catch (error) {
+      return { server: snap(), autotask: { error: error instanceof Error ? error.message : String(error) } };
+    }
+  }
+
   /**
    * Autotask API budget: this server's upstream calls (by method + entity),
    * cache hits and shared in-flight reads, plus Autotask's OWN live counter
@@ -6623,17 +6681,18 @@ export class AutotaskService {
     const resources: AwtResourceResult[] = [];
     for (const resourceID of opts.resourceIDs) {
       const tz = opts.timeZone ?? (await this.resolveResourceTimeZone(resourceID)) ?? 'America/New_York';
-      const [notes, completions, emails, timeEntries, resource] = await Promise.all([
-        http.query<AwtNote>('TicketNotes', [{ op: 'eq', field: 'creatorResourceID', value: resourceID }, { op: 'gte', field: 'createDateTime', value: utcFrom }, { op: 'lt', field: 'createDateTime', value: utcTo }],
-          { includeFields: ['id', 'ticketID', 'noteType', 'title', 'description', 'createDateTime', 'creatorResourceID'], maxRecords: 5000 }),
-        http.query<AwtCompletion>('Tickets', [{ op: 'eq', field: 'completedByResourceID', value: resourceID }, { op: 'gte', field: 'completedDate', value: utcFrom }, { op: 'lt', field: 'completedDate', value: utcTo }],
-          { includeFields: ['id', 'completedDate'], maxRecords: 5000 }),
-        http.query<AwtEmail>('NotificationHistory', [{ op: 'eq', field: 'initiatingResourceID', value: resourceID }, { op: 'gte', field: 'notificationSentTime', value: utcFrom }, { op: 'lt', field: 'notificationSentTime', value: utcTo }],
-          { includeFields: ['id', 'ticketID', 'timeEntryID', 'notificationSentTime', 'templateName', 'recipientEmailAddress'], maxRecords: 5000 }).catch(() => [] as AwtEmail[]),
-        http.query<AwtTimeEntry>('TimeEntries', [{ op: 'eq', field: 'resourceID', value: resourceID }, { op: 'gte', field: 'dateWorked', value: timeFrom }, { op: 'lte', field: 'dateWorked', value: timeTo }],
-          { includeFields: ['id', 'ticketID', 'dateWorked', 'hoursWorked'], maxRecords: 5000 }),
-        this.getResource(resourceID).catch(() => null) as Promise<{ firstName?: string; lastName?: string } | null>,
-      ]);
+      // Sequential, never Promise.all: the API user is shared by every caller
+      // (n8n, ChatGPT, automations), and a parallel burst trips Autotask's
+      // per-integration concurrent-request 429 for all of them.
+      const notes = await http.query<AwtNote>('TicketNotes', [{ op: 'eq', field: 'creatorResourceID', value: resourceID }, { op: 'gte', field: 'createDateTime', value: utcFrom }, { op: 'lt', field: 'createDateTime', value: utcTo }],
+        { includeFields: ['id', 'ticketID', 'noteType', 'title', 'description', 'createDateTime', 'creatorResourceID'], maxRecords: 5000 });
+      const completions = await http.query<AwtCompletion>('Tickets', [{ op: 'eq', field: 'completedByResourceID', value: resourceID }, { op: 'gte', field: 'completedDate', value: utcFrom }, { op: 'lt', field: 'completedDate', value: utcTo }],
+        { includeFields: ['id', 'completedDate'], maxRecords: 5000 });
+      const emails = await http.query<AwtEmail>('NotificationHistory', [{ op: 'eq', field: 'initiatingResourceID', value: resourceID }, { op: 'gte', field: 'notificationSentTime', value: utcFrom }, { op: 'lt', field: 'notificationSentTime', value: utcTo }],
+        { includeFields: ['id', 'ticketID', 'timeEntryID', 'notificationSentTime', 'templateName', 'recipientEmailAddress'], maxRecords: 5000 }).catch(() => [] as AwtEmail[]);
+      const timeEntries = await http.query<AwtTimeEntry>('TimeEntries', [{ op: 'eq', field: 'resourceID', value: resourceID }, { op: 'gte', field: 'dateWorked', value: timeFrom }, { op: 'lte', field: 'dateWorked', value: timeTo }],
+        { includeFields: ['id', 'ticketID', 'dateWorked', 'hoursWorked'], maxRecords: 5000 });
+      const resourceName = (await this.getResourceNames([resourceID])).get(resourceID);
 
       // Ticket context for every ticket that carries evidence.
       const ids = [...new Set([...notes.map((n) => n.ticketID), ...completions.map((c) => c.id)].filter((x): x is number => x != null))];
@@ -6671,7 +6730,7 @@ export class AutotaskService {
           ticketUrl: url,
         });
       }
-      const name = resource ? [resource.firstName, resource.lastName].filter(Boolean).join(' ') : '';
+      const name = resourceName ?? '';
       resources.push(computeActivityWithoutTime(resourceID, { notes, completions, emails, timeEntries, tickets }, {
         timeZone: tz, from, to, toleranceDays: tolerance,
         ...(opts.minConfidence ? { minConfidence: opts.minConfidence } : {}),

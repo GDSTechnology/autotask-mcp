@@ -56,3 +56,11 @@ LICENSE
 jest.config.js
 .eslintrc.*
 .prettierrc.* 
+# Local-only files that never belong in an image. dev-postgres is the local
+# database data dir (~900 MB) and made every local build send it as context;
+# the plain `node_modules` rule above only matches the top level.
+dev-postgres
+**/node_modules
+.claude
+.taskmaster
+/_*.mjs

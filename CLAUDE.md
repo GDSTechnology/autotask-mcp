@@ -4,6 +4,23 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-02
+
+- **`ServiceCalls` has no resource field.** "My service calls on a day" is
+  calls-in-window → `ServiceCallTickets` (`in` serviceCallID) →
+  `ServiceCallTicketResources` (`in` serviceCallTicketID + resourceID). Scope
+  the calls by date FIRST; a resource's assignment history is unbounded.
+- **Open `CompanyToDos` pile up**: a live tech had 500+ never-completed To-Dos,
+  all 1–12 months old, nearly all ticket-linked. "Open and due" is noise —
+  window by `startDateTime` (my_day uses 7 days).
+- A ticket can sit on **two service calls the same day**; a per-call gap list
+  double-counts it. Gaps are per ticket.
+- Status / note picklists resolve by **label** (`utils/staff-tools.ts`
+  `matchPicklist`): exact label wins over a partial ("Waiting Customer" vs
+  "Waiting Customer stage 2"); an ambiguous partial ("waiting") returns the
+  choices. TicketNotes publish: 1 All Autotask Users (client-visible),
+  2 Internal Project Team, 4 Internal & Co-Managed.
+
 ## Learnings - 2026-09-30
 
 - **`TimeEntries.hoursToBill` is read-only** (entityInformation `isReadOnly`).

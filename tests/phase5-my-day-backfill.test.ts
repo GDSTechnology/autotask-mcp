@@ -48,8 +48,9 @@ describe('getMyDay (#42)', () => {
     jest.spyOn(svc, 'searchTickets').mockResolvedValue(pagedOf([]));
     jest.spyOn(svc, 'searchTasks').mockResolvedValue(pagedOf([]));
     const r = await svc.getMyDay(5, '2026-09-15');
-    expect(r.errors).toEqual([expect.objectContaining({ section: 'timeEntries' })]);
+    expect(r.errors.map((e: any) => e.section)).toEqual(['timeEntries', 'serviceCalls', 'todos']);
     expect(r.timeEntries).toEqual([]);
+    expect(r.missingTime).toEqual([]); // no gaps invented from failed reads
   });
 });
 

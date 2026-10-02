@@ -111,6 +111,11 @@ import {
 import { McpServerConfig } from '../types/mcp';
 import { Logger } from '../utils/logger';
 import { FieldInfo, PicklistValue } from './picklist.cache';
+import {
+  findDuplicateNote, formatChoices, hoursBetween, HUMAN_NOTE_TYPE_LABEL, matchPicklist, MyServiceCall,
+  NoteVisibility, PicklistChoice, PUBLISH_LABELS, ServiceCallRow, serviceCallTimeGaps, StartWorkResult,
+  TODO_WINDOW_DAYS, utcDayBounds, windowStart,
+} from '../utils/staff-tools';
 
 /**
  * Default "match all" filter required by Autotask for unconstrained queries.
@@ -1474,30 +1479,44 @@ export class AutotaskService {
 
   /**
    * A resource's working picture for a date (default today): the tickets
-   * assigned to them, the time they've already logged that day, and their open
-   * tasks. Fail-soft — each section is independent; a failed section is recorded
-   * under `errors` rather than failing the whole read. Lets the assistant
-   * backfill only the gaps instead of re-logging.
+   * assigned to them, the time they've already logged that day, their open
+   * tasks, their service calls that day, their open To-Dos due by that day,
+   * and the GAPS — service-call tickets with no time logged — so the assistant
+   * backfills only what's missing instead of re-logging.
+   *
+   * Fail-soft — each section is independent; a failed section is recorded
+   * under `errors` rather than failing the whole read. Sections run ONE AT A
+   * TIME: a parallel fan-out per call is the burst pattern #149 removed.
+   * The day is a UTC day (Autotask datetimes are UTC).
    */
   async getMyDay(
     resourceID: number,
     date?: string
   ): Promise<Record<string, any>> {
     const day = date && /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : AutotaskService.ymd(new Date());
+    const { start: dayStart, end: dayEnd } = utcDayBounds(day);
     const errors: Array<{ section: string; error: string }> = [];
     const section = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
       try { return await fn(); } catch (e) { errors.push({ section: name, error: e instanceof Error ? e.message : String(e) }); return undefined; }
     };
     const http = await this.ensureClient();
 
-    const [assignedTickets, timeEntries, tasks] = await Promise.all([
-      section('assignedTickets', async () => (await this.searchTickets({ assignedResourceID: resourceID, pageSize: 100 } as any)).items),
-      section('timeEntries', () => http.query<Record<string, any>>('TimeEntries', [
-        { op: 'eq', field: 'resourceID', value: resourceID },
-        { op: 'eq', field: 'dateWorked', value: day },
-      ], { maxRecords: 500 })),
-      section('tasks', async () => (await this.searchTasks({ assignedResourceID: resourceID, pageSize: 100 } as any)).items),
-    ]);
+    const assignedTickets = await section('assignedTickets', async () => (await this.searchTickets({ assignedResourceID: resourceID, pageSize: 100 } as any)).items);
+    const timeEntries = await section('timeEntries', () => http.query<Record<string, any>>('TimeEntries', [
+      { op: 'eq', field: 'resourceID', value: resourceID },
+      { op: 'eq', field: 'dateWorked', value: day },
+    ], { maxRecords: 500 }));
+    const tasks = await section('tasks', async () => (await this.searchTasks({ assignedResourceID: resourceID, pageSize: 100 } as any)).items);
+    const serviceCalls = await section('serviceCalls', () => this.myServiceCallsOn(resourceID, dayStart, dayEnd));
+    // Open To-Dos starting in the TODO_WINDOW_DAYS up to the day. Not "every
+    // open To-Do": never-completed ones pile up (a live tech had 500+, all 1–12
+    // months old, nearly all ticket-linked), which buries today's in noise.
+    const todos = await section('todos', () => http.query<Record<string, unknown>>('CompanyToDos', [
+      { op: 'eq', field: 'assignedToResourceID', value: resourceID },
+      { op: 'notExist', field: 'completedDate' },
+      { op: 'gte', field: 'startDateTime', value: windowStart(day, TODO_WINDOW_DAYS) },
+      { op: 'lte', field: 'startDateTime', value: dayEnd },
+    ], { maxRecords: 100 }));
 
     const entries = timeEntries ?? [];
     const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -1510,6 +1529,10 @@ export class AutotaskService {
     const hoursLogged = entries.reduce((s, e: any) => s + hrs(e), 0);
     const billableHours = entries.filter((e: any) => !e.isNonBillable).reduce((s, e: any) => s + hrs(e), 0);
     const nonBillableHours = entries.filter((e: any) => e.isNonBillable).reduce((s, e: any) => s + hrs(e), 0);
+    const calls = serviceCalls ?? [];
+    // Gaps only when BOTH reads succeeded — a failed time read would make
+    // every service-call ticket look like missing time.
+    const missingTime = serviceCalls && timeEntries ? serviceCallTimeGaps(calls, ticketTime) : [];
     return {
       resourceID,
       date: day,
@@ -1519,8 +1542,15 @@ export class AutotaskService {
       taskTime,
       regularTime,
       openTasks: tasks ?? [],
+      serviceCalls: calls,
+      openTodos: todos ?? [],
+      todoWindowDays: TODO_WINDOW_DAYS,
+      missingTime,
       totals: {
         assignedTickets: (assignedTickets ?? []).length,
+        serviceCalls: calls.length,
+        openTodos: (todos ?? []).length,
+        missingTime: missingTime.length,
         timeEntries: entries.length,
         hoursLogged: r2(hoursLogged),
         ticketHours: r2(ticketTime.reduce((s, e: any) => s + hrs(e), 0)),
@@ -1531,6 +1561,161 @@ export class AutotaskService {
       },
       ...(errors.length ? { errors } : {}),
     };
+  }
+
+  /**
+   * The resource's service calls starting inside [start, end]: calls in the
+   * window → their tickets → the ticket-resource rows for THIS resource.
+   * ServiceCalls carry no resource field, so it has to go call → ticket →
+   * resource; scoping the calls by day first keeps each query small (the
+   * resource's assignment history is unbounded). Three sequential queries.
+   */
+  private async myServiceCallsOn(resourceID: number, start: string, end: string): Promise<Array<MyServiceCall & { canceled: boolean }>> {
+    const http = await this.ensureClient();
+    const calls = await http.query<ServiceCallRow>('ServiceCalls', [
+      { op: 'gte', field: 'startDateTime', value: start },
+      { op: 'lte', field: 'startDateTime', value: end },
+    ], { maxRecords: 200 });
+    if (!calls.length) return [];
+    const links = await http.query<{ id: number; serviceCallID: number; ticketID: number }>('ServiceCallTickets', [
+      { op: 'in', field: 'serviceCallID', value: calls.map((c) => c.id) },
+    ], { maxRecords: 500 });
+    if (!links.length) return [];
+    const mine = await http.query<{ serviceCallTicketID: number }>('ServiceCallTicketResources', [
+      { op: 'in', field: 'serviceCallTicketID', value: links.map((l) => l.id) },
+      { op: 'eq', field: 'resourceID', value: resourceID },
+    ], { maxRecords: 500 });
+    const myLinkIds = new Set(mine.map((m) => Number(m.serviceCallTicketID)));
+    const ticketsByCall = new Map<number, number[]>();
+    for (const l of links) {
+      if (!myLinkIds.has(Number(l.id))) continue;
+      const list = ticketsByCall.get(Number(l.serviceCallID)) ?? [];
+      list.push(Number(l.ticketID));
+      ticketsByCall.set(Number(l.serviceCallID), list);
+    }
+    return calls
+      .filter((c) => ticketsByCall.has(Number(c.id)))
+      .map((c) => ({
+        serviceCallID: Number(c.id),
+        startDateTime: c.startDateTime,
+        endDateTime: c.endDateTime,
+        durationHours: hoursBetween(c.startDateTime, c.endDateTime),
+        isComplete: c.isComplete === true || c.isComplete === 1,
+        canceled: c.canceledDateTime != null,
+        ticketIDs: ticketsByCall.get(Number(c.id)) ?? [],
+      }))
+      .sort((a, b) => String(a.startDateTime ?? '').localeCompare(String(b.startDateTime ?? '')));
+  }
+
+  /** Active picklist values of an entity field (field info is cached for an hour). */
+  async getPicklistValues(entityType: string, fieldName: string): Promise<PicklistValue[]> {
+    const fields = await this.getFieldInfo(entityType);
+    return fields.find((f) => f.name === fieldName)?.picklistValues ?? [];
+  }
+
+  /**
+   * start_work_on_ticket (#21 §9): mark a ticket In Progress and, when it is
+   * unassigned, assign it to the resource (with their default role). A ticket
+   * already assigned to SOMEONE ELSE is left untouched unless `takeOver` —
+   * nothing is written and the assignee is named. Rerun-safe: a ticket already
+   * In Progress and assigned to the resource writes nothing. Returns
+   * `startedAt`, so the closing log_my_time can carry real start/end times.
+   */
+  async startWorkOnTicket(opts: {
+    ticketID: number; resourceID: number; roleID?: number; status?: string | number; takeOver?: boolean; dryRun?: boolean;
+  }): Promise<StartWorkResult> {
+    const startedAt = new Date().toISOString();
+    const ticket = await this.getTicket(opts.ticketID, true);
+    if (!ticket) return { status: 'not_found', ticketID: opts.ticketID };
+    const base = { ticketID: opts.ticketID, ticketNumber: ticket.ticketNumber, title: ticket.title };
+    if (Number(ticket.status) === 5) {
+      return { ...base, status: 'ticket_complete', message: `Ticket ${ticket.ticketNumber} is Complete — reopen it (set a working status) before starting work.` };
+    }
+    const statusMatch = matchPicklist(await this.getPicklistValues('Tickets', 'status'), opts.status ?? 'In Progress');
+    if (!statusMatch.ok) {
+      return { ...base, status: 'invalid_status', requested: statusMatch.requested, choices: statusMatch.choices };
+    }
+
+    const patch: Partial<AutotaskTicket> = {};
+    let assignment: 'already_yours' | 'assigned_to_you' | 'taken_over' | 'assigned_to_other' = 'already_yours';
+    const current = ticket.assignedResourceID != null ? Number(ticket.assignedResourceID) : null;
+    if (current !== opts.resourceID) {
+      if (current != null && !opts.takeOver) {
+        const names = await this.getResourceNames([current]);
+        return {
+          ...base, status: 'assigned_to_other', assignedResourceID: current, assignedResourceName: names.get(current) ?? null,
+          message: `Ticket ${ticket.ticketNumber} is assigned to ${names.get(current) ?? `resource ${current}`} — nothing changed. Re-run with takeOver:true to reassign it to yourself.`,
+        };
+      }
+      const roleID = opts.roleID ?? await this.resolveResourceDefaultRole(opts.resourceID);
+      if (roleID == null) {
+        return { ...base, status: 'role_required', message: `Resource ${opts.resourceID} has no default role — pass roleID to assign the ticket.` };
+      }
+      patch.assignedResourceID = opts.resourceID;
+      patch.assignedResourceRoleID = roleID;
+      assignment = current == null ? 'assigned_to_you' : 'taken_over';
+    }
+    if (Number(ticket.status) !== statusMatch.value) patch.status = statusMatch.value;
+
+    const result = { ...base, assignment, statusLabel: statusMatch.label, startedAt, previousStatus: Number(ticket.status), previousAssignedResourceID: current };
+    if (!Object.keys(patch).length) return { ...result, status: 'already_started', changes: {} };
+    if (opts.dryRun) return { ...result, status: 'dry_run', plannedChanges: patch };
+    await this.updateTicket(opts.ticketID, patch);
+    return { ...result, status: 'started', changes: patch };
+  }
+
+  /**
+   * Validate an add_ticket_update before anything is written: the ticket
+   * exists, the requested status and note visibility resolve against the
+   * tenant picklists, and the note type is the human one. Returns the
+   * resolved values, or `ok:false` with the choices (nothing written).
+   */
+  async planTicketUpdate(opts: {
+    ticketID: number; status?: string | number; visibility?: NoteVisibility; noteType?: number;
+  }): Promise<
+    | { ok: true; ticket: AutotaskTicket; status: { value: number; label: string } | null; publish: { value: number; label: string }; noteType: number }
+    | { ok: false; status: string; message: string; choices?: PicklistChoice[] }
+  > {
+    const ticket = await this.getTicket(opts.ticketID, true);
+    if (!ticket) return { ok: false, status: 'not_found', message: `Ticket ${opts.ticketID} not found — nothing written.` };
+    let status: { value: number; label: string } | null = null;
+    if (opts.status != null && opts.status !== '') {
+      const m = matchPicklist(await this.getPicklistValues('Tickets', 'status'), opts.status);
+      if (!m.ok) return { ok: false, status: 'invalid_status', message: `Ticket status "${opts.status}" not found — nothing written. Choices: ${formatChoices(m.choices)}`, choices: m.choices };
+      if (m.value !== Number(ticket.status)) status = { value: m.value, label: m.label };
+    }
+    const visibility = opts.visibility ?? 'internal';
+    const pub = matchPicklist(await this.getPicklistValues('TicketNotes', 'publish'), PUBLISH_LABELS[visibility]);
+    if (!pub.ok) return { ok: false, status: 'invalid_visibility', message: `No note visibility matching "${PUBLISH_LABELS[visibility]}" — nothing written. Choices: ${formatChoices(pub.choices)}`, choices: pub.choices };
+    let noteType = opts.noteType;
+    if (noteType == null) {
+      const nt = matchPicklist(await this.getPicklistValues('TicketNotes', 'noteType'), HUMAN_NOTE_TYPE_LABEL);
+      noteType = nt.ok ? nt.value : 1;
+    }
+    return { ok: true, ticket, status, publish: { value: pub.value, label: pub.label }, noteType };
+  }
+
+  /**
+   * Post a ticket note unless the SAME note (text + title) was posted on the
+   * ticket in the last 24 h — then return that one. Rerun-safe without a
+   * marker in the body (a client-visible note must not carry one).
+   */
+  async postTicketNoteOnce(ticketID: number, note: { title?: string; description: string; noteType: number; publish: number }): Promise<{ created: boolean; noteId: number }> {
+    const now = new Date();
+    let existing: Array<{ id?: number; title?: string; description?: string; createDateTime?: string }> = [];
+    try {
+      // Only the last 24 h, newest window — a child read of all notes returns
+      // the OLDEST first and would miss a recent duplicate on a long ticket.
+      const http = await this.ensureClient();
+      existing = await http.query<{ id?: number; title?: string; description?: string; createDateTime?: string }>('TicketNotes', [
+        { op: 'eq', field: 'ticketID', value: ticketID },
+        { op: 'gte', field: 'createDateTime', value: new Date(now.getTime() - 24 * 3600_000).toISOString() },
+      ], { maxRecords: 100 });
+    } catch { /* guard read failed → post */ }
+    const dup = findDuplicateNote(existing, note.title, note.description, now);
+    if (dup?.id != null) return { created: false, noteId: dup.id };
+    const noteId = await this.createTicketNote(ticketID, { title: note.title || 'Update', description: note.description, noteType: note.noteType, publish: note.publish });
+    return { created: true, noteId };
   }
 
   /**

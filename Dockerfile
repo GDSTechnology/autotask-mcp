@@ -16,8 +16,9 @@ COPY package*.json ./
 # Install dependencies — NO registry token required. autotask-node is now a
 # public github:GDSTechnology/autotask-node dependency (dev-only, never imported
 # by src), so npm ci clones it anonymously. --ignore-scripts skips the git dep's
-# prepare/build: the MCP runtime does not use the SDK, and it is pruned from the
-# production stage below (npm prune --omit=dev), so its dist is never needed.
+# prepare/build: the MCP runtime does not use the SDK, and the production stage
+# takes its node_modules from the `deps` stage (no dev deps), so its dist is
+# never needed.
 RUN npm ci --ignore-scripts
 
 # Copy source code
@@ -43,6 +44,17 @@ RUN if [ "${VERSION}" != "unknown" ]; then \
 # Build the application
 RUN npm run build
 
+# Runtime dependencies only, installed straight from the lockfile. The
+# production stage copies node_modules from HERE, not from the builder.
+# It used to copy the builder's full node_modules (~370 MB with dev deps) and
+# then `npm prune` it — but a later layer can't shrink an earlier one, so the
+# dev deps stayed in the image (745 MB). --omit=dev never fetches the
+# dev-only git dependency (autotask-node), so this needs no git or token.
+FROM node:26-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
 # Production stage
 FROM node:26-alpine AS production
 
@@ -59,12 +71,11 @@ WORKDIR /app
 # Copy package files and built application from builder stage. package.json
 # comes from the builder so it carries the VERSION patch applied above (not
 # the stale on-disk version from the build context).
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-
-# Prune dev dependencies (avoids re-installing git deps which need build tools)
-RUN npm prune --omit=dev && npm cache clean --force
+# --chown at COPY time: a later `chown -R /app` would rewrite every file into
+# yet another layer and double the image again.
+COPY --from=builder --chown=autotask:autotask /app/package*.json ./
+COPY --from=builder --chown=autotask:autotask /app/dist ./dist
+COPY --from=deps --chown=autotask:autotask /app/node_modules ./node_modules
 
 # Remove the npm CLI from the production image — the runtime only needs `node`
 # (CMD is `node dist/index.js`), and npm's bundled dependencies regularly trip
@@ -72,7 +83,7 @@ RUN npm prune --omit=dev && npm cache clean --force
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Create logs directory
-RUN mkdir -p /app/logs && chown -R autotask:autotask /app
+RUN mkdir -p /app/logs && chown autotask:autotask /app /app/logs
 
 # Switch to non-root user
 USER autotask

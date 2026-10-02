@@ -153,7 +153,7 @@ Why it is shaped this way:
   previous image untagged ("dangling"). `docker image prune -f` deletes dangling
   images, so the previous image must get the `:rollback` tag first or the
   rollback target is deleted.
-- **Prune every deploy.** Without it each release leaves a ~750 MB untagged image
+- **Prune every deploy.** Without it each release leaves the old image untagged (~300 MB; ~750 MB before the image was slimmed)
   behind; months of releases filled the host disk (one cleanup reclaimed 25 GB).
   `prune -f` removes only dangling images, never tagged or running ones.
 - **Compare OLD vs NEW.** An earlier two-step version tagged the *running* image

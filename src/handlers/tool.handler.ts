@@ -14,6 +14,7 @@ import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } f
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
+import { formatChoices, TimeGap } from '../utils/staff-tools.js';
 import { classifyTimeEntryWriteError } from '../utils/time-entry-errors.js';
 
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
@@ -1522,7 +1523,96 @@ export class AutotaskToolHandler {
           return { result: null, message: 'Could not determine the acting user. Provide resourceID, or call as an identified user (currentUser / gateway impersonation).' };
         }
         const r = await s.getMyDay(a.resourceID, a.date);
-        return { result: r, message: `${r.date}: ${r.totals.assignedTickets} assigned ticket(s), ${r.totals.timeEntries} time entr(ies) (${r.totals.hoursLogged}h logged), ${r.openTasks.length} open task(s)` };
+        const gaps = r.totals.missingTime ? ` — ${r.totals.missingTime} service-call ticket(s) with NO time logged: ${(r.missingTime as TimeGap[]).map((g) => g.ticketID).join(', ')}` : '';
+        return { result: r, message: `${r.date}: ${r.totals.assignedTickets} assigned ticket(s), ${r.totals.serviceCalls} service call(s), ${r.totals.openTodos} open To-Do(s), ${r.totals.timeEntries} time entr(ies) (${r.totals.hoursLogged}h logged), ${r.openTasks.length} open task(s)${gaps}` };
+      }],
+      ['autotask_start_work_on_ticket', async (a) => {
+        if (a.resourceID == null) {
+          return { result: null, message: 'Could not determine who is starting work. Provide resourceID, or call as an identified user (currentUser / gateway impersonation).' };
+        }
+        const r = await s.startWorkOnTicket({ ticketID: a.ticketID, resourceID: a.resourceID, roleID: a.roleID, status: a.status, takeOver: a.takeOver === true, dryRun: a.dryRun === true });
+        const t = r.ticketNumber ?? `ticket ${a.ticketID}`;
+        const next = `When you finish, log it with autotask_log_my_time (ticketID ${a.ticketID}, startDateTime ${r.startedAt}).`;
+        const assign = r.assignment === 'assigned_to_you' ? ' and assigned it to you' : r.assignment === 'taken_over' ? ' and reassigned it to you' : '';
+        const message = r.status === 'started' ? `Started ${t}: status → ${r.statusLabel}${assign}. ${next}`
+          : r.status === 'already_started' ? `${t} is already ${r.statusLabel} and assigned to you — nothing changed. ${next}`
+          : r.status === 'dry_run' ? `DRY RUN (nothing written): would set ${t} to ${r.statusLabel}${assign}.`
+          : r.status === 'invalid_status' ? `Status "${r.requested}" not found — nothing changed. Choices: ${formatChoices(r.choices ?? [])}`
+          : r.status === 'not_found' ? `Ticket ${a.ticketID} not found.`
+          : r.message ?? `${t}: ${r.status} — nothing changed.`;
+        return { result: r, message };
+      }],
+      ['autotask_add_ticket_update', async (a) => {
+        if (a.resourceID == null) {
+          return { result: null, message: 'Could not determine who is posting the update. Provide resourceID, or call as an identified user (currentUser / gateway impersonation).' };
+        }
+        const text = String(a.update ?? '').trim();
+        if (!text) return { result: null, message: 'update (the note text) is required — nothing written.' };
+        const visibility = a.visibility ?? 'internal';
+        if (!['internal', 'client', 'co-managed'].includes(visibility)) {
+          return { result: null, message: `visibility must be internal (default), client or co-managed — got "${visibility}". Nothing written.` };
+        }
+        const plan = await s.planTicketUpdate({ ticketID: a.ticketID, status: a.status, visibility, noteType: a.noteType });
+        if (!plan.ok) return { result: { status: plan.status, ...(plan.choices ? { choices: plan.choices } : {}) }, message: plan.message };
+
+        // Optional time entry — validated (role, work type) BEFORE any write.
+        const wantsTime = a.hoursWorked != null || (a.startDateTime && a.endDateTime);
+        let time: Parameters<typeof s.logTimeIdempotent>[0] | null = null;
+        let roleInfo: { roleName: string | null; roleSource: RoleSource | null } | null = null;
+        if (wantsTime) {
+          // summaryNotes is printed on the client's INVOICE. Reuse the update
+          // text only when the update itself is client-visible; an internal
+          // note must never leak onto an invoice by default.
+          const summaryNotes = a.summaryNotes ?? (visibility === 'client' ? text : null);
+          if (!summaryNotes) {
+            return { result: { status: 'summary_required' }, message: 'Logging time needs summaryNotes (client/invoice-facing) — this update is internal, so its text is not reused on the invoice. Nothing written.' };
+          }
+          const dateWorked = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked) ? a.dateWorked.slice(0, 10) : new Date().toISOString().slice(0, 10);
+          time = Object.fromEntries(Object.entries({
+            ticketID: a.ticketID, resourceID: a.resourceID, roleID: a.roleID, billingCodeID: a.billingCodeID,
+            hoursWorked: a.hoursWorked, startDateTime: a.startDateTime, endDateTime: a.endDateTime, offsetHours: a.offsetHours,
+            summaryNotes, internalNotes: a.internalNotes, dateWorked,
+          }).filter(([, v]) => v !== undefined)) as Parameters<typeof s.logTimeIdempotent>[0];
+          const role = await resolveTimeEntryRole(time);
+          if ('stop' in role) return role.stop;
+          roleInfo = role;
+          const badWorkType = await checkWorkType(time.billingCodeID);
+          if (badWorkType) return badWorkType;
+        }
+
+        const tn = plan.ticket.ticketNumber ?? `ticket ${a.ticketID}`;
+        const planned = {
+          ticketID: a.ticketID, ticketNumber: plan.ticket.ticketNumber,
+          note: { visibility, publish: plan.publish, noteType: plan.noteType, title: a.title ?? 'Update' },
+          time: time ? { hoursWorked: time.hoursWorked ?? null, startDateTime: time.startDateTime ?? null, endDateTime: time.endDateTime ?? null, roleID: time.roleID ?? null, roleName: roleInfo?.roleName ?? null, dateWorked: time.dateWorked } : null,
+          statusChange: plan.status ? { from: Number(plan.ticket.status), to: plan.status.value, label: plan.status.label } : null,
+        };
+        const steps = [`${visibility} note`, ...(time ? ['time entry'] : []), ...(plan.status ? [`status → ${plan.status.label}`] : [])];
+        if (a.dryRun === true) return { result: { status: 'dry_run', ...planned }, message: `DRY RUN (nothing written) on ${tn}: ${steps.join(' + ')}.` };
+
+        // Execute in order note → time → status, stopping at the first failure:
+        // never change status (e.g. Complete) after the time entry failed.
+        const done: { note?: { created: boolean; noteId: number }; time?: Awaited<ReturnType<typeof s.logTimeIdempotent>>; status?: { to: number; label: string } } = {};
+        const note = await s.postTicketNoteOnce(a.ticketID, { title: a.title ?? 'Update', description: text, noteType: plan.noteType, publish: plan.publish.value });
+        done.note = note;
+        if (time) {
+          const entry = time;
+          const written = await explainTimeEntryWrite(() => s.logTimeIdempotent(entry));
+          if ('stop' in written) {
+            return { result: { status: 'partial', ...planned, done, timeError: written.stop.result }, message: `${tn}: note ${note.created ? `posted (${note.noteId})` : `already posted (${note.noteId})`}, but the time entry was NOT logged — ${written.stop.message}${plan.status ? ' Status left unchanged.' : ''}` };
+          }
+          done.time = written.ok;
+        }
+        if (plan.status) {
+          await s.updateTicket(a.ticketID, { status: plan.status.value });
+          done.status = { to: plan.status.value, label: plan.status.label };
+        }
+        const bits = [
+          note.created ? `${visibility} note ${note.noteId} posted` : `note already posted (${note.noteId}) — not duplicated`,
+          ...(done.time ? [done.time.created ? `time entry ${done.time.id} logged` : `time entry already logged (${done.time.duplicateOf})`] : []),
+          ...(done.status ? [`status → ${done.status.label}`] : []),
+        ];
+        return { result: { status: 'updated', ...planned, done }, message: `${tn}: ${bits.join('; ')}.` };
       }],
       ['autotask_log_my_time', async (a) => {
         if (a.resourceID == null) {

@@ -1258,7 +1258,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_get_my_day',
-    description: 'The acting user\'s working picture for a date (default today): tickets assigned to them, the time they have already logged that day, and their open tasks. Built for a scheduled assistant to see what already exists and backfill only the gaps. Acts as the caller by default (currentUser) — or pass resourceID. Read-only.',
+    description: 'The acting user\'s working picture for a date (default today, UTC day): tickets assigned to them, the time they have already logged that day (split ticket/task/Regular Time), their open tasks, their service calls that day, their open To-Dos starting in the 7 days up to that day, and missingTime — one row per service-call ticket with NO time logged that day. Built for a scheduled assistant to see what already exists and backfill only the gaps. Acts as the caller by default (currentUser) — or pass resourceID. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1293,6 +1293,53 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       },
       required: ['summaryNotes']
     }
+  },
+  {
+    name: 'autotask_start_work_on_ticket',
+    description: 'Start working a ticket as the acting user: set its status to In Progress (or `status`) and, if it is UNASSIGNED, assign it to you with your default role. A ticket assigned to someone else is left untouched unless takeOver:true (nothing written; the assignee is named). Rerun-safe: already In Progress and yours → nothing written. Returns startedAt — pass it as startDateTime to autotask_log_my_time when you finish. Acts as the caller by default (currentUser).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'Ticket to start (numeric id)' },
+        status: { type: 'string', description: 'Working status, by label or numeric id (as a string). Default "In Progress". Unknown → the choices, nothing written.' },
+        takeOver: { type: 'boolean', description: 'Reassign a ticket that is assigned to someone else to you. Default false.' },
+        roleID: { type: 'number', description: 'Role for the assignment. Default: your default role.' },
+        resourceID: { type: 'number', description: 'Act as this resource. Omit to act as the calling user (currentUser).' },
+        currentUser: { type: 'boolean', description: 'Act as the calling user (default when resourceID is omitted).' },
+        dryRun: { type: 'boolean', description: 'Show the planned change without writing. Default false.' }
+      },
+      required: ['ticketID']
+    },
+    annotations: { title: 'Start work on ticket' }
+  },
+  {
+    name: 'autotask_add_ticket_update',
+    description: 'Post a progress update on a ticket in ONE call: a note, plus optionally a time entry and a status change. Everything is validated first (status label, note visibility, role, work type) — an invalid piece writes nothing. Runs note → time → status and stops at the first failure (the status is never changed after a failed time entry). Rerun-safe: the same note text within 24 h and the same time entry are not duplicated. The note is INTERNAL unless visibility is "client". Time needs summaryNotes (invoice-facing) unless the update is client-visible. Acts as the caller by default (currentUser).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketID: { type: 'number', description: 'Ticket to update (numeric id)' },
+        update: { type: 'string', description: 'The note text — what was done / found / next steps.' },
+        title: { type: 'string', description: 'Note title. Default "Update".' },
+        visibility: { type: 'string', enum: ['internal', 'client', 'co-managed'], description: 'Who sees the note. Default internal (internal users only). "client" also shows it in the client portal.' },
+        status: { type: 'string', description: 'Optional new ticket status, by label or numeric id (e.g. "Waiting Customer", "Complete"). Unknown → the choices, nothing written.' },
+        hoursWorked: { type: 'number', description: 'Optional: log this much time on the ticket (or give startDateTime + endDateTime).' },
+        startDateTime: { type: 'string', description: 'Optional time-entry start (ISO 8601), e.g. startedAt from autotask_start_work_on_ticket.' },
+        endDateTime: { type: 'string', description: 'Optional time-entry end (ISO 8601).' },
+        summaryNotes: { type: 'string', description: 'Time-entry summary — CLIENT- and INVOICE-facing. Required with time unless visibility is "client" (then the update text is used).' },
+        internalNotes: { type: 'string', description: 'Time-entry internal notes (not on the invoice).' },
+        dateWorked: { type: 'string', description: 'Time-entry date (YYYY-MM-DD). Default today (UTC).' },
+        roleID: { type: 'number', description: 'Time-entry role. Validated against your roles; default/sole role auto-fills.' },
+        billingCodeID: { type: 'number', description: 'Time-entry work type. Validated; omit for the default.' },
+        offsetHours: { type: 'number', description: 'Billing offset subtracted from worked time.' },
+        noteType: { type: 'number', description: 'Note type id. Default "Task Summary" (the human note type).' },
+        resourceID: { type: 'number', description: 'Act as this resource. Omit to act as the calling user (currentUser).' },
+        currentUser: { type: 'boolean', description: 'Act as the calling user (default when resourceID is omitted).' },
+        dryRun: { type: 'boolean', description: 'Validate and show the plan without writing. Default false.' }
+      },
+      required: ['ticketID', 'update']
+    },
+    annotations: { title: 'Add ticket update (note + time + status)' }
   },
   {
     name: 'autotask_get_time_entry',
@@ -5716,7 +5763,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, audit history, and the notification e-mails Autotask sent',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_notification_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_start_work_on_ticket', 'autotask_add_ticket_update', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_notification_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

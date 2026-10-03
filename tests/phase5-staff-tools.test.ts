@@ -11,7 +11,7 @@ import { AutotaskService } from '../src/services/autotask.service';
 import { AutotaskToolHandler } from '../src/handlers/tool.handler';
 import { TOOL_DEFINITIONS } from '../src/handlers/tool.definitions';
 import { Logger } from '../src/utils/logger';
-import { findDuplicateNote, matchPicklist, serviceCallTimeGaps, windowStart } from '../src/utils/staff-tools';
+import { findDuplicateNote, matchPicklist, serviceCallTimeGaps, addDays, defaultWorkDate, localDayWindow } from '../src/utils/staff-tools';
 import type { McpServerConfig } from '../src/types/mcp';
 
 const logger = new Logger('error');
@@ -74,9 +74,35 @@ describe('staff-tools helpers', () => {
     }]);
   });
 
-  test('windowStart: a 7-day window ending on the day', () => {
-    expect(windowStart('2026-10-02', 7)).toBe('2026-09-26T00:00:00Z');
-    expect(windowStart('2026-03-01', 1)).toBe('2026-03-01T00:00:00Z');
+  test('localDayWindow: local midnight-to-midnight as UTC, DST-aware', () => {
+    expect(localDayWindow('2026-10-02', 'America/New_York')).toEqual({ start: '2026-10-02T04:00:00Z', end: '2026-10-03T03:59:59Z' }); // EDT
+    expect(localDayWindow('2026-01-15', 'America/New_York')).toEqual({ start: '2026-01-15T05:00:00Z', end: '2026-01-16T04:59:59Z' }); // EST
+    expect(localDayWindow('2026-10-02', 'Etc/UTC')).toEqual({ start: '2026-10-02T00:00:00Z', end: '2026-10-02T23:59:59Z' });
+    expect(addDays('2026-03-01', -6)).toBe('2026-02-23');
+  });
+
+  test('defaultWorkDate: explicit > local date of the start > local today (never the UTC date)', () => {
+    const tz = 'America/New_York';
+    const eveningUtc = new Date('2026-10-02T01:30:00Z'); // 9:30 pm Oct 1 in New York
+    expect(defaultWorkDate({ timeZone: tz, now: eveningUtc })).toBe('2026-10-01');
+    expect(defaultWorkDate({ dateWorked: '2026-09-28', timeZone: tz, now: eveningUtc })).toBe('2026-09-28');
+    expect(defaultWorkDate({ startDateTime: '2026-09-30T23:30:00-04:00', timeZone: tz, now: eveningUtc })).toBe('2026-09-30'); // backfill stays on its day
+    expect(defaultWorkDate({ startDateTime: '2026-10-01T03:30:00Z', timeZone: tz, now: eveningUtc })).toBe('2026-09-30');
+    expect(defaultWorkDate({ startDateTime: '2026-09-29T19:00', timeZone: tz, now: eveningUtc })).toBe('2026-09-29'); // naive = local wall clock
+  });
+
+  test('validTimeZone: Windows names map, junk is rejected (never thrown later)', () => {
+    const { validTimeZone, defaultTimeZone } = require('../src/utils/timezone');
+    expect(validTimeZone('Eastern Standard Time')).toBe('America/New_York');
+    expect(validTimeZone('America/Chicago')).toBe('America/Chicago');
+    expect(validTimeZone('Not/AZone')).toBeNull();
+    expect(validTimeZone(undefined)).toBeNull();
+    const prev = process.env.AUTOTASK_DEFAULT_TIMEZONE;
+    process.env.AUTOTASK_DEFAULT_TIMEZONE = 'Pacific Standard Time';
+    expect(defaultTimeZone()).toBe('America/Los_Angeles');
+    process.env.AUTOTASK_DEFAULT_TIMEZONE = 'garbage';
+    expect(defaultTimeZone()).toBe('America/New_York');
+    if (prev === undefined) delete process.env.AUTOTASK_DEFAULT_TIMEZONE; else process.env.AUTOTASK_DEFAULT_TIMEZONE = prev;
   });
 });
 
@@ -103,7 +129,9 @@ describe('getMyDay — service calls, To-Dos, gaps, sequential', () => {
     jest.spyOn(s, 'searchTickets').mockResolvedValue({ items: [], page: 1, pageSize: 100, hasMore: false });
     jest.spyOn(s, 'searchTasks').mockResolvedValue({ items: [], page: 1, pageSize: 100, hasMore: false });
 
+    jest.spyOn(s, 'resolveResourceTimeZone').mockResolvedValue('America/New_York'); // the tech's location tz
     const r = await s.getMyDay(5, '2026-10-02');
+    expect(r.timeZone).toBe('America/New_York');
     expect(maxInFlight).toBe(1);
     expect(r.serviceCalls).toEqual([expect.objectContaining({ serviceCallID: 7, ticketIDs: [100, 101], durationHours: 2 })]);
     expect(r.missingTime).toEqual([expect.objectContaining({ ticketID: 101, serviceCallIDs: [7], reason: 'service_call_without_time' })]);
@@ -112,8 +140,8 @@ describe('getMyDay — service calls, To-Dos, gaps, sequential', () => {
 
     const call = (e: string) => query.mock.calls.find((c) => c[0] === e) as any[];
     expect(call('ServiceCalls')[1]).toEqual([
-      { op: 'gte', field: 'startDateTime', value: '2026-10-02T00:00:00Z' },
-      { op: 'lte', field: 'startDateTime', value: '2026-10-02T23:59:59Z' },
+      { op: 'gte', field: 'startDateTime', value: '2026-10-02T04:00:00Z' },
+      { op: 'lte', field: 'startDateTime', value: '2026-10-03T03:59:59Z' },
     ]);
     expect(call('ServiceCallTickets')[1]).toEqual([{ op: 'in', field: 'serviceCallID', value: [7, 8] }]);
     expect(call('ServiceCallTicketResources')[1]).toEqual([
@@ -123,10 +151,25 @@ describe('getMyDay — service calls, To-Dos, gaps, sequential', () => {
     expect(call('CompanyToDos')[1]).toEqual([
       { op: 'eq', field: 'assignedToResourceID', value: 5 },
       { op: 'notExist', field: 'completedDate' },
-      { op: 'gte', field: 'startDateTime', value: '2026-09-26T00:00:00Z' }, // 7-day window, not every stale open To-Do
-      { op: 'lte', field: 'startDateTime', value: '2026-10-02T23:59:59Z' },
+      { op: 'gte', field: 'startDateTime', value: '2026-09-26T04:00:00Z' }, // 7-day window, not every stale open To-Do
+      { op: 'lte', field: 'startDateTime', value: '2026-10-03T03:59:59Z' },
     ]);
     expect(r.todoWindowDays).toBe(7);
+  });
+
+  test('an explicit timeZone wins over the location tz; no date → TODAY in that zone', async () => {
+    const query = jest.fn(async () => []);
+    const s = mkService({ query });
+    jest.spyOn(s, 'searchTickets').mockResolvedValue({ items: [], page: 1, pageSize: 100, hasMore: false });
+    jest.spyOn(s, 'searchTasks').mockResolvedValue({ items: [], page: 1, pageSize: 100, hasMore: false });
+    const loc = jest.spyOn(s, 'resolveResourceTimeZone').mockResolvedValue('America/New_York');
+    const r = await s.getMyDay(5, '2026-10-02', 'Pacific Standard Time');
+    expect(loc).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ timeZone: 'America/Los_Angeles', dayWindow: { start: '2026-10-02T07:00:00Z', end: '2026-10-03T06:59:59Z' } });
+    jest.useFakeTimers({ now: new Date('2026-10-02T02:00:00Z') }); // 10 pm Oct 1 in New York
+    try {
+      expect((await s.getMyDay(5, undefined, 'America/New_York')).date).toBe('2026-10-01');
+    } finally { jest.useRealTimers(); }
   });
 
   test('no service calls in the window → no further service-call queries', async () => {
@@ -249,6 +292,13 @@ describe('autotask_add_ticket_update', () => {
     const filter = (query.mock.calls[0] as any[])[1];
     expect(filter[0]).toEqual({ op: 'eq', field: 'ticketID', value: 1 });
     expect(filter[1]).toMatchObject({ op: 'gte', field: 'createDateTime' });
+  });
+
+  test('time with an evening start (UTC = next day) is dated on the LOCAL day', async () => {
+    const { s, call, time } = mk();
+    jest.spyOn(s, 'resolveResourceTimeZone').mockResolvedValue('America/New_York');
+    await call({ update: 'x', summaryNotes: 'y', startDateTime: '2026-10-02T01:00:00Z', endDateTime: '2026-10-02T02:00:00Z' }); // 9–10 pm Oct 1 EDT
+    expect(time).toHaveBeenCalledWith(expect.objectContaining({ dateWorked: '2026-10-01' }));
   });
 
   test('unknown status / bad visibility / dry run → nothing written', async () => {

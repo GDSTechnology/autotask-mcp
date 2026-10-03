@@ -8,6 +8,7 @@
 // unknown label returns the active choices so nothing is written on a guess.
 
 import type { PicklistValue } from '../services/picklist.cache';
+import { hasOffset, zonedLocalToUTC } from './timezone';
 
 export interface PicklistChoice { value: number; label: string }
 
@@ -117,19 +118,51 @@ export interface StartWorkResult {
   plannedChanges?: Record<string, unknown>;
 }
 
-/** UTC bounds of a YYYY-MM-DD day, as Autotask datetime filter values. */
-export function utcDayBounds(day: string): { start: string; end: string } {
-  return { start: `${day}T00:00:00Z`, end: `${day}T23:59:59Z` };
+const isoSeconds = (d: Date): string => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/** YYYY-MM-DD shifted by n days (calendar arithmetic, no timezone). */
+export function addDays(day: string, n: number): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** YYYY-MM-DD of an instant as seen in a timezone. */
+export function dayIn(instant: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(instant);
+}
+
+/**
+ * The UTC instants of a LOCAL day's 00:00:00 and 23:59:59 in `timeZone`
+ * (DST-aware), as Autotask datetime filter values. A tech in New York working
+ * 7–11 pm has those calls on the same local day, not the next UTC one.
+ */
+export function localDayWindow(day: string, timeZone: string): { start: string; end: string } {
+  return {
+    start: isoSeconds(zonedLocalToUTC(`${day}T00:00:00`, timeZone)),
+    end: isoSeconds(zonedLocalToUTC(`${day}T23:59:59`, timeZone)),
+  };
 }
 
 /** my_day shows open To-Dos starting in this many days up to (and including) the day. */
 export const TODO_WINDOW_DAYS = 7;
 
-/** UTC start of the day `days - 1` days before `day` (a `days`-long window ending on `day`). */
-export function windowStart(day: string, days: number): string {
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() - (days - 1));
-  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+/**
+ * The date a time entry belongs to when the caller didn't give dateWorked:
+ * the LOCAL date of its start time if there is one (a backfill of yesterday's
+ * work stays on yesterday), else local today — never the UTC date, which is
+ * already tomorrow for an evening entry in the Americas.
+ * A naive start ("2026-10-01T19:00") is already local wall-clock: its date part.
+ */
+export function defaultWorkDate(opts: { dateWorked?: unknown; startDateTime?: unknown; timeZone: string; now?: Date }): string {
+  if (typeof opts.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(opts.dateWorked)) return opts.dateWorked.slice(0, 10);
+  if (typeof opts.startDateTime === 'string' && /^\d{4}-\d{2}-\d{2}/.test(opts.startDateTime)) {
+    const start = opts.startDateTime.trim();
+    if (!hasOffset(start)) return start.slice(0, 10);
+    const at = new Date(start);
+    if (!Number.isNaN(at.getTime())) return dayIn(at, opts.timeZone);
+  }
+  return dayIn(opts.now ?? new Date(), opts.timeZone);
 }
 
 export interface MyServiceCall {

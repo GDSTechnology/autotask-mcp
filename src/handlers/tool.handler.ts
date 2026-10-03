@@ -14,7 +14,7 @@ import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } f
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
-import { formatChoices, TimeGap } from '../utils/staff-tools.js';
+import { defaultWorkDate, formatChoices, TimeGap } from '../utils/staff-tools.js';
 import { classifyTimeEntryWriteError } from '../utils/time-entry-errors.js';
 
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
@@ -26,7 +26,7 @@ const DRY_RUN_FIRST_TOOLS = new Set<string>([
   'autotask_delete_task_with_time',
 ]);
 import { applyBillingTreatment } from '../utils/billing-treatment.js';
-import { normalizeTimestamp, durationHours } from '../utils/timezone.js';
+import { defaultTimeZone, durationHours, normalizeTimestamp, validTimeZone } from '../utils/timezone.js';
 import { calculateProjectSchedule } from '../utils/project-schedule.js';
 import { generateProjectLaborPlan } from '../utils/project-labor-plan.js';
 import { generateSlaFramework } from '../utils/sla-framework.js';
@@ -1007,6 +1007,16 @@ export class AutotaskToolHandler {
         return { stop: { result: { status: c.status, autotaskError: c.autotaskError }, message: c.reason } };
       }
     };
+    // Default dateWorked for the "my" time tools: the LOCAL date (of the start
+    // time when given, else today) in timeZone → the resource's location
+    // timezone → the tenant default. The UTC date is already tomorrow for an
+    // evening entry in the Americas.
+    const workDate = async (a: { dateWorked?: unknown; startDateTime?: unknown; timeZone?: string; resourceID?: number }): Promise<string> => {
+      const explicit = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked);
+      const tz = explicit ? defaultTimeZone()
+        : validTimeZone(a.timeZone) ?? (a.resourceID != null ? await s.resolveResourceTimeZone(a.resourceID) : undefined) ?? defaultTimeZone();
+      return defaultWorkDate({ dateWorked: a.dateWorked, startDateTime: a.startDateTime, timeZone: tz });
+    };
     // Service-call resource assignments (ticket/task) have NO role field in
     // Autotask (entityInformation: resourceID + serviceCallTicketID/TaskID only).
     // A roleID from an older caller is dropped, and the result says so.
@@ -1522,7 +1532,7 @@ export class AutotaskToolHandler {
         if (a.resourceID == null) {
           return { result: null, message: 'Could not determine the acting user. Provide resourceID, or call as an identified user (currentUser / gateway impersonation).' };
         }
-        const r = await s.getMyDay(a.resourceID, a.date);
+        const r = await s.getMyDay(a.resourceID, a.date, a.timeZone);
         const gaps = r.totals.missingTime ? ` — ${r.totals.missingTime} service-call ticket(s) with NO time logged: ${(r.missingTime as TimeGap[]).map((g) => g.ticketID).join(', ')}` : '';
         return { result: r, message: `${r.date}: ${r.totals.assignedTickets} assigned ticket(s), ${r.totals.serviceCalls} service call(s), ${r.totals.openTodos} open To-Do(s), ${r.totals.timeEntries} time entr(ies) (${r.totals.hoursLogged}h logged), ${r.openTasks.length} open task(s)${gaps}` };
       }],
@@ -1567,11 +1577,11 @@ export class AutotaskToolHandler {
           if (!summaryNotes) {
             return { result: { status: 'summary_required' }, message: 'Logging time needs summaryNotes (client/invoice-facing) — this update is internal, so its text is not reused on the invoice. Nothing written.' };
           }
-          const dateWorked = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked) ? a.dateWorked.slice(0, 10) : new Date().toISOString().slice(0, 10);
+          const dateWorked = await workDate(a);
           time = Object.fromEntries(Object.entries({
             ticketID: a.ticketID, resourceID: a.resourceID, roleID: a.roleID, billingCodeID: a.billingCodeID,
             hoursWorked: a.hoursWorked, startDateTime: a.startDateTime, endDateTime: a.endDateTime, offsetHours: a.offsetHours,
-            summaryNotes, internalNotes: a.internalNotes, dateWorked,
+            summaryNotes, internalNotes: a.internalNotes, dateWorked, timeZone: a.timeZone,
           }).filter(([, v]) => v !== undefined)) as Parameters<typeof s.logTimeIdempotent>[0];
           const role = await resolveTimeEntryRole(time);
           if ('stop' in role) return role.stop;
@@ -1644,9 +1654,7 @@ export class AutotaskToolHandler {
           const badWorkType = await checkWorkType(a.billingCodeID);
           if (badWorkType) return badWorkType;
         }
-        const dateWorked = typeof a.dateWorked === 'string' && /^\d{4}-\d{2}-\d{2}/.test(a.dateWorked)
-          ? a.dateWorked.slice(0, 10)
-          : new Date().toISOString().slice(0, 10);
+        const dateWorked = await workDate(a);
         const written = await explainTimeEntryWrite(() => s.logTimeIdempotent({ ...a, dateWorked }));
         if ('stop' in written) return written.stop;
         const r = written.ok;

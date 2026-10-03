@@ -152,6 +152,7 @@ describe('autotask_create_webhook handler message', () => {
     const res = await new AutotaskToolHandler(s, logger).callTool('autotask_create_webhook', { entity: 'tickets', ...base });
     const text = res.content[0].text;
     expect(JSON.parse(text).message).toMatch(/excluded resources: 30683921 \(mcp-api-user\); secret from AUTOTASK_WEBHOOK_SECRET; nothing written/);
+    expect(JSON.parse(text).message).toMatch(/Receiver: verify the signature with the n8n Code node in https:\/\/github\.com\/.*docs\/N8N_WEBHOOKS\.md/);
     expect(text).not.toContain(SECRET);
   });
 });

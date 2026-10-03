@@ -20,6 +20,9 @@ import { classifyTimeEntryWriteError } from '../utils/time-entry-errors.js';
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
 // confirm gate treats an omitted dryRun as a dry-run (plan only, no confirm),
 // and only requires confirm:true on the actual execution (dryRun:false).
+/** Tested n8n receiver (signature check) for webhooks this MCP creates. */
+const N8N_RECEIVER_GUIDE = 'https://github.com/GDSTechnology/autotask-mcp/blob/main/docs/N8N_WEBHOOKS.md';
+
 const DRY_RUN_FIRST_TOOLS = new Set<string>([
   'autotask_delete_time_entry',
   'autotask_delete_task',
@@ -1755,7 +1758,10 @@ export class AutotaskToolHandler {
         const msg = r.status === 'dry_run' ? `Dry run: would create a ${a.entity} webhook → ${a.webhookUrl} with ${(r.plannedFields as unknown[])?.length ?? 0} field(s)${exText}; secret from ${a.secretKey ? 'the argument (hidden)' : 'AUTOTASK_WEBHOOK_SECRET'}; nothing written.${warn}`
           : r.status === 'validation_failed' ? `Validation failed: ${JSON.stringify(r.errors ?? r.detail)}`
           : `Created ${a.entity} webhook ${r.webhookID}` + ((r.errors as any[])?.length ? ` with ${(r.errors as any[]).length} child error(s)` : '');
-        return { result: r, message: msg };
+        // The receiver must verify X-Hook-Signature; point the builder of the
+        // n8n flow at the tested snippet rather than a hand-rolled HMAC.
+        const guide = r.status === 'validation_failed' ? '' : ` Receiver: verify the signature with the n8n Code node in ${N8N_RECEIVER_GUIDE}.`;
+        return { result: { ...r, receiverGuide: N8N_RECEIVER_GUIDE }, message: msg + guide };
       }],
       ['autotask_update_webhook', async (a) => {
         const r = await s.updateWebhook(a.entity, a.id, {

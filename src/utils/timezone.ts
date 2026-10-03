@@ -9,6 +9,26 @@
  */
 import { windowsToIana } from './windows-timezones.js';
 
+/**
+ * The tenant's fallback timezone for day boundaries when a resource's own
+ * location timezone can't be resolved: AUTOTASK_DEFAULT_TIMEZONE (IANA or
+ * Windows name), else America/New_York.
+ */
+export function defaultTimeZone(): string {
+  return validTimeZone(process.env.AUTOTASK_DEFAULT_TIMEZONE) ?? 'America/New_York';
+}
+
+/**
+ * An IANA or Windows timezone name → a VALID IANA id, or null. windowsToIana
+ * passes any "x/y" through unchecked; an invalid zone would make Intl throw
+ * deep inside a read, so it is checked here once.
+ */
+export function validTimeZone(tz: string | undefined | null): string | null {
+  const iana = windowsToIana(tz);
+  if (!iana) return null;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: iana }); return iana; } catch { return null; }
+}
+
 /** True when the ISO string already carries a UTC offset (Z or ±HH:MM). */
 export function hasOffset(iso: string): boolean {
   return /(?:Z|[+-]\d{2}:?\d{2})$/.test(iso.trim());

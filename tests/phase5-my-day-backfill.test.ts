@@ -99,7 +99,7 @@ describe('handler wiring (#42)', () => {
     const handler = new AutotaskToolHandler(service, logger);
     jest.spyOn(handler as any, 'resolveCaller').mockResolvedValue({ status: 'resolved', resource: { id: 5, name: 'Me' } });
     await handler.callTool('autotask_get_my_day', {});
-    expect(myDay).toHaveBeenCalledWith(5, undefined);
+    expect(myDay).toHaveBeenCalledWith(5, undefined, undefined); // (resourceID, date, timeZone)
   });
 
   test('log_my_time reports a skipped duplicate', async () => {

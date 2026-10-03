@@ -53,7 +53,7 @@ import { computeTicketsNeedingScheduling, TicketsNeedingSchedulingResult, Servic
 import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket-throughput';
 import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhookPayload, validateWebhookCreate, buildWebhookFieldRow, WebhookParams, WebhookFieldSpec } from '../utils/webhook-entities';
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
-import { normalizeTimestamp } from '../utils/timezone';
+import { defaultTimeZone, normalizeTimestamp, validTimeZone } from '../utils/timezone';
 import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { RoleChoice, RoleSource } from '../utils/time-entry-role';
@@ -114,7 +114,7 @@ import { FieldInfo, PicklistValue } from './picklist.cache';
 import {
   findDuplicateNote, formatChoices, hoursBetween, HUMAN_NOTE_TYPE_LABEL, matchPicklist, MyServiceCall,
   NoteVisibility, PicklistChoice, PUBLISH_LABELS, ServiceCallRow, serviceCallTimeGaps, StartWorkResult,
-  TODO_WINDOW_DAYS, utcDayBounds, windowStart,
+  TODO_WINDOW_DAYS, addDays, dayIn, localDayWindow,
 } from '../utils/staff-tools';
 
 /**
@@ -1472,11 +1472,6 @@ export class AutotaskService {
   // logged" and to write time idempotently — not the agenda-matching reasoning.
   // =====================================================
 
-  /** Local YYYY-MM-DD for a date (UTC), used to attribute the day. */
-  private static ymd(d: Date): string {
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-  }
-
   /**
    * A resource's working picture for a date (default today): the tickets
    * assigned to them, the time they've already logged that day, their open
@@ -1487,14 +1482,20 @@ export class AutotaskService {
    * Fail-soft — each section is independent; a failed section is recorded
    * under `errors` rather than failing the whole read. Sections run ONE AT A
    * TIME: a parallel fan-out per call is the burst pattern #149 removed.
-   * The day is a UTC day (Autotask datetimes are UTC).
+   *
+   * The day is the resource's LOCAL day — `timeZone`, else their location
+   * timezone, else the tenant default — so evening work isn't pushed onto the
+   * next UTC day. "Today" is local today; datetimes are windowed on local
+   * midnight-to-midnight; time entries match on dateWorked (already a date).
    */
   async getMyDay(
     resourceID: number,
-    date?: string
+    date?: string,
+    timeZone?: string
   ): Promise<Record<string, any>> {
-    const day = date && /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : AutotaskService.ymd(new Date());
-    const { start: dayStart, end: dayEnd } = utcDayBounds(day);
+    const tz = validTimeZone(timeZone) ?? (await this.resolveResourceTimeZone(resourceID)) ?? defaultTimeZone();
+    const day = date && /^\d{4}-\d{2}-\d{2}/.test(date) ? date.slice(0, 10) : dayIn(new Date(), tz);
+    const { start: dayStart, end: dayEnd } = localDayWindow(day, tz);
     const errors: Array<{ section: string; error: string }> = [];
     const section = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
       try { return await fn(); } catch (e) { errors.push({ section: name, error: e instanceof Error ? e.message : String(e) }); return undefined; }
@@ -1514,7 +1515,7 @@ export class AutotaskService {
     const todos = await section('todos', () => http.query<Record<string, unknown>>('CompanyToDos', [
       { op: 'eq', field: 'assignedToResourceID', value: resourceID },
       { op: 'notExist', field: 'completedDate' },
-      { op: 'gte', field: 'startDateTime', value: windowStart(day, TODO_WINDOW_DAYS) },
+      { op: 'gte', field: 'startDateTime', value: localDayWindow(addDays(day, -(TODO_WINDOW_DAYS - 1)), tz).start },
       { op: 'lte', field: 'startDateTime', value: dayEnd },
     ], { maxRecords: 100 }));
 
@@ -1536,6 +1537,8 @@ export class AutotaskService {
     return {
       resourceID,
       date: day,
+      timeZone: tz,
+      dayWindow: { start: dayStart, end: dayEnd },
       assignedTickets: assignedTickets ?? [],
       timeEntries: entries,
       ticketTime,
@@ -6846,7 +6849,7 @@ export class AutotaskService {
 
     const resources: AwtResourceResult[] = [];
     for (const resourceID of opts.resourceIDs) {
-      const tz = opts.timeZone ?? (await this.resolveResourceTimeZone(resourceID)) ?? 'America/New_York';
+      const tz = validTimeZone(opts.timeZone) ?? (await this.resolveResourceTimeZone(resourceID)) ?? defaultTimeZone();
       // Sequential, never Promise.all: the API user is shared by every caller
       // (n8n, ChatGPT, automations), and a parallel burst trips Autotask's
       // per-integration concurrent-request 429 for all of them.

@@ -1258,13 +1258,14 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_get_my_day',
-    description: 'The acting user\'s working picture for a date (default today, UTC day): tickets assigned to them, the time they have already logged that day (split ticket/task/Regular Time), their open tasks, their service calls that day, their open To-Dos starting in the 7 days up to that day, and missingTime — one row per service-call ticket with NO time logged that day. Built for a scheduled assistant to see what already exists and backfill only the gaps. Acts as the caller by default (currentUser) — or pass resourceID. Read-only.',
+    description: 'The acting user\'s working picture for a date (default today in your local timezone): tickets assigned to them, the time they have already logged that day (split ticket/task/Regular Time), their open tasks, their service calls that day, their open To-Dos starting in the 7 days up to that day, and missingTime — one row per service-call ticket with NO time logged that day. Built for a scheduled assistant to see what already exists and backfill only the gaps. Acts as the caller by default (currentUser) — or pass resourceID. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
         resourceID: { type: 'number', description: 'Whose day to read. Omit to use the calling user (currentUser).' },
         currentUser: { type: 'boolean', description: 'Read the calling user\'s day (default when resourceID is omitted).' },
-        date: { type: 'string', description: 'Day to report (YYYY-MM-DD). Defaults to today (UTC).' }
+        date: { type: 'string', description: 'Day to report (YYYY-MM-DD). Defaults to today in your local timezone.' },
+        timeZone: { type: 'string', description: 'IANA or Windows timezone for the day boundaries. Default: your location timezone (else the tenant default).' }
       },
       required: []
     },
@@ -1278,7 +1279,8 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       properties: {
         ticketID: { type: 'number', description: 'Ticket to log against (omit for a task or Regular Time)' },
         taskID: { type: 'number', description: 'Project task to log against (project time logs against a task)' },
-        dateWorked: { type: 'string', description: 'Date worked (YYYY-MM-DD). Defaults to today (UTC).' },
+        dateWorked: { type: 'string', description: 'Date worked (YYYY-MM-DD). Default: the local date of startDateTime, else today, in your local timezone.' },
+        timeZone: { type: 'string', description: 'IANA ("America/New_York") or Windows ("Eastern Standard Time") timezone for the local day and for start/end given without an offset. Default: your location timezone.' },
         hoursWorked: { type: 'number', description: 'Hours worked (or provide startDateTime/endDateTime)' },
         startDateTime: { type: 'string', description: 'Start time (ISO 8601); alternative to hoursWorked' },
         endDateTime: { type: 'string', description: 'End time (ISO 8601); alternative to hoursWorked' },
@@ -1328,7 +1330,8 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         endDateTime: { type: 'string', description: 'Optional time-entry end (ISO 8601).' },
         summaryNotes: { type: 'string', description: 'Time-entry summary — CLIENT- and INVOICE-facing. Required with time unless visibility is "client" (then the update text is used).' },
         internalNotes: { type: 'string', description: 'Time-entry internal notes (not on the invoice).' },
-        dateWorked: { type: 'string', description: 'Time-entry date (YYYY-MM-DD). Default today (UTC).' },
+        dateWorked: { type: 'string', description: 'Time-entry date (YYYY-MM-DD). Default: the local date of startDateTime, else today, in your local timezone.' },
+        timeZone: { type: 'string', description: 'IANA ("America/New_York") or Windows ("Eastern Standard Time") timezone for the local day and for start/end given without an offset. Default: your location timezone.' },
         roleID: { type: 'number', description: 'Time-entry role. Validated against your roles; default/sole role auto-fills.' },
         billingCodeID: { type: 'number', description: 'Time-entry work type. Validated; omit for the default.' },
         offsetHours: { type: 'number', description: 'Billing offset subtracted from worked time.' },

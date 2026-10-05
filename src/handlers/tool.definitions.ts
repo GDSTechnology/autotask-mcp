@@ -1045,8 +1045,62 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_ticket_by_number',
+    description: 'READ-ONLY. The complete ticket by number (T20261005.0123 — the T is optional) or ID, fully resolved: every picklist labelled (status, priority, queue, source, ticket type, issue/sub-issue type, SLA, category, creator type) and every reference named — company, contact and created-by contact (name, email, active), assigned/creator/completed-by/last-activity resources, role, contract, opportunity, configuration item, work type, location, project, problem ticket — plus UDFs (list values labelled), the full description, and a direct Autotask link. For audits: pair with autotask_get_ticket_change_history and autotask_get_ticket_email_context.',
+    annotations: { title: 'Get ticket (full, resolved)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketNumber: { type: 'string', description: 'Ticket number, e.g. T20261005.0123 (T optional, case-insensitive)' },
+        ticketID: { type: 'number', description: 'Numeric ticket ID (alternative to ticketNumber)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_get_ticket_change_history',
+    description: 'READ-ONLY. Who changed what on a ticket, oldest first: each TicketHistory event parsed into field / from / to ("Account changed from A to B" → field Account), with the actor named and classified — system (resource 4: workflow/triage rules, notifications), mcp-api-user (this MCP\'s API user, i.e. automation writing through it) or resource (a person). Timestamp-only events (Last Activity Date, Last Tracked Modification Date) are hidden by default and counted. Use it to find which automation changed the account, contact, queue, priority or status.',
+    annotations: { title: 'Get ticket change history (parsed)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketNumber: { type: 'string', description: 'Ticket number, e.g. T20261005.0123' },
+        ticketID: { type: 'number', description: 'Numeric ticket ID (alternative to ticketNumber)' },
+        includeTimestampOnly: { type: 'boolean', description: 'Include Last Activity / Last Tracked Modification date events. Default false.' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_get_ticket_email_context',
+    description: 'READ-ONLY. Where an email-created ticket came from, from the ORIGINAL message Autotask\'s email processor attached to the ticket ("Originating Email", message/rfc822): From (display name + address), Reply-To (and whether it differs from From), To, Cc, Subject, Date, Message-ID, Return-Path, Authentication-Results / ARC (SPF, DKIM, DMARC), Received-SPF, DKIM signing domains, the plain-text body (or text from HTML), and the MIME parts. Also the ticket source and creator (contact or resource). When no original message is attached it says so and why. Not exposed by the Autotask API: which mailbox received it and which email-processor rule created the ticket.',
+    annotations: { title: 'Get ticket email context', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketNumber: { type: 'string', description: 'Ticket number, e.g. T20261005.0123' },
+        ticketID: { type: 'number', description: 'Numeric ticket ID (alternative to ticketNumber)' },
+        maxBodyChars: { type: 'number', description: 'Body text cap (default 8000, max 50000)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_get_picklists',
+    description: 'READ-ONLY. Active values (value + label, and parentValue for dependent lists like subIssueType) of several picklist fields of an entity in ONE call, e.g. { entity: "Tickets", fields: ["queueID", "status", "priority", "source"] }. Omit fields for every picklist on the entity. Unknown and non-picklist field names are reported, not errors.',
+    annotations: { title: 'Get picklists (several fields)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Entity, e.g. Tickets, Companies, Contacts, TicketNotes' },
+        fields: { type: 'array', items: { type: 'string' }, description: 'Picklist field names. Omit for all picklists on the entity.' }
+      },
+      required: ['entity']
+    }
+  },
+  {
     name: 'autotask_search_ticket_history',
-    description: 'Get the audit trail of field changes for a ticket (status transitions, assignment changes, priority edits, etc.). Use this to answer questions like "when did this ticket move from In Progress to Waiting Customer" or "who changed the priority". Returns entries ordered by Autotask; sort/filter client-side if needed.',
+    description: 'Get the audit trail of field changes for a ticket (status transitions, assignment changes, priority edits, etc.) as RAW TicketHistory rows. For parsed field/from/to with named, classified actors use autotask_get_ticket_change_history. Returns entries ordered by Autotask; sort/filter client-side if needed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -5754,7 +5808,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
+    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',
@@ -5766,7 +5820,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, audit history, and the notification e-mails Autotask sent',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_start_work_on_ticket', 'autotask_add_ticket_update', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_notification_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_get_ticket_by_number', 'autotask_get_ticket_change_history', 'autotask_get_ticket_email_context', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_start_work_on_ticket', 'autotask_add_ticket_update', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_notification_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

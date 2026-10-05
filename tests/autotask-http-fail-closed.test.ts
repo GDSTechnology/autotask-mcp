@@ -113,6 +113,16 @@ describe('get() — single-entity read fails closed on payload anomaly', () => {
     mockFetch({ status: 200, body: { item: null } });
     await expect(client().get('Tasks', 999999999)).resolves.toBeNull();
   });
+
+  it('unwraps a by-id GET answered in the QUERY shape { items: [record], pageDetails } (TicketAttachments, verified live)', async () => {
+    mockFetch({ status: 200, body: { items: [{ id: 170394, ticketID: 209069, data: 'QUJD' }], pageDetails: { count: 1 } } });
+    await expect(client().get('TicketAttachments', 170394)).resolves.toEqual({ id: 170394, ticketID: 209069, data: 'QUJD' });
+  });
+
+  it('an empty { items: [], pageDetails } by-id GET is not-found (null), not an empty wrapper', async () => {
+    mockFetch({ status: 200, body: { items: [], pageDetails: { count: 0 } } });
+    await expect(client().get('TicketAttachments', 1)).resolves.toBeNull();
+  });
 });
 
 describe('query() — collection read fails closed on payload anomaly', () => {

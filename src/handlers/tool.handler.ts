@@ -14,7 +14,7 @@ import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } f
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
-import { defaultWorkDate, formatChoices, TimeGap } from '../utils/staff-tools.js';
+import { defaultWorkDate, formatChoices, matchPicklist, TimeGap } from '../utils/staff-tools.js';
 import { classifyTimeEntryWriteError } from '../utils/time-entry-errors.js';
 
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
@@ -1010,6 +1010,15 @@ export class AutotaskToolHandler {
         return { stop: { result: { status: c.status, autotaskError: c.autotaskError }, message: c.reason } };
       }
     };
+    // One-line summary of an identity search: count, top match and its evidence, duplicate clusters.
+    const identityMessage = (noun: string, r: Record<string, unknown>): string => {
+      const cands = (r.candidates ?? []) as Array<{ id: number; companyName?: string | null; name?: string; evidence: Array<{ kind: string }>; conflicts?: Array<{ detail: string }> }>;
+      const cl = (r.clusters ?? []) as unknown[];
+      const top = cands[0];
+      const topText = top ? ` Top: ${top.id} ${top.companyName ?? top.name ?? ''} (${top.evidence.map((e) => e.kind).join(' + ')})${top.conflicts?.length ? ` — conflicts: ${top.conflicts.map((c) => c.detail).join('; ')}` : ''}.` : '';
+      const dom = r.domain as { freeMail?: boolean; note?: string } | undefined;
+      return `READ-ONLY: ${cands.length} ${noun} with matching evidence.${topText}${cl.length ? ` ${cl.length} duplicate cluster(s).` : ''}${dom?.freeMail ? ` ${dom.note}` : ''}`;
+    };
     // Default dateWorked for the "my" time tools: the LOCAL date (of the start
     // time when given, else today) in timeZone → the resource's location
     // timezone → the tenant default. The UTC date is already tomorrow for an
@@ -1107,7 +1116,58 @@ export class AutotaskToolHandler {
 
       // Companies
       ['autotask_search_companies', async (a) => {
-        return paged(await s.searchCompanies(a), 'companies');
+        // Identity mode (read-only, evidence per match) when any identity field is given.
+        const identity = [a.name, a.webDomain, a.domain, a.emailDomain, a.phone, a.companyNumber, a.companyType].some((v) => v != null && v !== '');
+        if (!identity) return paged(await s.searchCompanies(a), 'companies');
+        let companyType: number | undefined;
+        if (a.companyType != null && a.companyType !== '') {
+          const m = matchPicklist(await s.getPicklistValues('Companies', 'companyType'), a.companyType);
+          if (!m.ok) return { result: { status: 'invalid_company_type', choices: m.choices }, message: `companyType "${a.companyType}" not found. Choices: ${formatChoices(m.choices)}` };
+          companyType = m.value;
+        }
+        const r = await s.findCompanies({
+          name: a.name, domain: a.webDomain ?? a.domain ?? a.emailDomain, phone: a.phone, companyNumber: a.companyNumber,
+          ...(companyType != null ? { companyType } : {}), ...(typeof a.isActive === 'boolean' ? { isActive: a.isActive } : {}),
+        });
+        return { result: r, message: identityMessage('compan(ies)', r) };
+      }],
+      ['autotask_get_company', async (a) => {
+        const id = Number(a.companyID ?? a.companyId ?? a.id);
+        if (!Number.isInteger(id) || id <= 0) return { result: null, message: 'companyID (a positive integer) is required.' };
+        const r = await s.getCompanyFull(id);
+        if (!r) return { result: null, message: `Company ${id} not found.` };
+        const c = r.company as Record<string, unknown>, l = r.labels as Record<string, string>, n = r.names as Record<string, { name?: string | null }>;
+        return { result: r, message: `Company ${id}: "${c.companyName}" — ${c.isActive ? 'active' : 'INACTIVE'}${l.companyType ? `, ${l.companyType}` : ''}${n.ownerResourceID?.name ? `, owner ${n.ownerResourceID.name}` : ''}, created ${c.createDate ?? '?'}${n.createdByResourceID?.name ? ` by ${n.createdByResourceID.name}` : ''}` };
+      }],
+      ['autotask_get_contact', async (a) => {
+        const id = Number(a.contactID ?? a.contactId ?? a.id);
+        if (!Number.isInteger(id) || id <= 0) return { result: null, message: 'contactID (a positive integer) is required.' };
+        const r = await s.getContactFull(id);
+        if (!r) return { result: null, message: `Contact ${id} not found.` };
+        const c = r.contact as Record<string, unknown>, n = r.names as Record<string, { name?: string | null }>;
+        return { result: r, message: `Contact ${id}: ${[c.firstName, c.lastName].filter(Boolean).join(' ')} <${c.emailAddress ?? 'no email'}> — ${c.isActive === 1 || c.isActive === true ? 'active' : 'INACTIVE'}, company ${n.companyID?.name ?? c.companyID ?? '?'}, created ${c.createDate ?? '?'}` };
+      }],
+      ['autotask_find_company_contact_candidates', async (a) => {
+        if (![a.companyName, a.contactName, a.email, a.phone, a.domain].some((v) => v != null && String(v).trim() !== '')) {
+          return { result: null, message: 'Give at least one of companyName, contactName, email, phone, domain.' };
+        }
+        const r = await s.findCompanyContactCandidates({ companyName: a.companyName ?? undefined, contactName: a.contactName ?? undefined, email: a.email ?? undefined, phone: a.phone ?? undefined, domain: a.domain ?? undefined });
+        const side = (x: { verdict: string; confidence: string; candidates: unknown[]; reason: string }) => `${x.verdict} (${x.confidence}; ${x.candidates.length} candidate(s)) — ${x.reason}`;
+        return { result: r, message: `READ-ONLY, nothing created. Contact: ${side(r.contact as never)}. Company: ${side(r.company as never)}.${(r.notes as string[]).length ? ` ${(r.notes as string[]).join(' ')}` : ''}` };
+      }],
+      ['autotask_find_duplicate_companies', async (a) => {
+        const id = Number(a.companyID ?? a.companyId ?? a.id);
+        if (!Number.isInteger(id) || id <= 0) return { result: null, message: 'companyID (a positive integer) is required.' };
+        const r = await s.findDuplicateCompanies(id);
+        if (r.status === 'not_found') return { result: r, message: `Company ${id} not found.` };
+        return { result: r, message: identityMessage(`possible duplicate(s) of company ${id}`, r) };
+      }],
+      ['autotask_find_duplicate_contacts', async (a) => {
+        const id = Number(a.contactID ?? a.contactId ?? a.id);
+        if (!Number.isInteger(id) || id <= 0) return { result: null, message: 'contactID (a positive integer) is required.' };
+        const r = await s.findDuplicateContacts(id);
+        if (r.status === 'not_found') return { result: r, message: `Contact ${id} not found.` };
+        return { result: r, message: identityMessage(`possible duplicate(s) of contact ${id}`, r) };
       }],
       ['autotask_create_company', async (a) => {
         const id = await s.createCompany(a); return { result: id, message: `Successfully created company with ID: ${id}` };
@@ -1126,7 +1186,15 @@ export class AutotaskToolHandler {
 
       // Contacts
       ['autotask_search_contacts', async (a) => {
-        return paged(await s.searchContacts(a), 'contacts');
+        // Identity mode (read-only, evidence per match, every exact-email duplicate) when any identity field is given.
+        const name = a.name ?? ([a.firstName, a.lastName].filter(Boolean).join(' ') || undefined);
+        const identity = [a.email, name, a.phone].some((v) => v != null && v !== '');
+        if (!identity) return paged(await s.searchContacts(a), 'contacts');
+        const r = await s.findContacts({
+          email: a.email, name, phone: a.phone,
+          ...(a.companyID != null ? { companyID: Number(a.companyID) } : {}), ...(a.isActive != null && a.isActive !== '' ? { isActive: a.isActive === true || Number(a.isActive) === 1 } : {}),
+        });
+        return { result: r, message: identityMessage('contact(s)', r) };
       }],
       ['autotask_create_contact', async (a) => {
         const id = await s.createContact(a); return { result: id, message: `Successfully created contact with ID: ${id}` };

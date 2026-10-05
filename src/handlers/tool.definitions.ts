@@ -64,18 +64,24 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   // Company tools
   {
     name: 'autotask_search_companies',
-    description: 'Search companies by name or status. Max 200/page.',
+    description: 'Search companies. Plain mode: searchTerm (name contains) + isActive, paged, max 200/page. IDENTITY mode (read-only, used when any of name / webDomain / emailDomain / phone / companyNumber / companyType is given): every plausible match with evidence (name_exact on the normalized name — suffixes like Inc/LLC ignored, name_partial, web_domain, contact_email_domain, phone on normalized digits, company_number) and conflicts, ranked; duplicate clusters; INACTIVE companies included unless isActive is set. Consumer email domains (gmail.com etc.) are never used to match a company. Returns id, name, web address, phone, type, active, owner, created date/by.',
     inputSchema: {
       type: 'object',
       properties: {
         searchTerm: {
           type: 'string',
-          
+          description: 'Plain mode: company name contains'
         },
         isActive: {
           type: 'boolean',
-          
+          description: 'Filter by active state. Identity mode includes inactive companies unless this is set.'
         },
+        name: { type: 'string', description: 'Identity: company name, compared normalized (case, punctuation, Inc/LLC/Ltd/Co ignored)' },
+        webDomain: { type: 'string', description: 'Identity: web domain or URL, e.g. edge-estimates.com' },
+        emailDomain: { type: 'string', description: 'Identity: email domain — matches company web address and companies whose contacts use it' },
+        phone: { type: 'string', description: 'Identity: phone in any format (compared on digits)' },
+        companyNumber: { type: 'string', description: 'Identity: company number / external identifier (exact)' },
+        companyType: { type: 'string', description: 'Identity: company type label or id (e.g. "Customer", "Prospect")' },
         page: {
           type: 'number',
           
@@ -90,6 +96,34 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       },
       required: []
     }
+  },
+  {
+    name: 'autotask_get_company',
+    description: 'READ-ONLY. The complete company record by ID with creation metadata: every picklist labelled (company type, classification, territory, market segment, …), owner / created-by / impersonator resources and parent company named, UDFs with list labels. Use it to verify a user-supplied company ID.',
+    annotations: { title: 'Get company (full)', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { companyID: { type: 'number', description: 'Company ID' } }, required: ['companyID'] }
+  },
+  {
+    name: 'autotask_find_company_contact_candidates',
+    description: 'READ-ONLY identity resolver — NEVER creates records. Given any of companyName, contactName, email, phone, domain, it searches contacts (exact email across all email fields, name, phone) and companies (normalized name, web domain, contacts\' email domain, phone), links them (a contact\'s company becomes a candidate; a contact inside a candidate company gains evidence), and returns for EACH side: a verdict (matched / ambiguous / unmatched) with confidence and reason, ranked candidates with evidence (email_exact, name_exact, web_domain, phone, linked_contact, …) and conflicting fields (different email than given, inactive, company mismatch), and duplicate clusters. A consumer email domain (gmail.com etc.) identifies the person, never the company.',
+    annotations: { title: 'Find company/contact candidates', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        companyName: { type: 'string', description: 'Company name as given (e.g. from an email signature)' },
+        contactName: { type: 'string', description: 'Person\'s name ("Daniel Lee")' },
+        email: { type: 'string', description: 'Email address' },
+        phone: { type: 'string', description: 'Phone in any format' },
+        domain: { type: 'string', description: 'Company web domain if known (otherwise taken from a non-consumer email)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_find_duplicate_companies',
+    description: 'READ-ONLY. Likely duplicates of ONE company (searched around it, not a tenant scan): same normalized name, web domain, phone, or company number — inactive companies and creation dates included, each with evidence and conflicts.',
+    annotations: { title: 'Find duplicate companies', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { companyID: { type: 'number', description: 'The company to look around' } }, required: ['companyID'] }
   },
   {
     name: 'autotask_create_company',
@@ -316,7 +350,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   // Contact tools
   {
     name: 'autotask_search_contacts',
-    description: 'Search contacts by name, email, or company. Max 200/page.',
+    description: 'Search contacts. Plain mode: searchTerm (name or email) + companyID + isActive, paged, max 200/page. IDENTITY mode (read-only, used when any of email / name / firstName / lastName / phone is given): EVERY match with evidence — email_exact across all three email fields (every exact-email duplicate is returned), name_exact / name_close (normalized, accents ignored), phone (normalized digits) — plus conflicts (inactive, different email than given) and duplicate clusters; inactive contacts included unless isActive is set. Returns id, full name, emails, phones, company id + name, active, created date.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -324,6 +358,11 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'Search term for contact name or email'
         },
+        email: { type: 'string', description: 'Identity: exact email (checked against all three email fields)' },
+        name: { type: 'string', description: 'Identity: full name ("Daniel Lee" or "Lee, Daniel")' },
+        firstName: { type: 'string', description: 'Identity: first name (with lastName)' },
+        lastName: { type: 'string', description: 'Identity: last name (with firstName)' },
+        phone: { type: 'string', description: 'Identity: phone in any format (phone / mobile / alternate, compared on digits)' },
         companyID: {
           type: 'number',
           description: 'Filter by company ID'
@@ -346,6 +385,18 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       },
       required: []
     }
+  },
+  {
+    name: 'autotask_get_contact',
+    description: 'READ-ONLY. The complete contact record by ID with creation metadata: company named, picklists labelled, UDFs with list labels. Use it to verify a user-supplied contact ID.',
+    annotations: { title: 'Get contact (full)', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { contactID: { type: 'number', description: 'Contact ID' } }, required: ['contactID'] }
+  },
+  {
+    name: 'autotask_find_duplicate_contacts',
+    description: 'READ-ONLY. Likely duplicates of ONE contact across ALL companies (searched around it): any of its email addresses, its name, its phone — inactive contacts and creation dates included, each with evidence and conflicts.',
+    annotations: { title: 'Find duplicate contacts', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { contactID: { type: 'number', description: 'The contact to look around' } }, required: ['contactID'] }
   },
   {
     name: 'autotask_create_contact',
@@ -5812,11 +5863,11 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   companies: {
     description: 'Search, create, and update companies',
-    tools: ['autotask_search_companies', 'autotask_create_company', 'autotask_update_company', 'autotask_get_company_site_configuration', 'autotask_update_company_site_configuration']
+    tools: ['autotask_search_companies', 'autotask_get_company', 'autotask_find_company_contact_candidates', 'autotask_find_duplicate_companies', 'autotask_create_company', 'autotask_update_company', 'autotask_get_company_site_configuration', 'autotask_update_company_site_configuration']
   },
   contacts: {
     description: 'Search and create contacts',
-    tools: ['autotask_search_contacts', 'autotask_create_contact', 'autotask_update_contact', 'autotask_find_or_create_contact']
+    tools: ['autotask_search_contacts', 'autotask_get_contact', 'autotask_find_duplicate_contacts', 'autotask_create_contact', 'autotask_update_contact', 'autotask_find_or_create_contact']
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, audit history, and the notification e-mails Autotask sent',

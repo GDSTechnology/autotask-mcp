@@ -33,6 +33,8 @@ export interface SyncOptions {
   pauseAtPct: number;
   /** Current hourly usage %, or null if unknown (then the run proceeds). */
   usagePct?: () => Promise<number | null>;
+  /** Backfill only this many months of history for windowed entities (0/absent = everything). */
+  historyMonths?: number;
 }
 
 export interface EntityReport { entity: string; mode: 'backfill' | 'incremental' | 'full' | 'skip'; calls: number; rows: number; done?: boolean; deleted?: number; error?: string }
@@ -92,17 +94,23 @@ export class ShadowSync {
   private async syncEntity(e: ShadowEntity, now: Date): Promise<EntityReport> {
     const st = await this.store.getState(e.name);
     if (!e.watermarkField) return this.fullRefresh(e, st?.last_full_at ?? null, now);
-    if (!st?.backfill_done) return this.backfill(e, st?.backfill_cursor ?? 0, st?.watermark ?? null, now);
+    if (!st?.backfill_done) return this.backfill(e, st?.backfill_cursor ?? 0, st?.watermark ?? null, st?.window_from ?? null, now);
     return this.incremental(e, st.watermark, now);
   }
 
-  private async backfill(e: ShadowEntity, cursor: number, watermark: Date | null, now: Date): Promise<EntityReport> {
+  private async backfill(e: ShadowEntity, cursor: number, watermark: Date | null, windowFrom: Date | null, now: Date): Promise<EntityReport> {
     const before = this.calls;
-    // Stamp the watermark when the backfill STARTS, so edits made during it are caught later.
-    if (cursor === 0 && !watermark) await this.store.saveState(e.name, { watermark: now });
+    // Stamp the watermark (and fix the history window) when the backfill STARTS,
+    // so edits made during it are caught later and the window doesn't drift.
+    if (cursor === 0 && !watermark) {
+      const months = this.opts.historyMonths ?? 0;
+      if (e.window && months > 0) { windowFrom = new Date(now); windowFrom.setUTCMonth(windowFrom.getUTCMonth() - months); windowFrom.setUTCHours(0, 0, 0, 0); }
+      await this.store.saveState(e.name, { watermark: now, window_from: windowFrom });
+    }
+    const windowFilter = e.window && windowFrom ? [e.window(new Date(windowFrom).toISOString().slice(0, 10))] : [];
     let rows = 0, done = false;
     while (this.budgetLeft() > 0) {
-      const page = await this.page(e, [{ op: 'gt', field: 'id', value: cursor }]);
+      const page = await this.page(e, [...windowFilter, { op: 'gt', field: 'id', value: cursor }]);
       rows += await this.store.upsert(e, page);
       if (page.length) cursor = Math.max(...page.map((r) => Number(r.id)));
       if (page.length < PAGE) { done = true; break; }

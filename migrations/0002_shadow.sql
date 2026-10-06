@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS shadow_sync_state (
   watermark           timestamptz,
   backfill_cursor     bigint      NOT NULL DEFAULT 0,
   backfill_done       boolean     NOT NULL DEFAULT false,
+  -- History window the backfill covered (null = everything). Reads asking for
+  -- older data than this go live.
+  window_from         timestamptz,
   last_backfill_at    timestamptz,
   last_incremental_at timestamptz,
   last_full_at        timestamptz,

@@ -13,6 +13,10 @@
 //   MCP_PG_SHADOW_RECONCILE_HOUR_UTC 7     hour of the nightly deletion sweep
 //   MCP_PG_SHADOW_SERVE_READS        false answer search_* from the shadow
 //   MCP_PG_SHADOW_MAX_AGE_SECONDS    900   ...only while it is at most this old
+//   MCP_PG_SHADOW_HISTORY_MONTHS     6     backfill only this much history of
+//                                           Tickets (plus every open ticket) and
+//                                           TimeEntries; 0 = everything. Reads
+//                                           reaching further back go live.
 
 import { Logger } from '../utils/logger.js';
 import { getPool } from './pool.js';
@@ -42,11 +46,11 @@ export interface ShadowRuntime {
 let runtime: ShadowRuntime | null = null;
 export const getShadowRuntime = (): ShadowRuntime | null => runtime;
 
-/** Which shadow row an Autotask write touched (path forms: /Tickets, /TimeEntries/123, /Companies/5/Contacts). */
+/** Which shadow row an Autotask write touched (path forms: /Tickets, /TimeEntries/123, /Companies/5/Contacts, /Projects/9/Tasks). */
 export function writtenRow(path: string, body: unknown, response: unknown): { entity: string; id: number } | null {
   const segs = path.split('?')[0]!.split('/').filter(Boolean);
   if (!segs.length || segs[segs.length - 1] === 'query' || segs.includes('query')) return null;
-  const childMap: Record<string, string> = { Contacts: 'Contacts', Services: 'ContractServices', Blocks: 'ContractBlocks' };
+  const childMap: Record<string, string> = { Contacts: 'Contacts', Services: 'ContractServices', Blocks: 'ContractBlocks', Tasks: 'Tasks' };
   const entityName = segs.length >= 3 ? childMap[segs[2]!] : segs[0];
   const e = entityName ? shadowEntity(entityName) : undefined;
   if (!e) return null;
@@ -66,6 +70,7 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
   const sync = new ShadowSync(() => service.httpClient(), store, logger, {
     maxCallsPerRun: intEnv(env.MCP_PG_SHADOW_MAX_CALLS_PER_RUN, 100),
     pauseAtPct: intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50),
+    historyMonths: intEnv(env.MCP_PG_SHADOW_HISTORY_MONTHS, 6),
     usagePct: async () => { const u = await service.getApiUsage(); return 'usedPct' in u.autotask ? (u.autotask.usedPct ?? null) : null; },
   });
   const reconcileHour = intEnv(env.MCP_PG_SHADOW_RECONCILE_HOUR_UTC, 7);
@@ -146,6 +151,10 @@ export async function shadowRead<T>(entity: string, filters: ShadowFilter[], lim
     if (!c || Date.now() - c.at > 15_000) { c = { at: Date.now(), f: await rt.store.freshness(name) }; freshCache.set(name, c); }
     const f = c.f;
     if (!f.ready || f.ageSeconds == null || f.ageSeconds + Math.round((Date.now() - c.at) / 1000) > rt.maxAgeSeconds) return null;
+    // A windowed mirror only holds recent history: serve only queries whose
+    // filters stay inside it (e.g. open tickets, dateWorked ≥ window start).
+    const def = shadowEntity(entity)!;
+    if (f.windowFrom && def.windowCovers && !def.windowCovers(filters, f.windowFrom)) return null;
     const r = await rt.store.query(name, filters, { limit, order: 'id_asc' });
     return { rows: r.rows as T[], ageSeconds: f.ageSeconds };
   } catch {

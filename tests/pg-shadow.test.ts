@@ -51,7 +51,8 @@ describe('entities + write detection', () => {
     expect(writtenRow('/Contracts/9/Services', {}, { itemId: 3 })).toEqual({ entity: 'ContractServices', id: 3 });
     expect(writtenRow('/Tickets/query', {}, {})).toBeNull();
     expect(writtenRow('/Tickets/7/Notes', {}, { itemId: 1 })).toBeNull();
-    expect(writtenRow('/Projects', { id: 1 }, {})).toBeNull();
+    expect(writtenRow('/Opportunities', { id: 1 }, {})).toBeNull();
+    expect(writtenRow('/Projects/9/Tasks', { id: 4 }, {})).toEqual({ entity: 'Tasks', id: 4 });
   });
 });
 
@@ -122,6 +123,33 @@ describe('ShadowSync', () => {
     expect(store.states.get('Tickets').watermark.toISOString()).toBe('2026-10-06T12:07:00.000Z'); // Autotask's newest stamp, not our clock
   });
 
+  test('history window: Tickets backfill = active/created in the last N months OR still open; cutoff fixed at start', async () => {
+    const at = fakeAutotask({ Tickets: [{ id: 1 }] });
+    const store = memStore();
+    const sync = new ShadowSync(at.http, store as any, logger, { maxCallsPerRun: 1, pauseAtPct: 50, historyMonths: 6 });
+    await sync.runOnce(new Date('2026-10-06T12:00:00Z'));
+    expect(at.calls[0]!.filter).toEqual([
+      { op: 'or', items: [{ op: 'gte', field: 'lastActivityDate', value: '2026-04-06' }, { op: 'gte', field: 'createDate', value: '2026-04-06' }, { op: 'noteq', field: 'status', value: 5 }] },
+      { op: 'gt', field: 'id', value: 0 },
+    ]);
+    expect(store.states.get('Tickets').window_from.toISOString()).toBe('2026-04-06T00:00:00.000Z');
+    // Small / reference tables are never windowed.
+    expect(shadowEntity('Companies')!.window).toBeUndefined();
+  });
+
+  test('windowCovers: only queries that stay inside the window may be served from it', () => {
+    const t = shadowEntity('Tickets')!, te = shadowEntity('TimeEntries')!;
+    const c = '2026-04-06';
+    expect(t.windowCovers!([{ op: 'noteq', field: 'status', value: 5 }, { op: 'eq', field: 'companyID', value: 1 }], c)).toBe(true); // default open-ticket search
+    expect(t.windowCovers!([{ op: 'eq', field: 'status', value: 8 }], c)).toBe(true);
+    expect(t.windowCovers!([{ op: 'gte', field: 'createDate', value: '2026-05-01' }], c)).toBe(true);
+    expect(t.windowCovers!([{ op: 'eq', field: 'status', value: 5 }], c)).toBe(false);          // completed, any age
+    expect(t.windowCovers!([{ op: 'gte', field: 'createDate', value: '2024-01-01' }], c)).toBe(false); // reaches back
+    expect(t.windowCovers!([{ op: 'eq', field: 'contractID', value: 9 }], c)).toBe(false);     // unbounded (includeCompleted)
+    expect(te.windowCovers!([{ op: 'gte', field: 'dateWorked', value: '2026-06-01' }], c)).toBe(true);
+    expect(te.windowCovers!([{ op: 'eq', field: 'ticketID', value: 200523 }], c)).toBe(false);
+  });
+
   test('full-refresh tables: re-read on their interval, vanished rows marked deleted', async () => {
     const resources = range(3, (i) => ({ id: i }));
     const at = fakeAutotask({ Resources: resources });
@@ -145,7 +173,7 @@ describe('ShadowSync', () => {
     expect((await paused.runOnce()).skipped).toMatch(/52\.1% ≥ 50%/);
     expect(at.calls).toHaveLength(0);
     const sync = new ShadowSync(at.http, store as any, logger, { maxCallsPerRun: 1, pauseAtPct: 50, usagePct: async () => 30 });
-    sync.markDirty('tickets', 7); sync.markDirty('Projects', 1);
+    sync.markDirty('tickets', 7); sync.markDirty('Opportunities', 1);
     expect(sync.dirtyCount()).toBe(1);
     await sync.runOnce();
     expect(at.calls[0]).toEqual({ entity: 'Tickets', filter: [{ op: 'in', field: 'id', value: [7] }] });
@@ -170,13 +198,17 @@ describe('shadowRead (search read path)', () => {
     _setShadowRuntime({ store: s, serveReads: true, maxAgeSeconds: 900 } as any);
     expect(await shadowRead('Tickets', [{ op: 'eq', field: 'status', value: 1 }], 26)).toEqual({ rows: [{ id: 1 }], ageSeconds: 30 });
     expect(s.query).toHaveBeenCalledWith('Tickets', [{ op: 'eq', field: 'status', value: 1 }], { limit: 26, order: 'id_asc' });
-    expect(await shadowRead('Projects', [], 10)).toBeNull(); // not mirrored
+    expect(await shadowRead('Opportunities', [], 10)).toBeNull(); // not mirrored
     _setShadowRuntime({ store: store({ ready: false, ageSeconds: null }), serveReads: true, maxAgeSeconds: 900 } as any);
     expect(await shadowRead('Tickets', [], 10)).toBeNull(); // still backfilling
     _setShadowRuntime({ store: store({ ready: true, ageSeconds: 2000 }), serveReads: true, maxAgeSeconds: 900 } as any);
     expect(await shadowRead('Tickets', [], 10)).toBeNull(); // too old
     _setShadowRuntime({ store: store({ ready: true, ageSeconds: 5 }), serveReads: false, maxAgeSeconds: 900 } as any);
     expect(await shadowRead('Tickets', [], 10)).toBeNull(); // serving off
+    _setShadowRuntime({ store: store({ ready: true, ageSeconds: 5, windowFrom: '2026-04-06' }), serveReads: true, maxAgeSeconds: 900 } as any);
+    expect(await shadowRead('Tickets', [{ op: 'noteq', field: 'status', value: 5 }], 10)).not.toBeNull(); // open tickets: in window
+    _setShadowRuntime({ store: store({ ready: true, ageSeconds: 5, windowFrom: '2026-04-06' }), serveReads: true, maxAgeSeconds: 900 } as any);
+    expect(await shadowRead('Tickets', [{ op: 'eq', field: 'contractID', value: 9 }], 10)).toBeNull(); // could reach older → live
     const bad = store({ ready: true, ageSeconds: 5 }); bad.query.mockRejectedValue(new Error('Unsupported filter op'));
     _setShadowRuntime({ store: bad, serveReads: true, maxAgeSeconds: 900 } as any);
     expect(await shadowRead('Tickets', [], 10)).toBeNull(); // untranslatable → live

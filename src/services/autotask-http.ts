@@ -89,6 +89,33 @@ export type WriteListener = (method: string, path: string, body: unknown, respon
 let writeListener: WriteListener | null = null;
 export function setWriteListener(fn: WriteListener | null): void { writeListener = fn; }
 
+/** The object endpoint a path hits: "/Tickets/query" → "Tickets"; absolute URLs use their path. */
+export function endpointOf(path: string): string {
+  const p = path.replace(/^https?:\/\/[^/]+/i, '').replace(/^\/?(atservicesrest\/)?(v1\.0\/)?/i, '/');
+  return p.split('?')[0]!.split('/').filter(Boolean)[0] ?? '';
+}
+
+const endpointGates = new Map<string, { active: number; waiting: Array<() => void> }>();
+function maxPerEndpoint(): number {
+  const n = Number(process.env.AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT);
+  return Number.isInteger(n) && n >= 1 && n <= 3 ? n : 2;
+}
+/** Wait for a free slot on an endpoint; resolves to the release function. */
+export async function acquireEndpointSlot(key: string): Promise<() => void> {
+  const g = endpointGates.get(key) ?? endpointGates.set(key, { active: 0, waiting: [] }).get(key)!;
+  if (g.active >= maxPerEndpoint()) await new Promise<void>((resolve) => g.waiting.push(resolve));
+  g.active++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    g.active--;
+    g.waiting.shift()?.();
+  };
+}
+/** Calls currently waiting for an endpoint slot (all endpoints). */
+export function endpointQueueDepth(): number { let n = 0; for (const g of endpointGates.values()) n += g.waiting.length; return n; }
+
 /** A UDF definition from entityInformation/userDefinedFields (list UDFs carry picklistValues). */
 export interface UdfDefinition { name: string; isPickList?: boolean; picklistValues?: Array<{ value: unknown; label: string }> }
 
@@ -326,10 +353,33 @@ export class AutotaskHttpClient {
    * pageDetails.nextPageUrl pagination). Returns the parsed body plus its size
    * (for the cache's size cap).
    */
+  /**
+   * Per-endpoint concurrency gate in front of every upstream call. Autotask
+   * allows 3 concurrent requests per integration per object endpoint and
+   * answers the 4th with 429 (thread limiting). A burst of parallel searches
+   * used to trip that; now calls beyond AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT
+   * (default 2 — one thread of headroom) WAIT their turn instead of failing.
+   * Cached / coalesced reads never reach here, so they take no slot.
+   */
   private async send<T>(
     method: string,
     path: string,
     body?: any,
+    isZoneRetry = false,
+    opts: { allowEmptyBody?: boolean } = {}
+  ): Promise<{ value: T; bytes: number }> {
+    const release = await acquireEndpointSlot(`${this.username.toLowerCase()} ${endpointOf(path)}`);
+    try {
+      return await this.sendUngated<T>(method, path, body, isZoneRetry, opts);
+    } finally {
+      release();
+    }
+  }
+
+  private async sendUngated<T>(
+    method: string,
+    path: string,
+    body?: unknown,
     isZoneRetry = false,
     opts: { allowEmptyBody?: boolean } = {}
   ): Promise<{ value: T; bytes: number }> {
@@ -403,7 +453,7 @@ export class AutotaskHttpClient {
         );
         this.resolvedBaseUrl = null;
         invalidateZoneUrlCache(this.username);
-        return this.send<T>(method, path, body, true, opts);
+        return this.sendUngated<T>(method, path, body, true, opts); // already holds the endpoint slot
       }
       let detail = text.slice(0, 1000);
       try {

@@ -101,7 +101,7 @@ endpoint** limit. The shadow keeps a read-only copy of the busiest entities in
 Postgres so those reads cost **0** Autotask calls. Autotask stays authoritative:
 every write still goes to Autotask.
 
-**Mirrored:** Tickets, TimeEntries, Companies, Contacts, Contracts (incremental, by
+**Mirrored:** Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts (incremental, by
 their last-modified field), ContractServices, ContractBlocks, Resources (small;
 refreshed in full hourly). One table, `shadow_record (entity, id, data jsonb, …)`,
 plus `shadow_sync_state` (migration `0002_shadow.sql`).
@@ -118,6 +118,16 @@ plus `shadow_sync_state` (migration `0002_shadow.sql`).
   run is **skipped** when tenant usage ≥ `MCP_PG_SHADOW_PAUSE_AT_PCT` (50 — below
   Autotask's latency zone). Calls are strictly sequential (1 of the 3 threads).
 - **One instance** — a Postgres advisory lock means only one MCP syncs.
+- **History window** — `MCP_PG_SHADOW_HISTORY_MONTHS` (6): Tickets backfill only
+  rows active or created in the window **plus every open ticket**; TimeEntries
+  only rows worked in the window. Companies, Contacts, Contracts, Tasks and the
+  small tables are kept whole (reference data). A search is served from the
+  shadow only when its filters stay inside the window (open tickets, or a
+  date bound at/after the window start); anything reaching further back goes
+  live. At GDS: ~305 calls for the first load instead of ~765.
+- **Size** (measured at GDS, 6-month window): ≈ 215 MB of records, ≈ 350 MB
+  with indexes — Companies + Contacts are three quarters of it. Grows ≈ 10 MB a
+  month (rows that age out of the window are kept).
 
 **Using it**
 - `autotask_shadow_query` / `autotask_shadow_aggregate` — SQL over the mirror with
@@ -130,3 +140,11 @@ plus `shadow_sync_state` (migration `0002_shadow.sql`).
 - `autotask_shadow_status` — rows, backfill progress, age, calls spent, errors.
 - `autotask_shadow_sync` — run now / re-read ids / reconcile one entity.
 - `/health` shows `shadow.lastRunAt` / `lastRunCalls` (no DB round-trip).
+
+## Per-endpoint concurrency gate (always on)
+
+Autotask allows **3 concurrent requests per integration per object endpoint**
+and answers the 4th with **429**. Every upstream call now passes a gate keyed by
+endpoint (Tickets, TimeEntries, …): at most `AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT`
+(default **2**, max 3) in flight, the rest **wait their turn** instead of failing.
+Cached and shared (coalesced) reads never reach upstream, so they take no slot.

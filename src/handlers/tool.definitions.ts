@@ -1109,7 +1109,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_shadow_status',
-    description: 'READ-ONLY. State of the Postgres shadow — the read-only mirror of Tickets, TimeEntries, Companies, Contacts, Contracts, ContractServices, ContractBlocks and Resources: per entity row count, whether the backfill is done, data age, Autotask calls spent, last error; whether search tools are being served from it; the last sync run.',
+    description: 'READ-ONLY. State of the Postgres shadow — the read-only mirror of Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts, ContractServices, ContractBlocks and Resources: per entity row count, whether the backfill is done, data age, Autotask calls spent, last error; whether search tools are being served from it; the last sync run.',
     annotations: { title: 'Shadow status', readOnlyHint: true },
     inputSchema: { type: 'object', properties: {}, required: [] }
   },
@@ -1120,7 +1120,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        entity: { type: 'string', description: 'Tickets, TimeEntries, Companies, Contacts, Contracts, ContractServices, ContractBlocks or Resources' },
+        entity: { type: 'string', description: 'Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts, ContractServices, ContractBlocks or Resources' },
         filters: { type: 'array', items: { type: 'object' }, description: 'Autotask-style filters, AND-ed. E.g. [{"op":"eq","field":"contractID","value":29685345},{"op":"gte","field":"dateWorked","value":"2026-04-01"}]' },
         fields: { type: 'array', items: { type: 'string' }, description: 'Only these fields (id always included). Omit for whole records.' },
         orderBy: { type: 'string', description: 'Field to sort by (default newest id first); "month:dateWorked" style also works' },

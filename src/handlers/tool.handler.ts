@@ -1121,7 +1121,7 @@ export class AutotaskToolHandler {
         if (!e) return { result: null, message: `entity must be one of: ${SHADOW_ENTITIES.map((x) => x.name).join(', ')}` };
         const f = await rt.store.freshness(e.name);
         const r = await rt.store.query(e.name, Array.isArray(a.filters) ? a.filters : [], { fields: a.fields, limit: a.limit, offset: a.offset, orderBy: a.orderBy, desc: a.desc === true });
-        return { result: { rows: r.rows, total: r.total, freshness: f }, message: `${r.rows.length} of ${r.total} ${e.name} from the Postgres shadow (${f.ready ? `data ${f.ageSeconds}s old` : 'STILL BACKFILLING — incomplete'}; 0 Autotask calls).` };
+        return { result: { rows: r.rows, total: r.total, freshness: f }, message: `${r.rows.length} of ${r.total} ${e.name} from the Postgres shadow (${f.ready ? `data ${f.ageSeconds}s old` : 'STILL BACKFILLING — incomplete'}${f.windowFrom ? `; holds history from ${f.windowFrom} (plus open tickets) — older data is not in the shadow` : ''}; 0 Autotask calls).` };
       }],
       ['autotask_shadow_aggregate', async (a) => {
         const rt = getShadowRuntime();
@@ -1130,7 +1130,7 @@ export class AutotaskToolHandler {
         if (!e) return { result: null, message: `entity must be one of: ${SHADOW_ENTITIES.map((x) => x.name).join(', ')}` };
         const f = await rt.store.freshness(e.name);
         const rows = await rt.store.aggregate(e.name, Array.isArray(a.filters) ? a.filters : [], Array.isArray(a.groupBy) ? a.groupBy : [], Array.isArray(a.sum) ? a.sum : [], a.limit ?? 1000);
-        return { result: { groups: rows, freshness: f }, message: `${rows.length} group(s) over ${e.name} from the Postgres shadow (${f.ready ? `data ${f.ageSeconds}s old` : 'STILL BACKFILLING — incomplete'}; 0 Autotask calls).` };
+        return { result: { groups: rows, freshness: f }, message: `${rows.length} group(s) over ${e.name} from the Postgres shadow (${f.ready ? `data ${f.ageSeconds}s old` : 'STILL BACKFILLING — incomplete'}${f.windowFrom ? `; holds history from ${f.windowFrom} (plus open tickets) — older data is not in the shadow` : ''}; 0 Autotask calls).` };
       }],
       ['autotask_shadow_sync', async (a) => {
         const rt = getShadowRuntime();

@@ -11,6 +11,7 @@ export interface SyncState {
   watermark: Date | null;
   backfill_cursor: number;
   backfill_done: boolean;
+  window_from: Date | null;
   last_backfill_at: Date | null;
   last_incremental_at: Date | null;
   last_full_at: Date | null;
@@ -21,12 +22,12 @@ export interface SyncState {
   last_error_at: Date | null;
 }
 
-export interface Freshness { entity: string; ready: boolean; lastSyncedAt: string | null; ageSeconds: number | null; rows: number }
+export interface Freshness { entity: string; ready: boolean; lastSyncedAt: string | null; ageSeconds: number | null; rows: number; /** Oldest history mirrored (YYYY-MM-DD) for windowed entities; null = everything. */ windowFrom: string | null }
 
 const MAX_LIMIT = 5000;
 
 /** The sync-state columns saveState may set (column names are never caller-supplied). */
-const STATE_COLUMNS = new Set(['watermark', 'backfill_cursor', 'backfill_done', 'last_backfill_at', 'last_incremental_at', 'last_full_at', 'last_reconcile_at', 'last_error', 'last_error_at']);
+const STATE_COLUMNS = new Set(['watermark', 'window_from', 'backfill_cursor', 'backfill_done', 'last_backfill_at', 'last_incremental_at', 'last_full_at', 'last_reconcile_at', 'last_error', 'last_error_at']);
 
 export class ShadowStore {
   constructor(private readonly pool: Pool) {}
@@ -98,6 +99,7 @@ export class ShadowStore {
     const at = last.length ? Math.max(...last) : null;
     return {
       entity, ready: !!s?.backfill_done, rows: s?.row_count ?? 0,
+      windowFrom: s?.window_from ? new Date(s.window_from).toISOString().slice(0, 10) : null,
       lastSyncedAt: at ? new Date(at).toISOString() : null,
       ageSeconds: at ? Math.round((Date.now() - at) / 1000) : null,
     };

@@ -245,3 +245,76 @@ fixed release is published, restore
 - [ ] `autotask_test_connection` succeeds through the ChatGPT connector.
 - [ ] `docker images ghcr.io/gdstechnology/autotask-mcp` shows `:latest` and
       `:rollback`, and no `<none>` images.
+
+## 8. Postgres shadow (optional — cuts Autotask API load)
+
+A dedicated Postgres for the MCP (never n8n's database or roles), holding a
+read-only mirror of Tickets, TimeEntries, Companies, Contacts and Contracts so
+heavy reads cost no Autotask calls. Details: [docs/POSTGRES.md](docs/POSTGRES.md).
+
+**1. Passwords** — generated into `/opt/n8n/.env` (for the database container)
+and `autotask-mcp.env` (for the MCP), never displayed. Run once:
+
+```bash
+cd /opt/n8n && SU=$(openssl rand -hex 24) MIG=$(openssl rand -hex 24) APP=$(openssl rand -hex 24) && printf 'MCP_PG_SUPERUSER_PASSWORD=%s
+MCP_PG_MIGRATOR_PASSWORD=%s
+MCP_PG_APP_PASSWORD=%s
+' "$SU" "$MIG" "$APP" >> .env && printf '
+MCP_PG_ENABLED=true
+MCP_PG_HOST=autotask-mcp-db
+MCP_PG_PORT=5432
+MCP_PG_DATABASE=gds_autotask_mcp
+MCP_PG_SCHEMA=autotask_mcp
+MCP_PG_USER=gds_autotask_mcp_app
+MCP_PG_PASSWORD=%s
+MCP_PG_MIGRATOR_USER=gds_autotask_mcp_migrator
+MCP_PG_MIGRATOR_PASSWORD=%s
+MCP_PG_SSL=false
+MCP_PG_SHADOW_ENABLED=true
+' "$APP" "$MIG" >> autotask-mcp.env && chmod 600 .env autotask-mcp.env && unset SU MIG APP && echo written
+```
+
+**2. Init script** — the role/schema setup from this repo:
+
+```bash
+mkdir -p /opt/n8n/autotask-mcp-pg-init && curl -fsSL https://raw.githubusercontent.com/GDSTechnology/autotask-mcp/main/deploy/postgres-init/01-roles-schema.sh -o /opt/n8n/autotask-mcp-pg-init/01-roles-schema.sh && chmod 755 /opt/n8n/autotask-mcp-pg-init/01-roles-schema.sh
+```
+
+**3. Compose** — add this service to `/opt/n8n/docker-compose.yml` (no host
+port: only the MCP container reaches it), add `autotask-mcp-pg:` under the
+top-level `volumes:`, and make `autotask-mcp` `depends_on` it:
+
+```yaml
+  autotask-mcp-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${MCP_PG_SUPERUSER_PASSWORD}
+      POSTGRES_DB: gds_autotask_mcp
+      MCP_PG_MIGRATOR_PASSWORD: ${MCP_PG_MIGRATOR_PASSWORD}
+      MCP_PG_APP_PASSWORD: ${MCP_PG_APP_PASSWORD}
+    volumes:
+      - autotask-mcp-pg:/var/lib/postgresql/data
+      - ./autotask-mcp-pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gds_autotask_mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+```
+
+**4. Start, migrate, restart the MCP:**
+
+```bash
+cd /opt/n8n && docker compose config --quiet && docker compose up -d autotask-mcp-db && sleep 10 && docker compose exec -T autotask-mcp node dist/db/migrate.js && docker compose up -d autotask-mcp && sleep 5 && curl -s http://127.0.0.1:18080/health
+```
+
+`/health` gains a `shadow` block. The backfill then runs in the background
+(≤ 100 calls per 5-minute run, paused above 50% tenant usage); follow it with
+`autotask_shadow_status`. Once every entity is `ready`, set
+`MCP_PG_SHADOW_SERVE_READS=true` in `autotask-mcp.env` and recreate
+`autotask-mcp` to have the search tools answered from the shadow.
+
+**Turn it off** — `MCP_PG_SHADOW_ENABLED=false` (or `MCP_PG_ENABLED=false`) and
+recreate `autotask-mcp`; the MCP goes back to live-only. The data volume stays.

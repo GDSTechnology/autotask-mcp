@@ -4,6 +4,23 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-06
+
+- **Autotask API limits** (official docs): **10,000 requests/hour per DATABASE**
+  across all integrations; usage-based latency +0.5 s/call at 50–75%, +1 s past
+  75%; **3 concurrent threads per integration per object endpoint** (4th → 429);
+  queries return ≤ 500 rows **sorted by id** — loop on `id > max seen`.
+- The "gds-n8n" integration in Autotask's API report IS this MCP (n8n and cron
+  call Autotask through it) — ~88% of tenant calls, ~2,300/h around the clock.
+- Postgres shadow (`src/db/shadow-*`, migration 0002): entity watermark fields
+  verified live — Tickets `lastTrackedModificationDateTime`, TimeEntries
+  `lastModifiedDateTime`, Companies `lastTrackedModifiedDateTime`, Contacts
+  `lastModifiedDate`, Contracts `lastModifiedDateTime`; ContractServices /
+  ContractBlocks / Resources have none (full refresh). Whole-tenant backfill ≈
+  750 calls. Bulk walks pass `noCache` so pages don't sit in the HTTP cache.
+- `searchContracts` uses `http.query` directly, not `queryPaged`, so it is NOT
+  served from the shadow — route it through `queryPaged` to get that.
+
 ## Learnings - 2026-10-05
 
 - **Email-created tickets keep the original message**: the email processor

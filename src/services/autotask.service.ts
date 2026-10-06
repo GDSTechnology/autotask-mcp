@@ -70,6 +70,7 @@ import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { RoleChoice, RoleSource } from '../utils/time-entry-role';
 import { classifyTimeEntryWriteError } from '../utils/time-entry-errors';
 import { ContractRow, EntryRow, EntryScope, planContractMove, TicketContractRow } from '../utils/ticket-contract';
+import { shadowRead } from '../db/shadow-runtime';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import { applyBillingTreatment, BillingTreatment } from '../utils/billing-treatment';
 import { summarizeUnbilledTime, UnbilledTimeEntry, UnbilledTimeSummary } from '../utils/unbilled-time';
@@ -520,12 +521,26 @@ export class AutotaskService {
     limits: { defaultPageSize?: number; maxPageSize: number }
   ): Promise<PagedResult<T>> {
     const http = await this.ensureClient();
-    return this.paginate<T>(
+    // Served from the Postgres shadow when it mirrors this entity, is fresh,
+    // and MCP_PG_SHADOW_SERVE_READS is on — 0 Autotask calls. Anything the
+    // shadow can't answer (not ready, stale, unsupported filter) goes live.
+    let servedFrom: { source: 'shadow'; ageSeconds: number } | undefined;
+    const r = await this.paginate<T>(
       entity,
-      (limit) => http.query<T>(entity, filters.length > 0 ? filters : MATCH_ALL, { maxRecords: limit }),
+      async (limit) => {
+        const s = await shadowRead<T>(entity, filters, limit);
+        if (s) { servedFrom = { source: 'shadow', ageSeconds: s.ageSeconds }; return s.rows; }
+        return http.query<T>(entity, filters.length > 0 ? filters : MATCH_ALL, { maxRecords: limit });
+      },
       options,
       limits
     );
+    return servedFrom ? { ...r, servedFrom } : r;
+  }
+
+  /** The raw Autotask HTTP client (the Postgres shadow sync reads through it). */
+  async httpClient(): Promise<AutotaskHttpClient> {
+    return this.ensureClient();
   }
 
   async searchCompanies(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskCompany>> {

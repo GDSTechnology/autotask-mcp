@@ -725,4 +725,6 @@ export interface PagedResult<T> {
   page: number;
   pageSize: number;
   hasMore: boolean;
+  /** Set when the page came from the Postgres shadow instead of the live API. */
+  servedFrom?: { source: 'shadow'; ageSeconds: number };
 }

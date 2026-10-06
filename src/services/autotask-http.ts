@@ -23,6 +23,12 @@ export interface QueryOptions {
   maxRecords?: number;
   includeFields?: string[];
   page?: number;
+  /**
+   * Skip the in-memory read cache and send straight upstream. For
+   * bulk walks like the Postgres shadow sync: hundreds of 500-row pages read
+   * once must not sit in process memory for the cache TTL.
+   */
+  noCache?: boolean;
 }
 
 export interface QueryByIdsOptions extends QueryOptions {
@@ -74,6 +80,42 @@ const RAW_REQUEST_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
  * hand callers a useless shell. When `item` is present we use it (even if null);
  * otherwise the entity is at the top level (some legacy routes).
  */
+/**
+ * Process-wide hook called after every successful Autotask WRITE (method, path,
+ * body, response). The Postgres shadow uses it to re-read the rows the MCP
+ * just changed, so the mirror never lags the MCP's own writes.
+ */
+export type WriteListener = (method: string, path: string, body: unknown, response: unknown) => void;
+let writeListener: WriteListener | null = null;
+export function setWriteListener(fn: WriteListener | null): void { writeListener = fn; }
+
+/** The object endpoint a path hits: "/Tickets/query" → "Tickets"; absolute URLs use their path. */
+export function endpointOf(path: string): string {
+  const p = path.replace(/^https?:\/\/[^/]+/i, '').replace(/^\/?(atservicesrest\/)?(v1\.0\/)?/i, '/');
+  return p.split('?')[0]!.split('/').filter(Boolean)[0] ?? '';
+}
+
+const endpointGates = new Map<string, { active: number; waiting: Array<() => void> }>();
+function maxPerEndpoint(): number {
+  const n = Number(process.env.AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT);
+  return Number.isInteger(n) && n >= 1 && n <= 3 ? n : 2;
+}
+/** Wait for a free slot on an endpoint; resolves to the release function. */
+export async function acquireEndpointSlot(key: string): Promise<() => void> {
+  const g = endpointGates.get(key) ?? endpointGates.set(key, { active: 0, waiting: [] }).get(key)!;
+  if (g.active >= maxPerEndpoint()) await new Promise<void>((resolve) => g.waiting.push(resolve));
+  g.active++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    g.active--;
+    g.waiting.shift()?.();
+  };
+}
+/** Calls currently waiting for an endpoint slot (all endpoints). */
+export function endpointQueueDepth(): number { let n = 0; for (const g of endpointGates.values()) n += g.waiting.length; return n; }
+
 /** A UDF definition from entityInformation/userDefinedFields (list UDFs carry picklistValues). */
 export interface UdfDefinition { name: string; isPickList?: boolean; picklistValues?: Array<{ value: unknown; label: string }> }
 
@@ -290,15 +332,18 @@ export class AutotaskHttpClient {
     path: string,
     body?: unknown,
     isZoneRetry = false,
-    opts: { allowEmptyBody?: boolean } = {}
+    opts: { allowEmptyBody?: boolean; noCache?: boolean } = {}
   ): Promise<T> {
     const tenant = this.username.toLowerCase();
-    if (isRead(method, path)) {
+    if (isRead(method, path) && !opts.noCache) {
       const key = `${method.toUpperCase()} ${path} ${body === undefined ? '' : JSON.stringify(body)} imp=${getImpersonationResourceId() ?? ''}`;
       return cachedRead<T>(tenant, key, path, () => this.send<T>(method, path, body, isZoneRetry, opts));
     }
     const { value } = await this.send<T>(method, path, body, isZoneRetry, opts);
     invalidateAfterWrite(tenant, path);
+    if (writeListener) {
+      try { writeListener(method.toUpperCase(), path, body, value); } catch { /* a listener must never fail a write */ }
+    }
     return value;
   }
 
@@ -308,10 +353,33 @@ export class AutotaskHttpClient {
    * pageDetails.nextPageUrl pagination). Returns the parsed body plus its size
    * (for the cache's size cap).
    */
+  /**
+   * Per-endpoint concurrency gate in front of every upstream call. Autotask
+   * allows 3 concurrent requests per integration per object endpoint and
+   * answers the 4th with 429 (thread limiting). A burst of parallel searches
+   * used to trip that; now calls beyond AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT
+   * (default 2 — one thread of headroom) WAIT their turn instead of failing.
+   * Cached / coalesced reads never reach here, so they take no slot.
+   */
   private async send<T>(
     method: string,
     path: string,
     body?: any,
+    isZoneRetry = false,
+    opts: { allowEmptyBody?: boolean } = {}
+  ): Promise<{ value: T; bytes: number }> {
+    const release = await acquireEndpointSlot(`${this.username.toLowerCase()} ${endpointOf(path)}`);
+    try {
+      return await this.sendUngated<T>(method, path, body, isZoneRetry, opts);
+    } finally {
+      release();
+    }
+  }
+
+  private async sendUngated<T>(
+    method: string,
+    path: string,
+    body?: unknown,
     isZoneRetry = false,
     opts: { allowEmptyBody?: boolean } = {}
   ): Promise<{ value: T; bytes: number }> {
@@ -385,7 +453,7 @@ export class AutotaskHttpClient {
         );
         this.resolvedBaseUrl = null;
         invalidateZoneUrlCache(this.username);
-        return this.send<T>(method, path, body, true, opts);
+        return this.sendUngated<T>(method, path, body, true, opts); // already holds the endpoint slot
       }
       let detail = text.slice(0, 1000);
       try {
@@ -580,7 +648,8 @@ export class AutotaskHttpClient {
     }
 
     const items: T[] = [];
-    let resp = await this.request<QueryResponse<T>>('POST', `/${entity}/query`, body);
+    const reqOpts = opts.noCache ? { noCache: true } : {};
+    let resp = await this.request<QueryResponse<T>>('POST', `/${entity}/query`, body, false, reqOpts);
     if (resp?.items) items.push(...resp.items);
 
     while (
@@ -592,7 +661,7 @@ export class AutotaskHttpClient {
       // body as the initial query; a GET returns HTTP 405 ("does not support
       // http method 'GET'"), which silently truncates large result sets (e.g.
       // the company name cache never loads past the first page).
-      resp = await this.request<QueryResponse<T>>('POST', resp.pageDetails.nextPageUrl, body);
+      resp = await this.request<QueryResponse<T>>('POST', resp.pageDetails.nextPageUrl, body, false, reqOpts);
       if (resp?.items) items.push(...resp.items);
     }
 

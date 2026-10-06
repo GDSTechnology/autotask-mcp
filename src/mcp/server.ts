@@ -7,6 +7,7 @@
 // traffic natively + 2025-era traffic via the default stateless legacy
 // fallback) and serveStdio (stdio, same factory, era pinned per connection).
 
+import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
 import {
   createMcpHandler,
   Server,
@@ -280,6 +281,12 @@ export class AutotaskMcpServer {
     const transportType = this.envConfig?.transport?.type || 'stdio';
     this.logger.info(`Starting Autotask MCP Server with ${transportType} transport...`);
 
+    // Postgres shadow (no-op unless MCP_PG_ENABLED + MCP_PG_SHADOW_ENABLED).
+    // Single-tenant env mode only: the mirror is of THIS server's tenant.
+    if (this.envConfig?.auth?.mode !== 'gateway') {
+      try { initShadow(this.autotaskService, this.logger); } catch (err) { this.logger.error('Postgres shadow failed to start (continuing without it)', err); }
+    }
+
     if (transportType === 'http') {
       await this.startHttpTransport();
     } else {
@@ -365,6 +372,7 @@ export class AutotaskMcpServer {
           authMode: isGatewayMode ? 'gateway' : 'env',
           timestamp: new Date().toISOString(),
           ...(u ? { apiUsage: { upstreamLastHour: u.upstreamLastHour, upstreamLastFiveMinutes: u.upstreamLastFiveMinutes, savedPct: u.savedPct, rateLimited: u.rateLimited, cacheEnabled: u.cacheEnabled } } : {}),
+          ...shadowHealth(),
         }));
         return;
       }
@@ -467,6 +475,7 @@ export class AutotaskMcpServer {
    */
   async stop(): Promise<void> {
     this.logger.info('Stopping Autotask MCP Server...');
+    getShadowRuntime()?.stop();
     if (this.httpServer) {
       await new Promise<void>((resolve, reject) => {
         this.httpServer!.close((err) => err ? reject(err) : resolve());
@@ -539,4 +548,12 @@ This server requires valid Autotask API credentials. Ensure you have:
 For more information, visit: https://github.com/GDSTechnology/autotask-mcp
 `.trim();
   }
+}
+
+/** Compact shadow status for /health — in-memory only, never a database round-trip. */
+function shadowHealth(): Record<string, unknown> {
+  const rt = getShadowRuntime();
+  if (!rt) return {};
+  const last = rt.lastRun();
+  return { shadow: { enabled: true, serveReads: rt.serveReads, lastRunAt: last?.at ?? null, lastRunCalls: last?.report.calls ?? null, ...(last?.report.skipped ? { lastRunSkipped: last.report.skipped } : {}) } };
 }

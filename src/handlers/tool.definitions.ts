@@ -1108,6 +1108,61 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_shadow_status',
+    description: 'READ-ONLY. State of the Postgres shadow — the read-only mirror of Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts, ContractServices, ContractBlocks and Resources: per entity row count, whether the backfill is done, data age, Autotask calls spent, last error; whether search tools are being served from it; the last sync run.',
+    annotations: { title: 'Shadow status', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'autotask_shadow_query',
+    description: 'READ-ONLY, 0 Autotask API calls. Query the Postgres shadow with the SAME filter format as the Autotask API — [{op, field, value}], ops eq/noteq/gt/gte/lt/lte/beginsWith/endsWith/contains/exist/notExist/in/notIn, and {op:"and"|"or", items:[…]} groups. Use it for heavy reads (thousands of tickets / time entries / companies) instead of paging the live API. Returns rows, the total match count, and freshness (data age; "backfilling" means incomplete).',
+    annotations: { title: 'Query the shadow (SQL)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts, ContractServices, ContractBlocks or Resources' },
+        filters: { type: 'array', items: { type: 'object' }, description: 'Autotask-style filters, AND-ed. E.g. [{"op":"eq","field":"contractID","value":29685345},{"op":"gte","field":"dateWorked","value":"2026-04-01"}]' },
+        fields: { type: 'array', items: { type: 'string' }, description: 'Only these fields (id always included). Omit for whole records.' },
+        orderBy: { type: 'string', description: 'Field to sort by (default newest id first); "month:dateWorked" style also works' },
+        desc: { type: 'boolean', description: 'Sort descending' },
+        limit: { type: 'number', description: 'Rows to return (default 100, max 5000)' },
+        offset: { type: 'number', description: 'Rows to skip' }
+      },
+      required: ['entity']
+    }
+  },
+  {
+    name: 'autotask_shadow_aggregate',
+    description: 'READ-ONLY, 0 Autotask API calls. GROUP BY over the Postgres shadow — counts and numeric sums, e.g. hours by contract by month: { entity:"TimeEntries", filters:[{"op":"eq","field":"contractID","value":29685345}], groupBy:["resourceID","month:dateWorked"], sum:["hoursWorked","hoursToBill"] }. groupBy takes fields or "year:/month:/day:<dateField>".',
+    annotations: { title: 'Aggregate over the shadow (SQL)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', description: 'Shadow entity (see autotask_shadow_query)' },
+        filters: { type: 'array', items: { type: 'object' }, description: 'Autotask-style filters, AND-ed' },
+        groupBy: { type: 'array', items: { type: 'string' }, description: 'Fields or month:/day:/year:<dateField>' },
+        sum: { type: 'array', items: { type: 'string' }, description: 'Numeric fields to sum' },
+        limit: { type: 'number', description: 'Max groups (default 1000)' }
+      },
+      required: ['entity']
+    }
+  },
+  {
+    name: 'autotask_shadow_sync',
+    description: 'Run the Postgres shadow sync now (spends Autotask API calls within its per-run budget; skipped automatically above 50% hourly usage). action "run" (default): one incremental/backfill pass; "refresh": re-read specific ids of an entity; "reconcile": id-only sweep of one entity to catch deletions (big tables: ~one call per 500 rows). Never writes to Autotask.',
+    annotations: { title: 'Run shadow sync' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['run', 'refresh', 'reconcile'], description: 'Default run' },
+        entity: { type: 'string', description: 'For refresh / reconcile' },
+        ids: { type: 'array', items: { type: 'number' }, description: 'For refresh' },
+        maxCalls: { type: 'number', description: 'For reconcile: call budget (default 600, max 1000)' }
+      },
+      required: []
+    }
+  },
+  {
     name: 'autotask_get_ticket_by_number',
     description: 'READ-ONLY. The complete ticket by number (T20261005.0123 — the T is optional) or ID, fully resolved: every picklist labelled (status, priority, queue, source, ticket type, issue/sub-issue type, SLA, category, creator type) and every reference named — company, contact and created-by contact (name, email, active), assigned/creator/completed-by/last-activity resources, role, contract, opportunity, configuration item, work type, location, project, problem ticket — plus UDFs (list values labelled), the full description, and a direct Autotask link. For audits: pair with autotask_get_ticket_change_history and autotask_get_ticket_email_context.',
     annotations: { title: 'Get ticket (full, resolved)', readOnlyHint: true },
@@ -5897,7 +5952,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
+    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

@@ -15,6 +15,10 @@ import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
 import { defaultWorkDate, formatChoices, matchPicklist, TimeGap } from '../utils/staff-tools.js';
+import { getShadowRuntime } from '../db/shadow-runtime.js';
+import { SHADOW_ENTITIES, shadowEntity } from '../db/shadow-entities.js';
+
+const SHADOW_OFF = 'The Postgres shadow is not enabled on this server (MCP_PG_ENABLED + MCP_PG_SHADOW_ENABLED). Live Autotask tools still work.';
 import { classifyTimeEntryWriteError } from '../utils/time-entry-errors.js';
 
 // Destructive tools that DEFAULT to dry-run when `dryRun` is omitted — so the
@@ -996,7 +1000,7 @@ export class AutotaskToolHandler {
     // real pagination state instead of guessing from `items.length >= pageSize`.
     const paged = <T>(p: PagedResult<T>, noun: string) => ({
       result: p.items,
-      message: `Found ${p.items.length} ${noun}`,
+      message: `Found ${p.items.length} ${noun}${p.servedFrom ? ` (served from the Postgres shadow, data ${p.servedFrom.ageSeconds}s old — 0 Autotask calls)` : ''}`,
       pagination: { page: p.page, pageSize: p.pageSize, hasMore: p.hasMore },
     });
     // Run a time-entry write; an Autotask rejection we can explain (timesheet
@@ -1092,6 +1096,62 @@ export class AutotaskToolHandler {
           result: r,
           message: `${at}. This server: ${sv.upstreamLastHour} upstream call(s) in the last hour (${sv.upstreamLastFiveMinutes} in 5 min), ${sv.cacheHits} cache hit(s) + ${sv.coalesced} shared read(s)${sv.savedPct != null ? ` (${sv.savedPct}% of reads saved)` : ''}, ${sv.rateLimited} 429(s) since ${sv.since}${top ? `. Top: ${top}` : ''}.`,
         };
+      }],
+      // Postgres shadow (read-only mirror of Tickets / TimeEntries / Companies /
+      // Contacts / Contracts / services / blocks / Resources). Reads cost 0 Autotask calls.
+      ['autotask_shadow_status', async () => {
+        const rt = getShadowRuntime();
+        if (!rt) return { result: { enabled: false }, message: SHADOW_OFF };
+        const states = await rt.store.allStates();
+        const fresh = await Promise.all(SHADOW_ENTITIES.map((e) => rt.store.freshness(e.name)));
+        const rows = fresh.map((f) => {
+          const st = states.find((s) => s.entity === f.entity);
+          return { ...f, backfillCursor: st?.backfill_cursor ?? 0, apiCallsTotal: st?.api_calls_total ?? 0, watermark: st?.watermark ?? null, lastReconcileAt: st?.last_reconcile_at ?? null, lastError: st?.last_error ?? null };
+        });
+        const ready = rows.filter((r) => r.ready);
+        return {
+          result: { enabled: true, serveReads: rt.serveReads, maxAgeSeconds: rt.maxAgeSeconds, pendingWrittenRows: rt.sync.dirtyCount(), lastRun: rt.lastRun(), entities: rows },
+          message: `Shadow: ${ready.length}/${rows.length} entities ready (${rows.map((r) => `${r.entity} ${r.rows}${r.ready ? '' : ' backfilling'}${r.ageSeconds != null ? ` ${r.ageSeconds}s old` : ''}`).join(', ')}); serving search reads: ${rt.serveReads ? 'yes' : 'no'}.`,
+        };
+      }],
+      ['autotask_shadow_query', async (a) => {
+        const rt = getShadowRuntime();
+        if (!rt) return { result: { enabled: false }, message: SHADOW_OFF };
+        const e = shadowEntity(a.entity);
+        if (!e) return { result: null, message: `entity must be one of: ${SHADOW_ENTITIES.map((x) => x.name).join(', ')}` };
+        const f = await rt.store.freshness(e.name);
+        const r = await rt.store.query(e.name, Array.isArray(a.filters) ? a.filters : [], { fields: a.fields, limit: a.limit, offset: a.offset, orderBy: a.orderBy, desc: a.desc === true });
+        return { result: { rows: r.rows, total: r.total, freshness: f }, message: `${r.rows.length} of ${r.total} ${e.name} from the Postgres shadow (${f.ready ? `data ${f.ageSeconds}s old` : 'STILL BACKFILLING — incomplete'}${f.windowFrom ? `; holds history from ${f.windowFrom} (plus open tickets) — older data is not in the shadow` : ''}; 0 Autotask calls).` };
+      }],
+      ['autotask_shadow_aggregate', async (a) => {
+        const rt = getShadowRuntime();
+        if (!rt) return { result: { enabled: false }, message: SHADOW_OFF };
+        const e = shadowEntity(a.entity);
+        if (!e) return { result: null, message: `entity must be one of: ${SHADOW_ENTITIES.map((x) => x.name).join(', ')}` };
+        const f = await rt.store.freshness(e.name);
+        const rows = await rt.store.aggregate(e.name, Array.isArray(a.filters) ? a.filters : [], Array.isArray(a.groupBy) ? a.groupBy : [], Array.isArray(a.sum) ? a.sum : [], a.limit ?? 1000);
+        return { result: { groups: rows, freshness: f }, message: `${rows.length} group(s) over ${e.name} from the Postgres shadow (${f.ready ? `data ${f.ageSeconds}s old` : 'STILL BACKFILLING — incomplete'}${f.windowFrom ? `; holds history from ${f.windowFrom} (plus open tickets) — older data is not in the shadow` : ''}; 0 Autotask calls).` };
+      }],
+      ['autotask_shadow_sync', async (a) => {
+        const rt = getShadowRuntime();
+        if (!rt) return { result: { enabled: false }, message: SHADOW_OFF };
+        const action = a.action ?? 'run';
+        if (action === 'refresh') {
+          const e = shadowEntity(a.entity);
+          const ids = (Array.isArray(a.ids) ? a.ids : []).map(Number).filter((n: number) => Number.isFinite(n) && n > 0);
+          if (!e || !ids.length) return { result: null, message: 'refresh needs entity and ids.' };
+          const n = await rt.sync.refreshIds(e.name, ids);
+          return { result: { refreshed: n }, message: `Re-read ${n} of ${ids.length} ${e.name} row(s) from Autotask into the shadow.` };
+        }
+        if (action === 'reconcile') {
+          const e = shadowEntity(a.entity);
+          if (!e) return { result: null, message: `reconcile needs entity: ${SHADOW_ENTITIES.map((x) => x.name).join(', ')}` };
+          const r = await rt.sync.reconcile(e.name, Math.min(Number(a.maxCalls) || 600, 1000));
+          return { result: r, message: `Reconciled ${e.name}: ${r.calls} call(s), ${r.rows} live id(s), ${r.deleted ?? 0} marked deleted${r.done ? '' : ' — INCOMPLETE (budget); run again'}.` };
+        }
+        const r = await rt.runNow();
+        if (!r) return { result: null, message: 'A sync is already running (here or on another instance) — try again shortly.' };
+        return { result: r, message: r.skipped ?? `Sync run: ${r.calls} Autotask call(s); ${r.entities.map((x) => `${x.entity} ${x.mode}${x.rows ? ` ${x.rows}` : ''}${x.error ? ` ERROR ${x.error}` : ''}`).join(', ')}.` };
       }],
       ['autotask_test_connection', async () => {
         const ok = await s.testConnection();

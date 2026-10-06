@@ -2,3 +2,4 @@
 # even when checked out on Windows, or the container shell mis-parses them.
 *.sh text eol=lf
 dev-postgres/init/* text eol=lf
+deploy/postgres-init/* text eol=lf

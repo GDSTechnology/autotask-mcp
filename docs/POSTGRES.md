@@ -90,3 +90,61 @@ secrets. Migrations run as the **migrator** role (`MCP_PG_MIGRATOR_USER` /
 PG disabled → live Autotask only. PG outage → safe live ops continue, cached/job
 features degrade. Schema behind the code → newer-schema features disable
 themselves. The server must never hard-fail because Postgres is unavailable.
+
+## Shadow — read-only Autotask mirror (`MCP_PG_SHADOW_ENABLED`)
+
+Heavy reads (thousands of tickets / time entries, contract and labor sweeps,
+reports) cost Autotask API calls, and every integration on the tenant shares one
+**10,000 requests/hour** budget per database, with Autotask adding **0.5 s** of
+latency per call past 50% and **1 s** past 75%, plus a **3 concurrent threads per
+endpoint** limit. The shadow keeps a read-only copy of the busiest entities in
+Postgres so those reads cost **0** Autotask calls. Autotask stays authoritative:
+every write still goes to Autotask.
+
+**Mirrored:** Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts (incremental, by
+their last-modified field), ContractServices, ContractBlocks, Resources (small;
+refreshed in full hourly). One table, `shadow_record (entity, id, data jsonb, …)`,
+plus `shadow_sync_state` (migration `0002_shadow.sql`).
+
+**How it stays fresh**
+- **Backfill** — first load walks `id > cursor` in 500-row pages (Autotask returns
+  ≤ 500 rows sorted by id), resumable across runs. About 750 calls for the whole
+  tenant, spread over several runs.
+- **Incremental** — every `MCP_PG_SHADOW_INTERVAL_SECONDS` (300): rows modified or
+  created since the watermark (minus 2 min overlap). Typically a handful of calls.
+- **Own writes** — rows the MCP writes are re-read at the start of the next run.
+- **Deletions** — a nightly id-only sweep (`MCP_PG_SHADOW_RECONCILE_HOUR_UTC`).
+- **Budget** — at most `MCP_PG_SHADOW_MAX_CALLS_PER_RUN` (100) calls per run; a
+  run is **skipped** when tenant usage ≥ `MCP_PG_SHADOW_PAUSE_AT_PCT` (50 — below
+  Autotask's latency zone). Calls are strictly sequential (1 of the 3 threads).
+- **One instance** — a Postgres advisory lock means only one MCP syncs.
+- **History window** — `MCP_PG_SHADOW_HISTORY_MONTHS` (6): Tickets backfill only
+  rows active or created in the window **plus every open ticket**; TimeEntries
+  only rows worked in the window. Companies, Contacts, Contracts, Tasks and the
+  small tables are kept whole (reference data). A search is served from the
+  shadow only when its filters stay inside the window (open tickets, or a
+  date bound at/after the window start); anything reaching further back goes
+  live. At GDS: ~305 calls for the first load instead of ~765.
+- **Size** (measured at GDS, 6-month window): ≈ 215 MB of records, ≈ 350 MB
+  with indexes — Companies + Contacts are three quarters of it. Grows ≈ 10 MB a
+  month (rows that age out of the window are kept).
+
+**Using it**
+- `autotask_shadow_query` / `autotask_shadow_aggregate` — SQL over the mirror with
+  the same filter format as the Autotask API; every answer reports data age.
+- `MCP_PG_SHADOW_SERVE_READS=true` — the regular `search_*` tools (tickets, time
+  entries, companies, contacts, resources, …) are answered from the shadow while
+  the entity is backfilled and younger than `MCP_PG_SHADOW_MAX_AGE_SECONDS` (900);
+  otherwise, or for any filter the shadow can't translate, they go live.
+  Verified: same ids, order and `hasMore` as the live API.
+- `autotask_shadow_status` — rows, backfill progress, age, calls spent, errors.
+- `autotask_shadow_sync` — run now / re-read ids / reconcile one entity.
+- `/health` shows `shadow.lastRunAt` / `lastRunCalls` (no DB round-trip).
+
+## Per-endpoint concurrency gate (always on)
+
+Autotask allows **3 concurrent requests per integration per object endpoint**
+and answers the 4th with **429**. Every upstream call now passes a gate keyed by
+endpoint (Tickets, TimeEntries, …): at most `AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT`
+(default **2**, max 3) in flight, the rest **wait their turn** instead of failing.
+Cached and shared (coalesced) reads never reach upstream, so they take no slot.

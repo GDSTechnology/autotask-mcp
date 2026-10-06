@@ -75,6 +75,8 @@ WORKDIR /app
 # yet another layer and double the image again.
 COPY --from=builder --chown=autotask:autotask /app/package*.json ./
 COPY --from=builder --chown=autotask:autotask /app/dist ./dist
+# SQL migrations for the optional Postgres layer (node dist/db/migrate.js reads ../../migrations).
+COPY --chown=autotask:autotask migrations ./migrations
 COPY --from=deps --chown=autotask:autotask /app/node_modules ./node_modules
 
 # Remove the npm CLI from the production image — the runtime only needs `node`

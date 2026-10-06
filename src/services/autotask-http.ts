@@ -23,6 +23,12 @@ export interface QueryOptions {
   maxRecords?: number;
   includeFields?: string[];
   page?: number;
+  /**
+   * Skip the in-memory read cache and send straight upstream. For
+   * bulk walks like the Postgres shadow sync: hundreds of 500-row pages read
+   * once must not sit in process memory for the cache TTL.
+   */
+  noCache?: boolean;
 }
 
 export interface QueryByIdsOptions extends QueryOptions {
@@ -74,6 +80,15 @@ const RAW_REQUEST_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
  * hand callers a useless shell. When `item` is present we use it (even if null);
  * otherwise the entity is at the top level (some legacy routes).
  */
+/**
+ * Process-wide hook called after every successful Autotask WRITE (method, path,
+ * body, response). The Postgres shadow uses it to re-read the rows the MCP
+ * just changed, so the mirror never lags the MCP's own writes.
+ */
+export type WriteListener = (method: string, path: string, body: unknown, response: unknown) => void;
+let writeListener: WriteListener | null = null;
+export function setWriteListener(fn: WriteListener | null): void { writeListener = fn; }
+
 /** A UDF definition from entityInformation/userDefinedFields (list UDFs carry picklistValues). */
 export interface UdfDefinition { name: string; isPickList?: boolean; picklistValues?: Array<{ value: unknown; label: string }> }
 
@@ -290,15 +305,18 @@ export class AutotaskHttpClient {
     path: string,
     body?: unknown,
     isZoneRetry = false,
-    opts: { allowEmptyBody?: boolean } = {}
+    opts: { allowEmptyBody?: boolean; noCache?: boolean } = {}
   ): Promise<T> {
     const tenant = this.username.toLowerCase();
-    if (isRead(method, path)) {
+    if (isRead(method, path) && !opts.noCache) {
       const key = `${method.toUpperCase()} ${path} ${body === undefined ? '' : JSON.stringify(body)} imp=${getImpersonationResourceId() ?? ''}`;
       return cachedRead<T>(tenant, key, path, () => this.send<T>(method, path, body, isZoneRetry, opts));
     }
     const { value } = await this.send<T>(method, path, body, isZoneRetry, opts);
     invalidateAfterWrite(tenant, path);
+    if (writeListener) {
+      try { writeListener(method.toUpperCase(), path, body, value); } catch { /* a listener must never fail a write */ }
+    }
     return value;
   }
 
@@ -580,7 +598,8 @@ export class AutotaskHttpClient {
     }
 
     const items: T[] = [];
-    let resp = await this.request<QueryResponse<T>>('POST', `/${entity}/query`, body);
+    const reqOpts = opts.noCache ? { noCache: true } : {};
+    let resp = await this.request<QueryResponse<T>>('POST', `/${entity}/query`, body, false, reqOpts);
     if (resp?.items) items.push(...resp.items);
 
     while (
@@ -592,7 +611,7 @@ export class AutotaskHttpClient {
       // body as the initial query; a GET returns HTTP 405 ("does not support
       // http method 'GET'"), which silently truncates large result sets (e.g.
       // the company name cache never loads past the first page).
-      resp = await this.request<QueryResponse<T>>('POST', resp.pageDetails.nextPageUrl, body);
+      resp = await this.request<QueryResponse<T>>('POST', resp.pageDetails.nextPageUrl, body, false, reqOpts);
       if (resp?.items) items.push(...resp.items);
     }
 

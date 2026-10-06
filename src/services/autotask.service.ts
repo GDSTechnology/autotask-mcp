@@ -60,6 +60,11 @@ import {
   AttachmentRow, ContactRow, contactName, HistoryRow,
 } from '../utils/ticket-audit';
 import { parseAddress, parseAddressList, parseRfc822 } from '../utils/rfc822';
+import {
+  clusters, companyClusterKeys, CompanyCriteria, companyEvidence, CompanyRow, companySearchToken, Conflict, contactClusterKeys,
+  ContactCriteria, contactEmails, contactEvidence, ContactRow as ContactRowFull, domainOf, Evidence, fullName, isFreeMailDomain,
+  normalizePhone, score, splitPersonName, verdict,
+} from '../utils/identity-match';
 import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { RoleChoice, RoleSource } from '../utils/time-entry-role';
@@ -226,6 +231,241 @@ export class AutotaskService {
   // =====================================================
   // Companies (Autotask entity: Companies)
   // =====================================================
+
+  // ---- Identity (read-only): full company/contact records, bounded identity
+  // search with evidence, candidate resolution, duplicates around a record.
+  // NEVER creates or updates anything. Queries are sequential and capped.
+
+  private static readonly IDENTITY_CAP = 200;
+  private static readonly COMPANY_ID_FIELDS = ['id', 'companyName', 'webAddress', 'phone', 'alternatePhone1', 'alternatePhone2', 'fax', 'isActive', 'companyType', 'companyNumber', 'ownerResourceID', 'createDate', 'createdByResourceID', 'parentCompanyID'];
+  private static readonly CONTACT_ID_FIELDS = ['id', 'firstName', 'lastName', 'emailAddress', 'emailAddress2', 'emailAddress3', 'phone', 'mobilePhone', 'alternatePhone', 'companyID', 'isActive', 'createDate', 'title'];
+
+  /** A full record by id with picklists labelled, referenced resources/companies named, and UDFs labelled. */
+  private async getRecordFull(entity: 'Companies' | 'Contacts', id: number, resourceFields: string[], companyFields: string[]): Promise<Record<string, unknown> | null> {
+    const http = await this.ensureClient();
+    const raw = await http.get<Record<string, unknown>>(entity, id);
+    if (!raw) return null;
+    const { userDefinedFields, ...record } = raw;
+    const errors: Array<{ section: string; error: string }> = [];
+    const section = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
+      try { return await fn(); } catch (e) { errors.push({ section: name, error: e instanceof Error ? e.message : String(e) }); return undefined; }
+    };
+    const labels = (await section('labels', async () => picklistLabels(record, await this.getFieldInfo(entity)))) ?? {};
+    const names: Record<string, Record<string, unknown>> = {};
+    const num = (v: unknown): number | null => (v === null || v === undefined || v === '' ? null : Number(v));
+    const rids = resourceFields.map((f) => num(record[f])).filter((x): x is number => x != null);
+    if (rids.length) {
+      const m = await section('resources', () => this.getResourceNames(rids));
+      for (const f of resourceFields) { const r = num(record[f]); if (r != null) names[f] = { id: r, name: m?.get(r) ?? (r === SYSTEM_RESOURCE_ID ? 'Autotask Administrator (system)' : null) }; }
+    }
+    const cids = companyFields.map((f) => num(record[f])).filter((x): x is number => x != null);
+    if (cids.length) {
+      const rows = await section('companies', () => this.getCompanyNamesByIds(cids));
+      for (const f of companyFields) { const c = num(record[f]); if (c != null) names[f] = { id: c, name: rows?.find((x) => x.id === c)?.companyName ?? null }; }
+    }
+    const udfs = await section('udfs', async () => labelUdfs(userDefinedFields, (await http.udfInfo(entity)).fields));
+    return { [entity === 'Companies' ? 'company' : 'contact']: record, labels, names, udfs: udfs ?? [], ...(errors.length ? { errors } : {}) };
+  }
+
+  /** Full company record (read-only): labels, owner/creator/parent named, UDFs. */
+  async getCompanyFull(id: number): Promise<Record<string, unknown> | null> {
+    return this.getRecordFull('Companies', id, ['ownerResourceID', 'createdByResourceID', 'impersonatorCreatorResourceID'], ['parentCompanyID']);
+  }
+
+  /** Full contact record (read-only): labels, company named, UDFs. */
+  async getContactFull(id: number): Promise<Record<string, unknown> | null> {
+    return this.getRecordFull('Contacts', id, ['impersonatorCreatorResourceID'], ['companyID']);
+  }
+
+  /**
+   * Companies matching ANY of: normalized name (bounded `contains` on its most
+   * distinctive word, compared normalized), web domain, contacts' email
+   * domain (skipped for consumer domains like gmail.com), phone (last-4
+   * `contains`, compared on normalized digits), companyNumber. Every row with
+   * evidence is returned, ranked — never one silently picked. Inactive
+   * companies are INCLUDED unless isActive is given.
+   */
+  async findCompanies(q: CompanyCriteria & { companyType?: number; isActive?: boolean; excludeIDs?: number[] }): Promise<Record<string, unknown>> {
+    const http = await this.ensureClient();
+    const cap = AutotaskService.IDENTITY_CAP;
+    const scope: QueryFilter[] = [
+      ...(q.companyType != null ? [{ op: 'eq', field: 'companyType', value: q.companyType } as QueryFilter] : []),
+      ...(q.isActive != null ? [{ op: 'eq', field: 'isActive', value: q.isActive } as QueryFilter] : []),
+    ];
+    const rows = new Map<number, CompanyRow>();
+    const extra = new Map<number, Evidence[]>();
+    const queries: string[] = [];
+    const add = (rs: CompanyRow[]) => { for (const r of rs) rows.set(Number(r.id), r); };
+    const fetch = (filter: QueryFilter[]) => http.query<CompanyRow>('Companies', [...filter, ...scope], { maxRecords: cap, includeFields: AutotaskService.COMPANY_ID_FIELDS });
+
+    if (q.name) {
+      const token = companySearchToken(q.name);
+      add(await fetch([token ? { op: 'contains', field: 'companyName', value: token } : { op: 'eq', field: 'companyName', value: q.name.trim() }]));
+      queries.push(`name ${token ? `contains "${token}"` : 'eq'}`);
+    }
+    const domain = domainOf(q.domain);
+    const freeMail = isFreeMailDomain(domain);
+    if (domain && !freeMail) {
+      add(await fetch([{ op: 'contains', field: 'webAddress', value: domain }]));
+      const viaContacts = await http.query<{ id: number; companyID?: number }>('Contacts', [{ op: 'endsWith', field: 'emailAddress', value: `@${domain}` }], { maxRecords: cap, includeFields: ['id', 'companyID'] });
+      const counts = new Map<number, number>();
+      for (const c of viaContacts) if (c.companyID != null) counts.set(Number(c.companyID), (counts.get(Number(c.companyID)) ?? 0) + 1);
+      const ids = [...counts.keys()];
+      for (let i = 0; i < ids.length; i += cap) add(await fetch([{ op: 'in', field: 'id', value: ids.slice(i, i + cap) }]));
+      for (const [cid, n] of counts) extra.set(cid, [...(extra.get(cid) ?? []), { kind: 'contact_email_domain', strength: 'medium', detail: `${n} contact(s) with @${domain} email` }]);
+      queries.push(`webAddress contains "${domain}"`, `contacts email endsWith "@${domain}"`);
+    }
+    const phone = normalizePhone(q.phone);
+    if (phone) {
+      add(await fetch([{ op: 'or', items: ['phone', 'alternatePhone1', 'alternatePhone2'].map((f) => ({ op: 'contains', field: f, value: phone.slice(-4) })) }]));
+      queries.push(`phone contains "…${phone.slice(-4)}"`);
+    }
+    if (q.companyNumber) { add(await fetch([{ op: 'eq', field: 'companyNumber', value: q.companyNumber.trim() }])); queries.push('companyNumber eq'); }
+
+    const exclude = new Set(q.excludeIDs ?? []);
+    const scored = [...rows.values()].filter((r) => !exclude.has(Number(r.id))).map((r) => {
+      const { evidence, conflicts } = companyEvidence(r, q, extra.get(Number(r.id)));
+      return { row: r, evidence, conflicts, score: score(evidence) };
+    }).filter((x) => x.evidence.length)
+      .sort((a, b) => b.score - a.score || String(b.row.createDate ?? '').localeCompare(String(a.row.createDate ?? '')));
+
+    let typeLabels: PicklistValue[] = [];
+    try { typeLabels = await this.getPicklistValues('Companies', 'companyType'); } catch { /* ids only */ }
+    let owners = new Map<number, string>();
+    try { owners = await this.getResourceNames(scored.flatMap((x) => [x.row.ownerResourceID, x.row.createdByResourceID]).filter((v) => v != null)); } catch { /* ids only */ }
+    const candidates = scored.map(({ row: r, evidence, conflicts, score: s }) => ({
+      id: Number(r.id), companyName: r.companyName ?? null, webAddress: r.webAddress ?? null, phone: r.phone ?? null,
+      companyType: { value: r.companyType ?? null, label: typeLabels.find((t) => String(t.value) === String(r.companyType))?.label ?? null },
+      companyNumber: r.companyNumber ?? null, isActive: r.isActive ?? null, parentCompanyID: r.parentCompanyID ?? null,
+      owner: { id: r.ownerResourceID ?? null, name: r.ownerResourceID != null ? owners.get(Number(r.ownerResourceID)) ?? null : null },
+      createDate: r.createDate ?? null, createdBy: { id: r.createdByResourceID ?? null, name: r.createdByResourceID != null ? owners.get(Number(r.createdByResourceID)) ?? null : null },
+      score: s, evidence, conflicts,
+    }));
+    return {
+      candidates,
+      clusters: clusters(scored.map((x) => x.row), companyClusterKeys),
+      ...(domain ? { domain: { value: domain, freeMail, ...(freeMail ? { note: `${domain} is a consumer mailbox provider — not used to match companies` } : {}) } } : {}),
+      queries, truncatedAt: [...rows.values()].length >= cap ? cap : null,
+    };
+  }
+
+  /**
+   * Contacts matching ANY of: exact email (primary/2nd/3rd — EVERY duplicate
+   * returned), name (last name eq + first-initial, compared normalized),
+   * phone (phone/mobile/alternate, normalized), or all contacts of companyID.
+   * Inactive contacts are INCLUDED unless isActive is given.
+   */
+  async findContacts(q: ContactCriteria & { companyID?: number; isActive?: boolean; excludeIDs?: number[] }): Promise<Record<string, unknown>> {
+    const http = await this.ensureClient();
+    const cap = AutotaskService.IDENTITY_CAP;
+    const scope: QueryFilter[] = [
+      ...(q.companyID != null ? [{ op: 'eq', field: 'companyID', value: q.companyID } as QueryFilter] : []),
+      ...(q.isActive != null ? [{ op: 'eq', field: 'isActive', value: q.isActive ? 1 : 0 } as QueryFilter] : []),
+    ];
+    const rows = new Map<number, ContactRowFull>();
+    const queries: string[] = [];
+    const fetch = async (filter: QueryFilter[]) => { for (const r of await http.query<ContactRowFull>('Contacts', [...filter, ...scope], { maxRecords: cap, includeFields: AutotaskService.CONTACT_ID_FIELDS })) rows.set(Number(r.id), r); };
+
+    const email = String(q.email ?? '').trim().toLowerCase();
+    if (email) { await fetch([{ op: 'or', items: ['emailAddress', 'emailAddress2', 'emailAddress3'].map((f) => ({ op: 'eq', field: f, value: email })) }]); queries.push('email eq (all 3 email fields)'); }
+    const name = q.name ? splitPersonName(q.name) : null;
+    if (name) { await fetch([{ op: 'eq', field: 'lastName', value: name.last }, { op: 'beginsWith', field: 'firstName', value: name.first.slice(0, 1) }]); queries.push(`lastName eq "${name.last}" + firstName beginsWith "${name.first.slice(0, 1)}"`); }
+    const phone = normalizePhone(q.phone);
+    if (phone) { await fetch([{ op: 'or', items: ['phone', 'mobilePhone', 'alternatePhone'].map((f) => ({ op: 'contains', field: f, value: phone.slice(-4) })) }]); queries.push(`phone contains "…${phone.slice(-4)}"`); }
+    if (!email && !name && !phone && q.companyID != null) { await fetch([]); queries.push(`all contacts of company ${q.companyID}`); }
+
+    const exclude = new Set(q.excludeIDs ?? []);
+    const companyOnly = !email && !name && !phone;
+    const scored = [...rows.values()].filter((r) => !exclude.has(Number(r.id))).map((r) => {
+      const { evidence, conflicts } = contactEvidence(r, q);
+      return { row: r, evidence, conflicts, score: score(evidence) };
+    }).filter((x) => companyOnly || x.evidence.length)
+      .sort((a, b) => b.score - a.score || String(b.row.createDate ?? '').localeCompare(String(a.row.createDate ?? '')));
+    let companyNames: Array<{ id: number; companyName: string }> = [];
+    try { companyNames = await this.getCompanyNamesByIds(scored.map((x) => Number(x.row.companyID)).filter((n) => Number.isFinite(n))); } catch { /* ids only */ }
+    const candidates = scored.map(({ row: r, evidence, conflicts, score: s }) => ({
+      id: Number(r.id), name: fullName(r), firstName: r.firstName ?? null, lastName: r.lastName ?? null, title: r.title ?? null,
+      emails: contactEmails(r), phones: { phone: r.phone ?? null, mobilePhone: r.mobilePhone ?? null, alternatePhone: r.alternatePhone ?? null },
+      company: { id: r.companyID ?? null, name: companyNames.find((c) => c.id === Number(r.companyID))?.companyName ?? null },
+      isActive: r.isActive === true || r.isActive === 1, createDate: r.createDate ?? null,
+      score: s, evidence, conflicts,
+    }));
+    return { candidates, clusters: clusters(scored.map((x) => x.row), contactClusterKeys), queries, truncatedAt: rows.size >= cap ? cap : null };
+  }
+
+  /**
+   * "Which company and contact is this?" — read-only. Runs the bounded contact
+   * and company searches, links them (a contact's company becomes a company
+   * candidate; a contact inside a candidate company gains evidence), and
+   * returns ranked candidates with evidence, conflicts, duplicate clusters and
+   * a verdict (matched / ambiguous / unmatched) for each side. NEVER creates.
+   */
+  async findCompanyContactCandidates(input: { companyName?: string; contactName?: string; email?: string; phone?: string; domain?: string }): Promise<Record<string, unknown>> {
+    const emailDomain = domainOf(input.email);
+    const companyDomain = domainOf(input.domain) ?? (isFreeMailDomain(emailDomain) ? null : emailDomain);
+    const notes: string[] = [];
+    if (emailDomain && isFreeMailDomain(emailDomain)) notes.push(`${emailDomain} is a consumer mailbox — the email identifies the PERSON, not the company; company matching uses name/phone only.`);
+
+    const contactQ: ContactCriteria = { email: input.email, name: input.contactName, phone: input.phone };
+    const firstPass = await this.findContacts(contactQ) as { candidates: Array<{ id: number; company: { id: number | null }; evidence: Evidence[] }> };
+    const companies = await this.findCompanies({ name: input.companyName, domain: companyDomain ?? undefined, phone: input.phone }) as { candidates: Array<{ id: number; evidence: Evidence[]; conflicts: Conflict[]; score: number }>; clusters: unknown[]; queries: string[] };
+
+    // Companies reached only through a matched contact: add them with that link as evidence.
+    const linked = new Map<number, Evidence>();
+    for (const c of firstPass.candidates) {
+      if (c.company.id == null) continue;
+      const strong = c.evidence.some((e) => e.kind === 'email_exact');
+      const prev = linked.get(c.company.id);
+      if (!prev || (strong && prev.strength !== 'strong')) linked.set(c.company.id, { kind: 'linked_contact', strength: strong ? 'strong' : 'weak', detail: `contact ${c.id} (${c.evidence.map((e) => e.kind).join('+')}) belongs to it` });
+    }
+    for (const cand of companies.candidates) { const ev = linked.get(cand.id); if (ev) { cand.evidence.push(ev); cand.score = score(cand.evidence); linked.delete(cand.id); } }
+    if (linked.size) {
+      const extraRows = await this.getCompanyNamesByIds([...linked.keys()]);
+      for (const [cid, ev] of linked) companies.candidates.push({ id: cid, companyName: extraRows.find((r) => r.id === cid)?.companyName ?? null, evidence: [ev], conflicts: input.companyName ? [{ field: 'companyName', detail: `does not match "${input.companyName}"` }] : [], score: score([ev]) } as never);
+    }
+    companies.candidates.sort((a, b) => b.score - a.score);
+
+    // Second look at contacts, now knowing the candidate companies.
+    const companyIDs = companies.candidates.map((c) => c.id);
+    const contacts = (companyIDs.length ? await this.findContacts({ ...contactQ, companyIDs }) : firstPass) as { candidates: Array<{ evidence: Evidence[]; conflicts: Conflict[] }>; clusters: unknown[]; queries: string[] };
+
+    return {
+      readOnly: true,
+      input,
+      emailDomain: emailDomain ? { value: emailDomain, freeMail: isFreeMailDomain(emailDomain) } : null,
+      contact: { ...verdict(contacts.candidates), candidates: contacts.candidates, duplicateClusters: contacts.clusters },
+      company: { ...verdict(companies.candidates), candidates: companies.candidates, duplicateClusters: companies.clusters },
+      notes,
+    };
+  }
+
+  /** Likely duplicates of one company (name / web domain / phone / companyNumber), inactive included. */
+  async findDuplicateCompanies(companyID: number): Promise<Record<string, unknown>> {
+    const http = await this.ensureClient();
+    const c = await http.get<CompanyRow>('Companies', companyID);
+    if (!c) return { companyID, status: 'not_found' };
+    const r = await this.findCompanies({ name: c.companyName, domain: c.webAddress ?? undefined, phone: c.phone ?? undefined, companyNumber: c.companyNumber ?? undefined, excludeIDs: [companyID] });
+    return { subject: { id: companyID, companyName: c.companyName ?? null, webAddress: c.webAddress ?? null, phone: c.phone ?? null, isActive: c.isActive ?? null, createDate: c.createDate ?? null }, ...r };
+  }
+
+  /** Likely duplicates of one contact (any of its emails / name / phones), across ALL companies, inactive included. */
+  async findDuplicateContacts(contactID: number): Promise<Record<string, unknown>> {
+    const http = await this.ensureClient();
+    const c = await http.get<ContactRowFull>('Contacts', contactID);
+    if (!c) return { contactID, status: 'not_found' };
+    const emails = contactEmails(c);
+    const merged = new Map<number, Record<string, unknown>>();
+    const queries: string[] = [];
+    // One pass per email (a duplicate may share only a secondary address), plus name + phone once.
+    const passes: ContactCriteria[] = emails.length ? emails.map((e, i) => ({ email: e, ...(i === 0 ? { name: fullName(c), phone: c.phone ?? c.mobilePhone ?? undefined } : {}) })) : [{ name: fullName(c), phone: c.phone ?? c.mobilePhone ?? undefined }];
+    for (const p of passes) {
+      const r = await this.findContacts({ ...p, excludeIDs: [contactID] }) as { candidates: Array<{ id: number; score: number }>; queries: string[] };
+      queries.push(...r.queries);
+      for (const cand of r.candidates) { const prev = merged.get(cand.id) as { score: number } | undefined; if (!prev || cand.score > prev.score) merged.set(cand.id, cand); }
+    }
+    const candidates = [...merged.values()].sort((a, b) => Number(b.score) - Number(a.score));
+    return { subject: { id: contactID, name: fullName(c), emails, companyID: c.companyID ?? null, isActive: c.isActive ?? null, createDate: c.createDate ?? null }, candidates, queries };
+  }
 
   async getCompany(id: number): Promise<AutotaskCompany | null> {
     const http = await this.ensureClient();

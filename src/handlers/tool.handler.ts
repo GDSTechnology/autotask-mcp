@@ -27,6 +27,7 @@ const DRY_RUN_FIRST_TOOLS = new Set<string>([
   'autotask_delete_time_entry',
   'autotask_delete_task',
   'autotask_delete_task_with_time',
+  'autotask_set_ticket_contract',
 ]);
 import { applyBillingTreatment } from '../utils/billing-treatment.js';
 import { defaultTimeZone, durationHours, normalizeTimestamp, validTimeZone } from '../utils/timezone.js';
@@ -1214,7 +1215,7 @@ export class AutotaskToolHandler {
         const hasFilters = a.searchTerm || a.title || a.companyID || a.contactID || a.status !== undefined ||
           a.priority !== undefined || a.queueID !== undefined ||
           a.assignedResourceID || a.unassigned || a.createdAfter || a.createdBefore || a.lastActivityAfter ||
-          a.externalID;
+          a.externalID || a.contractID || a.noContract;
         if (!hasFilters && this.mcpServer) {
           const dateChoice = await this.elicitDateRange();
           if (dateChoice) a = { ...a, ...dateChoice };
@@ -1332,6 +1333,31 @@ export class AutotaskToolHandler {
         ].filter(Boolean);
         const errs = (r.errors as unknown[] | undefined)?.length ? ` (${(r.errors as unknown[]).length} section(s) unavailable — see errors)` : '';
         return { result: r, message: `${t.ticketNumber} — ${t.title}: ${bits.join(', ')}${r.ticketUrl ? `. Open: ${r.ticketUrl}` : ''}${errs}` };
+      }],
+      ['autotask_set_ticket_contract', async (a) => {
+        const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId, ticketNumber: a.ticketNumber });
+        if ('error' in ref) return { result: null, message: ref.error };
+        const contractID = Number(a.contractID);
+        if (!Number.isInteger(contractID) || contractID <= 0) return { result: null, message: 'contractID (a positive integer) is required — nothing written.' };
+        const scope = a.entries ?? 'old_or_none';
+        if (!['old_or_none', 'none', 'all_unposted'].includes(scope)) return { result: null, message: `entries must be old_or_none, none or all_unposted — got "${scope}". Nothing written.` };
+        const fromContractID = a.fromContractID != null && a.fromContractID !== '' ? Number(a.fromContractID) : undefined;
+        const r = await s.setTicketContract({ ticketID: ref.id, contractID, ...(fromContractID != null ? { fromContractID } : {}), entries: scope, allowInactive: a.allowInactive === true, dryRun: a.dryRun !== false });
+        const plan = r.plan as { errors: string[]; warnings: string[]; counts: Record<string, number> } | undefined;
+        const tn = (r.ticketNumber as string | null) ?? `ticket ${ref.id}`;
+        const from = r.from as { id: number; number?: string | null } | null, to = r.to as { id: number; number?: string | null } | null;
+        const move = `${tn}: contract ${from ? `${from.id}${from.number ? ` (${from.number})` : ''}` : 'none'} → ${to ? `${to.id}${to.number ? ` (${to.number})` : ''}` : contractID}`;
+        const c = plan?.counts ?? {};
+        const ents = `time entries: ${c.move ?? 0} to move, ${c.already_on_target ?? 0} already on it, ${c.skip_posted ?? 0} posted (untouched), ${c.skip_other_contract ?? 0} on another contract (left)`;
+        const warn = plan?.warnings.length ? ` WARNINGS: ${plan.warnings.join(' | ')}` : '';
+        const message = r.status === 'not_found' ? `Ticket ${ref.id} not found.`
+          : r.status === 'validation_failed' ? `NOTHING WRITTEN — ${plan?.errors.join('; ')}.`
+          : r.status === 'nothing_to_change' ? `${move} — already correct; nothing to change.`
+          : r.status === 'dry_run' ? `DRY RUN (nothing written) — ${move}; ${ents}.${warn} Re-run with dryRun:false and confirm:true to apply.`
+          : r.status === 'failed' ? String(r.error)
+          : r.status === 'updated' ? `Done and verified — ${move}; ${ents}.${warn}`
+          : `PARTIAL — ${move}; verify: ${JSON.stringify(r.verified)}; results: ${JSON.stringify(r.results)}`;
+        return { result: r, message };
       }],
       ['autotask_get_ticket_change_history', async (a) => {
         const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId, ticketNumber: a.ticketNumber });
@@ -2943,6 +2969,8 @@ export class AutotaskToolHandler {
           taskId: a.taskId,
           approvalStatus: a.approvalStatus,
           billable: a.billable,
+          contractID: a.contractID,
+          noContract: a.noContract,
           dateWorkedAfter: a.dateWorkedAfter,
           dateWorkedBefore: a.dateWorkedBefore,
           page: a.page,

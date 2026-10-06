@@ -29,6 +29,7 @@ export const FINANCIAL_TOOLS = new Set<string>([
   'autotask_update_opportunity',
   'autotask_create_ticket_charge',
   'autotask_update_ticket_charge',
+  'autotask_set_ticket_contract',
   'autotask_create_expense_report',
   'autotask_create_expense_item',
 ]);

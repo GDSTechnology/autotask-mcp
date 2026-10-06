@@ -4,6 +4,25 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-05
+
+- **Email-created tickets keep the original message**: the email processor
+  attaches it as a `message/rfc822` TicketAttachment titled "Originating
+  Email" — real From / Reply-To / To / Subject / Authentication-Results.
+  `utils/rfc822.ts` parses it. Which mailbox / processor rule made the ticket
+  is NOT exposed by the API.
+- **`GET /TicketAttachments/{id}` answers in the QUERY shape**
+  `{ items: [record], pageDetails }`, not `{ item }`. `unwrapEntity` handled
+  only `{ item }`, so `get_ticket_attachment` includeData returned the wrapper
+  and silently skipped its parent-scope check and size cap. Fixed in
+  `unwrapEntity`; check new by-id GETs for this shape.
+- **TicketHistory** rows are `{action, date, detail, resourceID}`; `detail` is
+  "X changed from A to B" (values may contain " to " — anchor on picklist
+  labels). Actor 4 = system (workflow/triage rules); the MCP's API user shows
+  up as itself. ~40% of rows are timestamp-only noise.
+- Ticket UDF definitions (with list values) come from
+  `Tickets/entityInformation/userDefinedFields` (`http.udfInfo`).
+
 ## Learnings - 2026-10-02
 
 - **`ServiceCalls` has no resource field.** "My service calls on a day" is

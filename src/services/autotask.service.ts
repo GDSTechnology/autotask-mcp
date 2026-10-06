@@ -54,6 +54,12 @@ import { computeTicketThroughput, TicketThroughputResult } from '../utils/ticket
 import { resolveWebhookEntity, WEBHOOK_ENTITIES, WEBHOOK_PARENT_FK, buildWebhookPayload, validateWebhookCreate, buildWebhookFieldRow, WebhookParams, WebhookFieldSpec } from '../utils/webhook-entities';
 import { computeRequestSegmentation, RequestSegmentationResult, SegmentRule } from '../utils/request-segmentation';
 import { defaultTimeZone, normalizeTimestamp, validTimeZone } from '../utils/timezone';
+import {
+  actorKind, HISTORY_FIELD_PICKLIST, isEmailSource, labelUdfs, NOISE_HISTORY_ACTIONS, normalizeTicketNumber,
+  parseHistoryChange, picklistLabels, SYSTEM_RESOURCE_ID, TICKET_CONTACT_FIELDS, TICKET_RESOURCE_FIELDS,
+  AttachmentRow, ContactRow, contactName, HistoryRow,
+} from '../utils/ticket-audit';
+import { parseAddress, parseAddressList, parseRfc822 } from '../utils/rfc822';
 import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { RoleChoice, RoleSource } from '../utils/time-entry-role';
@@ -780,6 +786,263 @@ export class AutotaskService {
       this.logger.error(`Failed to update ticket ${id}:`, error);
       throw error;
     }
+  }
+
+  // =====================================================
+  // Ticket audit (read-only): full resolved ticket, parsed history, the
+  // originating email. Every section is fail-soft and runs sequentially.
+  // =====================================================
+
+  /** A ticket id from { ticketID } or { ticketNumber } ("T20261005.0123", T optional). */
+  async resolveTicketRef(ref: { ticketID?: unknown; ticketNumber?: unknown }): Promise<{ id: number; ticketNumber?: string } | { error: string }> {
+    if (ref.ticketID !== undefined && ref.ticketID !== null && ref.ticketID !== '') {
+      const id = Number(ref.ticketID);
+      return Number.isInteger(id) && id > 0 ? { id } : { error: `ticketID must be a positive integer, got "${String(ref.ticketID)}".` };
+    }
+    const number = normalizeTicketNumber(ref.ticketNumber);
+    if (!number) return { error: `Provide ticketID or a ticket number like T20261005.0123 (got "${String(ref.ticketNumber ?? '')}").` };
+    const http = await this.ensureClient();
+    const hits = await http.query<{ id: number; ticketNumber: string }>('Tickets', [{ op: 'eq', field: 'ticketNumber', value: number }], { maxRecords: 5, includeFields: ['id', 'ticketNumber'] });
+    if (!hits.length) return { error: `No ticket ${number} found.` };
+    if (hits.length > 1) return { error: `Ticket number ${number} matched ${hits.length} tickets (ids ${hits.map((h) => h.id).join(', ')}) — pass ticketID.` };
+    return { id: Number(hits[0]!.id), ticketNumber: number };
+  }
+
+  /**
+   * The full ticket with every picklist labelled and every reference named:
+   * company, contact(s) with email, resources, role, contract, opportunity,
+   * configuration item, work type, location, UDFs (list labels), and the
+   * Autotask link. Read-only; one call per referenced entity, sequential.
+   */
+  async getTicketFull(id: number): Promise<Record<string, unknown> | null> {
+    const http = await this.ensureClient();
+    const raw = await http.get<AutotaskTicket>('Tickets', id);
+    if (!raw) return null;
+    const { userDefinedFields, ...ticket } = raw;
+    const errors: Array<{ section: string; error: string }> = [];
+    const section = async <T>(name: string, fn: () => Promise<T>): Promise<T | undefined> => {
+      try { return await fn(); } catch (e) { errors.push({ section: name, error: e instanceof Error ? e.message : String(e) }); return undefined; }
+    };
+    const num = (v: unknown): number | null => (v === null || v === undefined || v === '' ? null : Number(v));
+    const names: Record<string, Record<string, unknown>> = {};
+
+    const labels = (await section('labels', async () => picklistLabels(ticket, await this.getFieldInfo('Tickets')))) ?? {};
+
+    const companyID = num(ticket.companyID);
+    if (companyID != null) {
+      const c = await section('company', () => this.getCompanyNamesByIds([companyID]));
+      names.companyID = { id: companyID, name: c?.[0]?.companyName ?? null };
+    }
+    const contactIds = TICKET_CONTACT_FIELDS.map((f) => num(ticket[f])).filter((x): x is number => x != null);
+    if (contactIds.length) {
+      const rows = await section('contacts', () => http.query<ContactRow>('Contacts', [{ op: 'in', field: 'id', value: [...new Set(contactIds)] }], { maxRecords: 10, includeFields: ['id', 'firstName', 'lastName', 'emailAddress', 'companyID', 'isActive'] }));
+      for (const f of TICKET_CONTACT_FIELDS) {
+        const cid = num(ticket[f]);
+        if (cid == null) continue;
+        const r = rows?.find((x) => Number(x.id) === cid);
+        names[f] = { id: cid, name: contactName(r), email: r?.emailAddress ?? null, companyID: r?.companyID ?? null, isActive: r?.isActive ?? null };
+      }
+    }
+    const resIds = TICKET_RESOURCE_FIELDS.map((f) => num(ticket[f])).filter((x): x is number => x != null);
+    if (resIds.length) {
+      const m = await section('resources', () => this.getResourceNames(resIds));
+      for (const f of TICKET_RESOURCE_FIELDS) {
+        const rid = num(ticket[f]);
+        if (rid != null) names[f] = { id: rid, name: m?.get(rid) ?? (rid === SYSTEM_RESOURCE_ID ? 'Autotask Administrator (system)' : null) };
+      }
+    }
+    // Single-row lookups: [ticket field, entity, the entity's name field(s)].
+    const singles: Array<[string, string, string[]]> = [
+      ['assignedResourceRoleID', 'Roles', ['name']],
+      ['contractID', 'Contracts', ['contractName']],
+      ['opportunityID', 'Opportunities', ['title']],
+      ['configurationItemID', 'ConfigurationItems', ['referenceTitle', 'serialNumber']],
+      ['billingCodeID', 'BillingCodes', ['name']],
+      ['companyLocationID', 'CompanyLocations', ['name']],
+      ['projectID', 'Projects', ['projectName']],
+      ['problemTicketId', 'Tickets', ['ticketNumber', 'title']],
+    ];
+    for (const [field, entity, nameFields] of singles) {
+      const rid = num(ticket[field]);
+      if (rid == null) continue;
+      const rows = await section(field, () => http.query<Record<string, unknown>>(entity, [{ op: 'eq', field: 'id', value: rid }], { maxRecords: 1, includeFields: ['id', ...nameFields] }));
+      const r = rows?.[0];
+      names[field] = { id: rid, ...Object.fromEntries(nameFields.map((n) => [n, r?.[n] ?? null])) };
+    }
+
+    const udfs = await section('udfs', async () => labelUdfs(userDefinedFields, (await http.udfInfo('Tickets')).fields));
+    let ticketUrl: string | null = null;
+    try { ticketUrl = this.getTicketWebUrl(id); } catch { /* no web base resolvable */ }
+    return { ticket, labels, names, udfs: udfs ?? (Array.isArray(userDefinedFields) ? userDefinedFields : []), ticketUrl, ...(errors.length ? { errors } : {}) };
+  }
+
+  /**
+   * TicketHistory as parsed events, oldest first: field / from / to for
+   * "X changed from A to B", the actor named and classified (system account,
+   * this MCP's API user, or a person). Timestamp-only actions are hidden by
+   * default and counted.
+   */
+  async getTicketHistoryEvents(id: number, opts: { includeNoise?: boolean } = {}): Promise<Record<string, unknown>> {
+    const http = await this.ensureClient();
+    const rows = await http.query<HistoryRow>('TicketHistory', [{ op: 'eq', field: 'ticketID', value: id }], { maxRecords: 500 });
+    rows.sort((a, b) => String(a.date ?? '').localeCompare(String(b.date ?? '')) || Number(a.id) - Number(b.id));
+    const noise = rows.filter((r) => NOISE_HISTORY_ACTIONS.has(String(r.action)));
+    const kept = opts.includeNoise ? rows : rows.filter((r) => !NOISE_HISTORY_ACTIONS.has(String(r.action)));
+
+    let fields: FieldInfo[] = [];
+    try { fields = await this.getFieldInfo('Tickets'); } catch { /* parse without label anchors */ }
+    const labelsFor = (field: string): string[] => {
+      const f = fields.find((x) => x.name === HISTORY_FIELD_PICKLIST[field.toLowerCase()]);
+      return (f?.picklistValues ?? []).map((v) => v.label);
+    };
+    let self: number | null = null;
+    try { self = await this.resolveApiUserResourceId(); } catch { /* unknown */ }
+    let actorNames = new Map<number, string>();
+    const actorIds = [...new Set(kept.map((r) => Number(r.resourceID)).filter((x) => Number.isFinite(x) && x > 0))];
+    try { if (actorIds.length) actorNames = await this.getResourceNames(actorIds); } catch { /* ids only */ }
+
+    const events = kept.map((r) => {
+      const change = r.detail ? parseHistoryChange(String(r.detail), labelsFor(String(r.detail).split(/ changed from /i)[0] ?? '')) : null;
+      const rid = r.resourceID != null ? Number(r.resourceID) : null;
+      const kind = actorKind(rid, self);
+      return {
+        id: r.id, date: r.date, action: r.action,
+        ...(change ? { field: change.field, from: change.from, to: change.to, ...(change.ambiguous ? { parseAmbiguous: true } : {}) } : {}),
+        detail: r.detail ?? null,
+        actor: { resourceID: rid, kind, name: rid != null ? (actorNames.get(rid) ?? (kind === 'system' ? 'Autotask Administrator (system)' : null)) : null },
+      };
+    });
+    const byActor: Record<string, number> = {};
+    for (const e of events) byActor[e.actor.kind] = (byActor[e.actor.kind] ?? 0) + 1;
+    return { ticketID: id, events, counts: { events: events.length, hiddenTimestampOnly: opts.includeNoise ? 0 : noise.length, byActorKind: byActor }, mcpApiUserResourceID: self, truncated: rows.length >= 500 };
+  }
+
+  /**
+   * Where an email-created ticket came from: the ORIGINAL message Autotask's
+   * email processor attached ("Originating Email", message/rfc822) — From,
+   * Reply-To, To, Cc, Subject, Date, Message-ID, Authentication-Results, the
+   * plain-text body — plus the ticket's source/creator. Which mailbox or
+   * email-processor rule produced the ticket is NOT exposed by the API; the
+   * result says so instead of guessing.
+   */
+  async getTicketEmailContext(id: number, opts: { maxBodyChars?: number } = {}): Promise<Record<string, unknown>> {
+    const http = await this.ensureClient();
+    const ticket = await http.get<AutotaskTicket>('Tickets', id);
+    if (!ticket) return { ticketID: id, status: 'not_found' };
+    let fields: FieldInfo[] = [];
+    try { fields = await this.getFieldInfo('Tickets'); } catch { /* raw values */ }
+    const labels = picklistLabels(ticket, fields);
+    const creator: Record<string, unknown> = { type: labels.creatorType ?? ticket.creatorType ?? null };
+    if (ticket.createdByContactID != null) {
+      try {
+        const c = (await http.query<ContactRow>('Contacts', [{ op: 'eq', field: 'id', value: ticket.createdByContactID }], { maxRecords: 1, includeFields: ['id', 'firstName', 'lastName', 'emailAddress', 'companyID'] }))[0];
+        creator.contact = { id: Number(ticket.createdByContactID), name: contactName(c), email: c?.emailAddress ?? null, companyID: c?.companyID ?? null };
+      } catch { creator.contact = { id: Number(ticket.createdByContactID) }; }
+    }
+    if (ticket.creatorResourceID != null) {
+      try { creator.resource = { id: Number(ticket.creatorResourceID), name: (await this.getResourceNames([ticket.creatorResourceID])).get(Number(ticket.creatorResourceID)) ?? null }; } catch { creator.resource = { id: Number(ticket.creatorResourceID) }; }
+    }
+
+    const atts = await http.query<AttachmentRow>('TicketAttachments', [{ op: 'eq', field: 'parentID', value: id }], { maxRecords: 50, includeFields: ['id', 'title', 'contentType', 'fileSize', 'attachDate', 'attachmentType'] });
+    const emails = atts.filter((a) => String(a.contentType ?? '').toLowerCase() === 'message/rfc822')
+      .sort((a, b) => Number(/originating email/i.test(String(b.title))) - Number(/originating email/i.test(String(a.title))) || String(a.attachDate ?? '').localeCompare(String(b.attachDate ?? '')));
+    const base = {
+      ticketID: id, ticketNumber: ticket.ticketNumber, title: ticket.title,
+      source: { value: ticket.source ?? null, label: labels.source ?? null, isEmail: isEmailSource(labels.source) },
+      createDate: ticket.createDate, creator,
+      emailAttachments: emails.map((a) => ({ id: a.id, title: a.title, size: a.fileSize ?? null, attachDate: a.attachDate ?? null })),
+      notExposedByApi: ['the mailbox that received the message', 'the email-processor rule that created the ticket'],
+    };
+    const orig = emails[0];
+    if (!orig) {
+      return { ...base, status: 'no_original_email', message: base.source.isEmail
+        ? 'The ticket came in by email but has no original-message attachment (the email processor may not be set to attach it). Only the flattened description is available.'
+        : `The ticket's source is "${base.source.label ?? 'unknown'}", not email, and it has no attached message.` };
+    }
+    const MAX_BYTES = 5 * 1024 * 1024;
+    if (Number(orig.fileSize) > MAX_BYTES) return { ...base, status: 'original_email_too_large', originalEmail: { attachmentID: orig.id, size: orig.fileSize } };
+    const full = await http.get<AttachmentRow>('TicketAttachments', Number(orig.id));
+    if (!full?.data) return { ...base, status: 'original_email_unreadable', originalEmail: { attachmentID: orig.id } };
+    const mail = parseRfc822(Buffer.from(String(full.data), 'base64'));
+    const maxChars = Math.min(Math.max(Number(opts.maxBodyChars) || 8000, 500), 50000);
+    const body = mail.textBody ?? '';
+    const from = parseAddress(mail.header('From'));
+    return {
+      ...base,
+      status: 'ok',
+      originalEmail: {
+        attachmentID: orig.id,
+        from, fromDisplayName: from.name, fromAddress: from.address,
+        replyTo: parseAddressList(mail.header('Reply-To')),
+        to: parseAddressList(mail.header('To')),
+        cc: parseAddressList(mail.header('Cc')),
+        subject: mail.header('Subject') ?? null,
+        date: mail.header('Date') ?? null,
+        messageId: mail.header('Message-ID') ?? null,
+        returnPath: mail.header('Return-Path') ?? null,
+        authenticationResults: [...mail.all('Authentication-Results'), ...mail.all('ARC-Authentication-Results')],
+        receivedSpf: mail.all('Received-SPF'),
+        dkimDomains: mail.all('DKIM-Signature').map((d) => d.match(/\bd=([^;\s]+)/)?.[1]).filter(Boolean),
+        replyToDiffersFromFrom: (() => { const rt = parseAddressList(mail.header('Reply-To')); return rt.length > 0 && !!from.address && !rt.some((r) => r.address === from.address); })(),
+        textBody: body.length > maxChars ? body.slice(0, maxChars) : body,
+        textBodyTruncated: body.length > maxChars,
+        textSource: mail.textSource,
+        parts: mail.parts,
+      },
+    };
+  }
+
+  /**
+   * Add author + label fields to ticket notes (additive — existing fields
+   * untouched): authorName (resource or contact), authorKind, noteTypeLabel,
+   * publishLabel. Best-effort; a failed lookup leaves the field out.
+   */
+  async labelTicketNotes<T extends { creatorResourceID?: unknown; createdByContactID?: unknown; noteType?: unknown; publish?: unknown }>(notes: T[]): Promise<Array<T & Record<string, unknown>>> {
+    if (!notes.length) return notes;
+    let types: PicklistValue[] = [], pubs: PicklistValue[] = [];
+    try { types = await this.getPicklistValues('TicketNotes', 'noteType'); pubs = await this.getPicklistValues('TicketNotes', 'publish'); } catch { /* ids only */ }
+    let resNames = new Map<number, string>();
+    try { resNames = await this.getResourceNames(notes.map((n) => n.creatorResourceID).filter((x) => x != null)); } catch { /* ids only */ }
+    const contactIds = [...new Set(notes.map((n) => n.createdByContactID).filter((x) => x != null).map(Number))];
+    const contacts = new Map<number, string>();
+    if (contactIds.length) {
+      try {
+        const http = await this.ensureClient();
+        for (const c of await http.query<ContactRow>('Contacts', [{ op: 'in', field: 'id', value: contactIds.slice(0, 200) }], { maxRecords: 200, includeFields: ['id', 'firstName', 'lastName', 'emailAddress'] })) {
+          contacts.set(Number(c.id), `${[c.firstName, c.lastName].filter(Boolean).join(' ')}${c.emailAddress ? ` <${c.emailAddress}>` : ''}`);
+        }
+      } catch { /* ids only */ }
+    }
+    const label = (list: PicklistValue[], v: unknown) => list.find((p) => String(p.value) === String(v))?.label;
+    return notes.map((n) => {
+      const byContact = n.createdByContactID != null;
+      const rid = n.creatorResourceID != null ? Number(n.creatorResourceID) : null;
+      const authorName = byContact ? contacts.get(Number(n.createdByContactID)) : rid != null ? (resNames.get(rid) ?? (rid === SYSTEM_RESOURCE_ID ? 'Autotask Administrator (system)' : undefined)) : undefined;
+      const nt = label(types, n.noteType), pb = label(pubs, n.publish);
+      return {
+        ...n,
+        authorKind: byContact ? 'contact' : rid === SYSTEM_RESOURCE_ID ? 'system' : rid != null ? 'resource' : 'unknown',
+        ...(authorName ? { authorName } : {}),
+        ...(nt ? { noteTypeLabel: nt } : {}),
+        ...(pb ? { publishLabel: pb } : {}),
+      };
+    });
+  }
+
+  /** Active values of several picklist fields in one call; unknown / non-picklist names listed. */
+  async getPicklists(entity: string, fieldNames?: string[]): Promise<{ entity: string; picklists: Record<string, Array<{ value: string; label: string; parentValue?: string }>>; unknownFields: string[]; notPicklists: string[] }> {
+    const fields = await this.getFieldInfo(entity);
+    const wanted = fieldNames?.length ? fieldNames : fields.filter((f) => f.isPickList).map((f) => f.name);
+    const picklists: Record<string, Array<{ value: string; label: string; parentValue?: string }>> = {};
+    const unknownFields: string[] = [], notPicklists: string[] = [];
+    for (const name of wanted) {
+      const f = fields.find((x) => x.name.toLowerCase() === String(name).toLowerCase());
+      if (!f) { unknownFields.push(name); continue; }
+      if (!f.isPickList) { notPicklists.push(f.name); continue; }
+      picklists[f.name] = (f.picklistValues ?? []).filter((v) => v.isActive !== false)
+        .map((v) => ({ value: v.value, label: v.label, ...(v.parentValue ? { parentValue: v.parentValue } : {}) }));
+    }
+    return { entity, picklists, unknownFields, notPicklists };
   }
 
   /**

@@ -74,9 +74,20 @@ const RAW_REQUEST_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const;
  * hand callers a useless shell. When `item` is present we use it (even if null);
  * otherwise the entity is at the top level (some legacy routes).
  */
+/** A UDF definition from entityInformation/userDefinedFields (list UDFs carry picklistValues). */
+export interface UdfDefinition { name: string; isPickList?: boolean; picklistValues?: Array<{ value: unknown; label: string }> }
+
 function unwrapEntity<T>(res: unknown): T | null {
   if (res && typeof res === 'object' && 'item' in (res as Record<string, unknown>)) {
     return ((res as { item?: T }).item ?? null) as T | null;
+  }
+  // Some by-id GETs answer in the QUERY shape: GET /TicketAttachments/{id}
+  // (and the child route) return { items: [record], pageDetails } — verified
+  // live. Returning that wrapper made callers see no fields at all (the
+  // attachment's `data`, `ticketID`, …), silently bypassing the parent-scope
+  // check and the inline-size cap in getTicketAttachment.
+  if (res && typeof res === 'object' && Array.isArray((res as { items?: unknown }).items) && 'pageDetails' in (res as Record<string, unknown>)) {
+    return (((res as { items: T[] }).items[0]) ?? null) as T | null;
   }
   return ((res as T) ?? null) as T | null;
 }
@@ -720,6 +731,18 @@ export class AutotaskHttpClient {
     const res = await this.request<{ fields?: any[]; items?: any[] }>(
       'GET',
       `/${entity}/entityInformation/fields`
+    );
+    return { fields: res?.fields || res?.items || [] };
+  }
+
+  /**
+   * GET /{Entity}/entityInformation/userDefinedFields — the entity's UDF
+   * definitions, list UDFs with their picklistValues (cached as metadata).
+   */
+  async udfInfo(entity: string): Promise<{ fields: UdfDefinition[] }> {
+    const res = await this.request<{ fields?: UdfDefinition[]; items?: UdfDefinition[] }>(
+      'GET',
+      `/${entity}/entityInformation/userDefinedFields`
     );
     return { fields: res?.fields || res?.items || [] };
   }

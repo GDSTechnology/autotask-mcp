@@ -1246,6 +1246,52 @@ export class AutotaskToolHandler {
         return { result: r, message: `Found ${r.length} ticket history entries for ticket ${a.ticketId}` };
       }],
 
+      // Ticket audit (read-only): full resolved ticket, parsed history, original email, picklists.
+      ['autotask_get_ticket_by_number', async (a) => {
+        const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId ?? a.id, ticketNumber: a.ticketNumber });
+        if ('error' in ref) return { result: null, message: ref.error };
+        const r = await s.getTicketFull(ref.id);
+        if (!r) return { result: null, message: `Ticket ${ref.ticketNumber ?? ref.id} not found.` };
+        const t = r.ticket as Record<string, unknown>;
+        const l = r.labels as Record<string, string>;
+        const n = r.names as Record<string, Record<string, unknown>>;
+        const who = (k: string) => (n[k]?.name as string | null | undefined) ?? (n[k] ? `#${n[k]!.id}` : null);
+        const bits = [
+          l.status && `status ${l.status}`, l.priority && `priority ${l.priority}`, l.queueID && `queue ${l.queueID}`, l.source && `source ${l.source}`,
+          who('companyID') && `company ${who('companyID')}`,
+          n.contactID && `contact ${who('contactID')}${n.contactID.email ? ` <${n.contactID.email}>` : ''}`,
+          who('assignedResourceID') && `assigned ${who('assignedResourceID')}`,
+        ].filter(Boolean);
+        const errs = (r.errors as unknown[] | undefined)?.length ? ` (${(r.errors as unknown[]).length} section(s) unavailable — see errors)` : '';
+        return { result: r, message: `${t.ticketNumber} — ${t.title}: ${bits.join(', ')}${r.ticketUrl ? `. Open: ${r.ticketUrl}` : ''}${errs}` };
+      }],
+      ['autotask_get_ticket_change_history', async (a) => {
+        const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId, ticketNumber: a.ticketNumber });
+        if ('error' in ref) return { result: null, message: ref.error };
+        const r = await s.getTicketHistoryEvents(ref.id, { includeNoise: a.includeTimestampOnly === true });
+        const c = r.counts as { events: number; hiddenTimestampOnly: number; byActorKind: Record<string, number> };
+        const kinds = Object.entries(c.byActorKind).map(([k, v]) => `${v} by ${k}`).join(', ');
+        return { result: r, message: `${c.events} history event(s) on ticket ${ref.ticketNumber ?? ref.id}${kinds ? ` (${kinds})` : ''}${c.hiddenTimestampOnly ? `; ${c.hiddenTimestampOnly} timestamp-only event(s) hidden (includeTimestampOnly:true to show)` : ''}.` };
+      }],
+      ['autotask_get_ticket_email_context', async (a) => {
+        const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId, ticketNumber: a.ticketNumber });
+        if ('error' in ref) return { result: null, message: ref.error };
+        const r = await s.getTicketEmailContext(ref.id, { maxBodyChars: a.maxBodyChars });
+        const o = r.originalEmail as { fromDisplayName?: string | null; fromAddress?: string | null; replyToDiffersFromFrom?: boolean; replyTo: Array<{ address: string }>; subject?: string | null; authenticationResults: unknown[] } | undefined;
+        const message = r.status === 'ok' && o
+          ? `Original email on ${r.ticketNumber}: from ${o.fromDisplayName ? `"${o.fromDisplayName}" ` : ''}<${o.fromAddress ?? '?'}>${o.replyToDiffersFromFrom ? ` — Reply-To DIFFERS (${o.replyTo.map((x) => x.address).join(', ')})` : ''}, subject "${o.subject ?? ''}", ${o.authenticationResults.length} Authentication-Results header(s).`
+          : r.status === 'not_found' ? `Ticket ${ref.id} not found.`
+          : String(r.message ?? r.status);
+        return { result: r, message };
+      }],
+      ['autotask_get_picklists', async (a) => {
+        if (typeof a.entity !== 'string' || !a.entity) return { result: null, message: 'entity is required, e.g. { "entity": "Tickets", "fields": ["queueID", "status"] }' };
+        const r = await s.getPicklists(a.entity, Array.isArray(a.fields) ? a.fields.map(String) : undefined);
+        const sizes = Object.entries(r.picklists).map(([k, v]) => `${k} (${v.length})`).join(', ');
+        const extra = [r.unknownFields.length ? `unknown: ${r.unknownFields.join(', ')}` : '', r.notPicklists.length ? `not picklists: ${r.notPicklists.join(', ')}` : ''].filter(Boolean).join('; ');
+        return { result: r, message: `${a.entity} picklists: ${sizes || 'none'}${extra ? ` — ${extra}` : ''}` };
+      }],
+
       // Canonical record-reference resolver (read-only, tickets + tasks)
       ['autotask_resolve_record_reference', async (a) => {
         const r = await s.resolveRecordReference(a.reference);
@@ -2307,14 +2353,14 @@ export class AutotaskToolHandler {
       ['autotask_search_ticket_notes', async (a) => {
         const pageSize = Math.min(Math.max(Number(a.pageSize) || 25, 1), 100);
         if (a.includeSystemNotes === true) {
-          const r = await s.searchTicketNotes(a.ticketId, { pageSize });
+          const r = await s.labelTicketNotes(await s.searchTicketNotes(a.ticketId, { pageSize }));
           return { result: r, message: `Found ${r.length} ticket notes (system notes included)` };
         }
         // Hide Autotask bookkeeping (workflow-rule / notification / forward
         // notes). Read one full page so pageSize counts HUMAN notes, and say how
         // many were hidden — a silent drop would read as "that's all there is".
         const { human, systemHidden } = partitionTicketNotes(await s.searchTicketNotes(a.ticketId, { pageSize: 500 }));
-        const r = human.slice(0, pageSize);
+        const r = await s.labelTicketNotes(human.slice(0, pageSize));
         const hidden = systemHidden ? ` (${systemHidden} system note(s) hidden — workflow-rule, Service Desk Notification and forward/modify logs; pass includeSystemNotes:true to include them)` : '';
         return { result: r, message: `Found ${r.length} ticket notes${hidden}` };
       }],

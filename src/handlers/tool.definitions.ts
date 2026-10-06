@@ -546,6 +546,18 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'A ticket number or prefix (e.g. "T20260921.0086", "T20260921") matches ticket numbers; any other text is treated as a title keyword (same as `title`).'
         },
+        contractID: {
+          type: 'number',
+          description: 'Filter by contract ID (contract reconciliation: which tickets are on this contract)'
+        },
+        noContract: {
+          type: 'boolean',
+          description: 'Only tickets with NO contract'
+        },
+        includeCompleted: {
+          type: 'boolean',
+          description: 'Include Complete tickets (default: open only). Needed for billing / contract sweeps.'
+        },
         companyID: {
           type: 'number',
           description: 'Filter by company ID'
@@ -1106,6 +1118,24 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         ticketID: { type: 'number', description: 'Numeric ticket ID (alternative to ticketNumber)' }
       },
       required: []
+    }
+  },
+  {
+    name: 'autotask_set_ticket_contract',
+    description: 'FINANCIAL — move a ticket to another contract, and its labor with it. A ticket\'s contractID does NOT carry its time entries: each entry has its own contractID, so by default (entries:"old_or_none") the ticket\'s time entries on the OLD contract or on NO contract move too; "none" = ticket only; "all_unposted" = every unposted entry. DRY RUN by default — returns the plan (from/to contracts, each entry and what happens to it, warnings) and writes nothing; dryRun:false + confirm:true executes. Validates: contract exists, same company as the ticket, active (allowInactive to override). Never changes POSTED entries (fix those via Autotask billing). Warns about entries outside the contract\'s dates. Clears a contract service/bundle from the old contract. Verifies by re-reading the ticket and entries.',
+    annotations: { title: 'Set ticket contract (+ its labor)' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketNumber: { type: 'string', description: 'Ticket number, e.g. T20260714.0198' },
+        ticketID: { type: 'number', description: 'Numeric ticket ID (alternative to ticketNumber)' },
+        contractID: { type: 'number', description: 'The contract the ticket should be on' },
+        fromContractID: { type: 'number', description: 'The WRONG contract to move labor off. Default: the ticket\'s current contract. Needed when the ticket was already moved (e.g. in the UI) and only its time entries are still on the old contract.' },
+        entries: { type: 'string', enum: ['old_or_none', 'none', 'all_unposted'], description: 'Which time entries follow the ticket. Default old_or_none.' },
+        allowInactive: { type: 'boolean', description: 'Allow moving onto an INACTIVE contract. Default false.' },
+        dryRun: { type: 'boolean', description: 'Default true — plan only. false (with confirm:true) to write.' }
+      },
+      required: ['contractID']
     }
   },
   {
@@ -4814,6 +4844,14 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'number',
           description: 'Filter by resource (user) ID'
         },
+        contractID: {
+          type: 'number',
+          description: 'Filter by the contract the time entry is billed against (each entry has its own contractID, independent of its ticket\'s)'
+        },
+        noContract: {
+          type: 'boolean',
+          description: 'Only time entries with NO contract'
+        },
         ticketId: {
           type: 'number',
           description: 'Filter by ticket ID'
@@ -5871,7 +5909,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, audit history, and the notification e-mails Autotask sent',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_get_ticket_by_number', 'autotask_get_ticket_change_history', 'autotask_get_ticket_email_context', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_start_work_on_ticket', 'autotask_add_ticket_update', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_notification_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_set_ticket_contract', 'autotask_get_ticket_by_number', 'autotask_get_ticket_change_history', 'autotask_get_ticket_email_context', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_start_work_on_ticket', 'autotask_add_ticket_update', 'autotask_move_ticket_to_company', 'autotask_find_ticket_by_external_id', 'autotask_search_ticket_configuration_items', 'autotask_add_ticket_configuration_item', 'autotask_remove_ticket_configuration_item', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_notification_history', 'autotask_report_ticket_throughput', 'autotask_report_request_segmentation', 'autotask_search_checklist_libraries', 'autotask_get_checklist_library', 'autotask_apply_checklist_library_to_ticket', 'autotask_create_maintenance_ticket', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
     description: 'Search and create projects, tasks, phases, and project notes',

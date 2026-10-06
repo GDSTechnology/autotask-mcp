@@ -69,6 +69,7 @@ import { windowsToIana } from '../utils/windows-timezones';
 import { TimeEntryLockState, lockReason } from '../utils/timesheet-lock';
 import { RoleChoice, RoleSource } from '../utils/time-entry-role';
 import { classifyTimeEntryWriteError } from '../utils/time-entry-errors';
+import { ContractRow, EntryRow, EntryScope, planContractMove, TicketContractRow } from '../utils/ticket-contract';
 import { runWithRequestContext, getRequestOrigin } from '../utils/request-context';
 import { applyBillingTreatment, BillingTreatment } from '../utils/billing-treatment';
 import { summarizeUnbilledTime, UnbilledTimeEntry, UnbilledTimeSummary } from '../utils/unbilled-time';
@@ -897,7 +898,7 @@ export class AutotaskService {
 
       if (options.status !== undefined) {
         filters.push({ op: 'eq', field: 'status', value: options.status });
-      } else {
+      } else if ((options as Record<string, unknown>).includeCompleted !== true) {
         filters.push({ op: 'noteq', field: 'status', value: 5 }); // 5 = Complete (Autotask REST uses 'noteq', not 'ne')
       }
 
@@ -923,6 +924,14 @@ export class AutotaskService {
       const contactId = options.contactID ?? options.contactId;
       if (contactId !== undefined) {
         filters.push({ op: 'eq', field: 'contactID', value: contactId });
+      }
+
+      // Contract reconciliation: tickets on a contract, or on NO contract.
+      const o = options as Record<string, unknown>;
+      if (o.noContract === true) {
+        filters.push({ op: 'notExist', field: 'contractID' });
+      } else if (o.contractID !== undefined && o.contractID !== null) {
+        filters.push({ op: 'eq', field: 'contractID', value: o.contractID });
       }
 
       if (options.createdAfter) {
@@ -1283,6 +1292,57 @@ export class AutotaskService {
         .map((v) => ({ value: v.value, label: v.label, ...(v.parentValue ? { parentValue: v.parentValue } : {}) }));
     }
     return { entity, picklists, unknownFields, notPicklists };
+  }
+
+  /**
+   * Move a ticket to another contract, and (by default) the ticket's time
+   * entries that sit on the OLD contract or on NO contract — a ticket's
+   * contractID doesn't carry its labor with it. DRY RUN unless dryRun:false.
+   * Validates the contract (exists, same company, active unless
+   * allowInactive), never touches posted entries, flags entries outside the
+   * contract's dates, then re-reads the ticket and entries to verify.
+   */
+  async setTicketContract(opts: { ticketID: number; contractID: number; fromContractID?: number; entries?: EntryScope; allowInactive?: boolean; dryRun?: boolean }): Promise<Record<string, unknown>> {
+    const http = await this.ensureClient();
+    const scope: EntryScope = opts.entries ?? 'old_or_none';
+    const t = await http.get<TicketContractRow & { title?: string; status?: number }>('Tickets', opts.ticketID);
+    if (!t) return { status: 'not_found', ticketID: opts.ticketID };
+    const contractFields = ['id', 'companyID', 'contractName', 'contractNumber', 'status', 'contractType', 'startDate', 'endDate'];
+    const ids = [...new Set([opts.contractID, t.contractID, opts.fromContractID].filter((x): x is number => x != null).map(Number))];
+    const contracts = await http.query<ContractRow>('Contracts', [{ op: 'in', field: 'id', value: ids }], { maxRecords: 5, includeFields: contractFields });
+    const target = contracts.find((c) => Number(c.id) === Number(opts.contractID)) ?? null;
+    const oldRef = opts.fromContractID ?? t.contractID;
+    const old = oldRef != null ? contracts.find((c) => Number(c.id) === Number(oldRef)) ?? null : null;
+    const entries = await http.query<EntryRow>('TimeEntries', [{ op: 'eq', field: 'ticketID', value: opts.ticketID }], { maxRecords: 500, includeFields: ['id', 'contractID', 'dateWorked', 'hoursWorked', 'isNonBillable', 'billingApprovalDateTime'] });
+    const plan = planContractMove(t, target, entries, scope, { ...(opts.allowInactive ? { allowInactive: true } : {}), ...(opts.fromContractID != null ? { fromContractID: opts.fromContractID } : {}) });
+    const summary = (c: ContractRow | null) => (c ? { id: Number(c.id), name: c.contractName ?? null, number: c.contractNumber ?? null, status: c.status === 1 ? 'Active' : c.status === 0 ? 'Inactive' : c.status ?? null, startDate: c.startDate ?? null, endDate: c.endDate ?? null } : null);
+    const base = { ticketID: opts.ticketID, ticketNumber: t.ticketNumber ?? null, from: summary(old) ?? (oldRef != null ? { id: Number(oldRef) } : null), ticketAlreadyOnTarget: Number(t.contractID) === Number(opts.contractID), to: summary(target), entryScope: scope, plan };
+    if (plan.errors.length) return { ...base, status: 'validation_failed' };
+    const toMove = plan.entries.filter((e) => e.action === 'move');
+    if (!plan.ticketPatch && !toMove.length) return { ...base, status: 'nothing_to_change' };
+    if (opts.dryRun !== false) return { ...base, status: 'dry_run' };
+
+    const results: { ticket?: string; entries: Array<{ id: number; ok: boolean; error?: string }> } = { entries: [] };
+    if (plan.ticketPatch) {
+      try { await this.updateTicket(opts.ticketID, plan.ticketPatch as Partial<AutotaskTicket>); results.ticket = 'updated'; }
+      catch (e) { return { ...base, status: 'failed', error: `ticket update failed — nothing changed: ${e instanceof Error ? e.message : String(e)}` }; }
+    }
+    for (const e of toMove) {
+      try { await this.updateTimeEntry(e.id, { contractID: opts.contractID } as Partial<AutotaskTimeEntry>); results.entries.push({ id: e.id, ok: true }); }
+      catch (err) { const c = classifyTimeEntryWriteError(err); results.entries.push({ id: e.id, ok: false, error: c ? `${c.status}: ${c.reason}` : (err instanceof Error ? err.message : String(err)) }); }
+    }
+    // Verify from Autotask, not from what we sent.
+    const after = await http.get<TicketContractRow>('Tickets', opts.ticketID);
+    const afterEntries = await http.query<EntryRow>('TimeEntries', [{ op: 'eq', field: 'ticketID', value: opts.ticketID }], { maxRecords: 500, includeFields: ['id', 'contractID'] });
+    const movedIds = new Set(toMove.map((e) => e.id));
+    const verified = {
+      ticketContractID: after?.contractID ?? null,
+      ticketOk: Number(after?.contractID) === Number(opts.contractID),
+      entriesOnTarget: afterEntries.filter((e) => Number(e.contractID) === Number(opts.contractID)).map((e) => Number(e.id)),
+      entriesNotMoved: afterEntries.filter((e) => movedIds.has(Number(e.id)) && Number(e.contractID) !== Number(opts.contractID)).map((e) => Number(e.id)),
+    };
+    const ok = verified.ticketOk && verified.entriesNotMoved.length === 0;
+    return { ...base, status: ok ? 'updated' : 'partial', results, verified };
   }
 
   /**
@@ -7082,6 +7142,13 @@ export class AutotaskService {
       }
       if ((options as any).taskId !== undefined) {
         filters.push({ op: 'eq', field: 'taskID', value: (options as any).taskId });
+      }
+      // Contract reconciliation: labor on a contract, or on NO contract.
+      const contractOpt = options as { noContract?: boolean; contractID?: number | null };
+      if (contractOpt.noContract === true) {
+        filters.push({ op: 'notExist', field: 'contractID' });
+      } else if (contractOpt.contractID !== undefined && contractOpt.contractID !== null) {
+        filters.push({ op: 'eq', field: 'contractID', value: contractOpt.contractID });
       }
       if ((options as any).dateWorkedAfter) {
         filters.push({ op: 'gte', field: 'dateWorked', value: (options as any).dateWorkedAfter });

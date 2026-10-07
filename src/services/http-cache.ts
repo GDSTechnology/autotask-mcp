@@ -18,7 +18,10 @@
 // caching that would defeat read-after-write retries); errors are never cached.
 // AUTOTASK_CACHE=off disables caching (coalescing + metrics stay on).
 
-export type CacheClass = 'fields' | 'reference' | 'slow-reference' | 'volatile' | 'never';
+import { settingValue } from '../admin/settings.js';
+import { noteCacheHit } from './call-log.js';
+
+export type CacheClass ='fields' | 'reference' | 'slow-reference' | 'volatile' | 'never';
 
 /** Entities whose data changes rarely (people / org structure / catalogs). */
 const REFERENCE = new Set([
@@ -49,8 +52,9 @@ export function ttlMs(cls: CacheClass): number {
   }
 }
 
+/** AUTOTASK_CACHE, unless the admin console overrides it ("Read cache"). */
 export function cacheEnabled(): boolean {
-  return !/^(off|false|0|no)$/i.test(process.env.AUTOTASK_CACHE ?? '');
+  return settingValue<boolean>('cache.enabled');
 }
 
 /** Top-level entity of a REST path: "/Tickets/123/Notes/query" → "Tickets". */
@@ -140,6 +144,7 @@ export async function cachedRead<T>(tenant: string, key: string, path: string, f
     const hit = cache.get(key);
     if (hit && hit.expires > now) {
       statsFor(tenant).cacheHits++;
+      noteCacheHit();
       cache.delete(key); cache.set(key, hit); // LRU touch
       return structuredClone(hit.value) as T; // callers mutate results (e.g. _card) — never share the cached object
     }
@@ -149,6 +154,7 @@ export async function cachedRead<T>(tenant: string, key: string, path: string, f
   const pending = inFlight.get(flightKey);
   if (pending) {
     statsFor(tenant).coalesced++;
+    noteCacheHit();
     return structuredClone(await pending) as T;
   }
   const p = (async () => {

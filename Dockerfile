@@ -77,6 +77,10 @@ COPY --from=builder --chown=autotask:autotask /app/package*.json ./
 COPY --from=builder --chown=autotask:autotask /app/dist ./dist
 # SQL migrations for the optional Postgres layer (node dist/db/migrate.js reads ../../migrations).
 COPY --chown=autotask:autotask migrations ./migrations
+# Admin console web UI (served by dist/admin/server.js when MCP_ADMIN_ENABLED=true)
+# and its host-side setup wizard (extract with: docker run --rm --entrypoint cat <image> /app/deploy/admin-setup.sh).
+COPY --chown=autotask:autotask admin-ui ./admin-ui
+COPY --chown=autotask:autotask deploy/admin-setup.sh ./deploy/admin-setup.sh
 COPY --from=deps --chown=autotask:autotask /app/node_modules ./node_modules
 
 # Remove the npm CLI from the production image — the runtime only needs `node`

@@ -11,6 +11,7 @@ import { mapWithConcurrency } from '../utils/concurrency';
 import { getImpersonationResourceId } from '../utils/request-context';
 import { Logger } from '../utils/logger';
 import { cachedRead, invalidateAfterWrite, isRead, recordRateLimited, recordUpstream } from './http-cache';
+import { startApiCall } from './call-log';
 
 export interface QueryFilter {
   op: string;
@@ -405,6 +406,7 @@ export class AutotaskHttpClient {
 
     this.logger.debug(`Autotask HTTP ${method} ${url}`);
     recordUpstream(cooldownKey, method, path);
+    const logged = startApiCall(method, path);
 
     let response: Response;
     try {
@@ -417,8 +419,10 @@ export class AutotaskHttpClient {
         init.body = JSON.stringify(body);
       }
       response = await fetch(url, init);
+      logged(response.status);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      logged(0, msg);
       throw new Error(`Autotask ${method} ${url} network error: ${msg}`, { cause: err });
     }
 

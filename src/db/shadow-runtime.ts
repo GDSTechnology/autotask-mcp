@@ -28,6 +28,7 @@ import { SHADOW_ENTITIES, shadowEntity } from './shadow-entities.js';
 import type { ShadowFilter } from './shadow-sql.js';
 import { setWriteListener } from '../services/autotask-http.js';
 import type { AutotaskService } from '../services/autotask.service.js';
+import { runJob, noteShadowRead } from '../services/call-log.js';
 
 const ADVISORY_KEY = 727_210_455; // "shadow sync" — distinct from the migration lock
 
@@ -40,6 +41,8 @@ export interface ShadowRuntime {
   sync: ShadowSync;
   serveReads: boolean;
   maxAgeSeconds: number;
+  /** False pauses the scheduled sync (admin console). runNow still works. */
+  syncEnabled: boolean;
   /** Run one sync now (under the lock). Returns null if another instance holds it. */
   runNow(): Promise<RunReport | null>;
   lastRun(): { at: string; report: RunReport } | null;
@@ -97,13 +100,13 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
     try {
       return await underLock(async () => {
         const now = new Date();
-        const report = await sync.runOnce(now);
+        const report = await runJob('shadow sync', () => sync.runOnce(now));
         // Nightly deletion sweep for the big tables, once per day in the configured hour.
         if (!report.skipped && now.getUTCHours() === reconcileHour) {
           for (const e of SHADOW_ENTITIES.filter((x) => x.watermarkField)) {
             const st = await store.getState(e.name);
             if (st?.backfill_done && (!st.last_reconcile_at || now.getTime() - new Date(st.last_reconcile_at).getTime() > 20 * 3600_000)) {
-              report.entities.push(await sync.reconcile(e.name, 600, now));
+              report.entities.push(await runJob('shadow sync', () => sync.reconcile(e.name, 600, now)));
             }
           }
         }
@@ -124,14 +127,15 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
   });
 
   const intervalMs = Math.max(30, intEnv(env.MCP_PG_SHADOW_INTERVAL_SECONDS, 300)) * 1000;
-  const first = setTimeout(() => { void tick(); }, 15_000);
-  const timer = setInterval(() => { void tick(); }, intervalMs);
+  const first = setTimeout(() => { if (runtime?.syncEnabled !== false) void tick(); }, 15_000);
+  const timer = setInterval(() => { if (runtime?.syncEnabled !== false) void tick(); }, intervalMs);
   first.unref?.(); timer.unref?.();
 
   runtime = {
     store, ledger, sync,
     serveReads: String(env.MCP_PG_SHADOW_SERVE_READS).toLowerCase() === 'true',
     maxAgeSeconds: intEnv(env.MCP_PG_SHADOW_MAX_AGE_SECONDS, 900),
+    syncEnabled: true,
     runNow: tick,
     lastRun: () => last,
     stop: () => { clearTimeout(first); clearInterval(timer); setWriteListener(null); runtime = null; },
@@ -161,6 +165,7 @@ export async function shadowRead<T>(entity: string, filters: ShadowFilter[], lim
     const def = shadowEntity(entity)!;
     if (f.windowFrom && def.windowCovers && !def.windowCovers(filters, f.windowFrom)) return null;
     const r = await rt.store.query(name, filters, { limit, order: 'id_asc' });
+    noteShadowRead();
     return { rows: r.rows as T[], ageSeconds: f.ageSeconds };
   } catch {
     return null; // unsupported filter, PG hiccup — the live API answers instead

@@ -77,7 +77,7 @@ docker info >/dev/null 2>&1 || fail "Cannot talk to Docker. Run as a user in the
 ask DIR "Compose project directory" "$(pwd)"
 [ -d "$DIR" ] || fail "No such directory: $DIR"
 cd "$DIR"
-ls docker-compose.y*ml compose.y*ml >/dev/null 2>&1 || fail "No docker-compose.yml / compose.yml in $DIR."
+[ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ] || fail "No docker-compose.yml / compose.yml in $DIR."
 ask SERVICE "MCP service name" "autotask-mcp"
 CID="$(docker compose ps -q "$SERVICE" 2>/dev/null || true)"
 [ -n "$CID" ] || fail "Service '$SERVICE' is not running in $DIR. Start it first (docker compose up -d $SERVICE)."
@@ -152,6 +152,8 @@ for _ in $(seq 1 30); do
 done
 [ "${UP:-0}" = 1 ] || fail "The console did not come up. Check: docker compose logs --tail 50 $SERVICE
     (If '$SERVICE' does not read $(basename "$ENV_FILE") as its env_file, the setting never reached it.)"
+# The restart above replaced the container: look its ID up again.
+CID="$(docker compose ps -q "$SERVICE")"
 
 # ── 5. first administrator ─────────────────────────────────────────────────
 step "5/6  First administrator"
@@ -177,8 +179,13 @@ if [ -z "$TUNNEL" ]; then
   info "1) Set up a NEW Cloudflare Tunnel for the console (guided, step by step)"
   info "2) I already run cloudflared: guide me through adding the route"
   info "3) Skip: keep the console private (SSH port-forward only)"
-  ask CHOICE "Choose" "3"
-  case "${CHOICE:-3}" in 1) TUNNEL=new ;; 2) TUNNEL=existing ;; *) TUNNEL=none ;; esac
+  # No default: pressing Enter must not silently skip the tunnel.
+  if [ "$YES" = 1 ]; then CHOICE=3; else CHOICE=""; fi
+  while [[ ! "$CHOICE" =~ ^[123]$ ]]; do
+    read -r -p "  Choose 1, 2 or 3: " CHOICE </dev/tty || CHOICE=3
+  done
+  case "$CHOICE" in 1) TUNNEL=new ;; 2) TUNNEL=existing ;; *) TUNNEL=none ;; esac
+  info "Tip: jump straight to this step later with:  bash $(basename "$0") --tunnel new"
 fi
 
 pause() { [ "$YES" = 1 ] && return 0; read -r -p "  ${D}Press Enter when done (Ctrl+C stops; re-running resumes safely)...${N}" _ </dev/tty || true; }

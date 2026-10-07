@@ -2,7 +2,7 @@
 // Verified live (2026-10-06): every entity pages in ascending id order (so a
 // backfill can walk `id > cursor`), and these are the queryable change fields.
 
-export type ShadowEntityName = 'Tickets' | 'TimeEntries' | 'Tasks' | 'Projects' | 'Companies' | 'Contacts' | 'Contracts' | 'ContractServices' | 'ContractBlocks' | 'Resources';
+export type ShadowEntityName = 'Tickets' | 'TimeEntries' | 'Tasks' | 'Projects' | 'ServiceCalls' | 'CompanyToDos' | 'Companies' | 'Contacts' | 'Contracts' | 'ContractServices' | 'ContractBlocks' | 'Resources';
 
 import type { ShadowFilter } from './shadow-sql.js';
 
@@ -21,6 +21,12 @@ export interface ShadowEntity {
   window?: (cutoffDay: string) => ShadowFilter;
   /** Whether a query's filters stay inside the window (otherwise it must go live). */
   windowCovers?: (filters: ShadowFilter[], cutoffDay: string) => boolean;
+  /**
+   * Row-diff audit: when an already-mirrored row changes, these fields are
+   * compared old → new and recorded as audit events (the editor is unknown —
+   * these entities aren't webhook-capable and don't record who changed them).
+   */
+  diff?: { type: 'serviceCall' | 'todo'; fields: string[]; actorField?: (field: string) => string | null };
 }
 
 const lowerBoundAtLeast = (filters: ShadowFilter[], fields: string[], cutoffDay: string): boolean =>
@@ -44,6 +50,16 @@ export const SHADOW_ENTITIES: ShadowEntity[] = [
   // Project work: small (≈1.9k tasks / 160 projects at GDS) — mirrored whole, no window.
   { name: 'Tasks', watermarkField: 'lastActivityDateTime', createField: 'createDateTime' },
   { name: 'Projects', watermarkField: 'lastActivityDateTime', createField: 'createDateTime' },
+  // Scheduling + CRM admin work (≈4.5k service calls / ≈12.8k To-Dos at GDS): whole, with row diffs.
+  {
+    name: 'ServiceCalls', watermarkField: 'lastModifiedDateTime', createField: 'createDateTime',
+    diff: { type: 'serviceCall', fields: ['startDateTime', 'endDateTime', 'duration', 'status', 'isComplete', 'description', 'canceledDateTime', 'companyID', 'companyLocationID'],
+      actorField: (f) => (f === 'canceledDateTime' ? 'canceledByResourceID' : null) },
+  },
+  {
+    name: 'CompanyToDos', watermarkField: 'lastModifiedDate', createField: 'createDateTime',
+    diff: { type: 'todo', fields: ['startDateTime', 'endDateTime', 'completedDate', 'assignedToResourceID', 'actionType', 'activityDescription', 'ticketID', 'contactID'] },
+  },
   { name: 'Companies', watermarkField: 'lastTrackedModifiedDateTime', createField: 'createDate' },
   { name: 'Contacts', watermarkField: 'lastModifiedDate', createField: 'createDate' },
   { name: 'Contracts', watermarkField: 'lastModifiedDateTime', createField: null },

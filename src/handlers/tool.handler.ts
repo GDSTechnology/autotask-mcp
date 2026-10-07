@@ -14,8 +14,10 @@ import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } f
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
-import { defaultWorkDate, formatChoices, matchPicklist, TimeGap } from '../utils/staff-tools.js';
+import { defaultWorkDate, formatChoices, localDayWindow, matchPicklist, TimeGap } from '../utils/staff-tools.js';
 import { getShadowRuntime } from '../db/shadow-runtime.js';
+import { collectAuditEvents, type CollectOptions } from '../db/audit-collector.js';
+import { buildDailyAudit } from '../utils/daily-audit.js';
 import { SHADOW_ENTITIES, shadowEntity } from '../db/shadow-entities.js';
 
 const SHADOW_OFF = 'The Postgres shadow is not enabled on this server (MCP_PG_ENABLED + MCP_PG_SHADOW_ENABLED). Live Autotask tools still work.';
@@ -1024,6 +1026,31 @@ export class AutotaskToolHandler {
         return { stop: { result: { status: c.status, autotaskError: c.autotaskError }, message: c.reason } };
       }
     };
+    // Resources + time window for the audit tools: date + timeZone (default: the
+    // first resource's location timezone), or explicit start/end instants.
+    const auditWindow = async (a: Record<string, unknown>): Promise<{ error: string } | { resourceIds: number[]; window: { start: string; end: string; timeZone: string; label: string }; collect: CollectOptions }> => {
+      const ids = [...(Array.isArray(a.resourceIds) ? a.resourceIds : []), ...(a.resourceId != null ? [a.resourceId] : [])].map(Number).filter((x) => Number.isInteger(x) && x > 0);
+      const tz = validTimeZone(a.timeZone as string) ?? validTimeZone(a.timezone as string) ?? (ids.length ? await s.resolveResourceTimeZone(ids[0]!) : undefined) ?? defaultTimeZone();
+      let start: string, end: string, label: string;
+      if (typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)) {
+        const d = localDayWindow(a.date, tz);
+        start = d.start; end = new Date(new Date(d.end).getTime() + 1000).toISOString(); label = `on ${a.date} (${tz})`;
+      } else if (a.startDateTime && a.endDateTime) {
+        const sd = new Date(String(a.startDateTime)), ed = new Date(String(a.endDateTime));
+        if (Number.isNaN(sd.getTime()) || Number.isNaN(ed.getTime()) || ed <= sd) return { error: 'startDateTime / endDateTime must be valid ISO datetimes with end after start.' };
+        if (ed.getTime() - sd.getTime() > 31 * 86400_000) return { error: 'The window is limited to 31 days — audit longer periods in pieces.' };
+        start = sd.toISOString(); end = ed.toISOString(); label = `${start} → ${end}`;
+      } else return { error: 'Give date (YYYY-MM-DD, with optional timeZone) or startDateTime + endDateTime.' };
+      return {
+        resourceIds: ids,
+        window: { start, end, timeZone: tz, label },
+        collect: {
+          resourceIds: ids, start, end, timeZone: tz,
+          includeSystemGenerated: a.includeSystemGenerated === true, includeUnattributed: a.includeUnattributed === true,
+          ...(a.maxApiCalls != null ? { maxApiCalls: Number(a.maxApiCalls) } : {}),
+        },
+      };
+    };
     // One-line summary of an identity search: count, top match and its evidence, duplicate clusters.
     const identityMessage = (noun: string, r: Record<string, unknown>): string => {
       const cands = (r.candidates ?? []) as Array<{ id: number; companyName?: string | null; name?: string; evidence: Array<{ kind: string }>; conflicts?: Array<{ detail: string }> }>;
@@ -1108,6 +1135,52 @@ export class AutotaskToolHandler {
       }],
       // Postgres shadow (read-only mirror of Tickets / TimeEntries / Companies /
       // Contacts / Contracts / services / blocks / Resources). Reads cost 0 Autotask calls.
+      // Resource activity / labor audit (read-only): one normalized event stream per resource + window.
+      ['autotask_search_audit_activity', async (a) => {
+        const w = await auditWindow(a);
+        if ('error' in w) return { result: null, message: w.error };
+        const r = await collectAuditEvents(s, { ...w.collect, ...(Array.isArray(a.entityTypes) && a.entityTypes.length ? { entityTypes: a.entityTypes } : {}) });
+        const limit = Math.min(Math.max(Number(a.limit) || 500, 1), 2000);
+        const offset = a.cursor ? Math.max(0, Number(Buffer.from(String(a.cursor), 'base64').toString('utf8')) || 0) : 0;
+        const page = r.events.slice(offset, offset + limit);
+        const next = offset + limit < r.events.length ? Buffer.from(String(offset + limit)).toString('base64') : null;
+        return {
+          result: { window: w.window, events: page, nextCursor: next, meta: { ...r.meta, recordsReturned: page.length, totalEvents: r.events.length } },
+          message: `${r.events.length} event(s) for ${w.resourceIds.length || 'all'} resource(s) ${w.window.label}${next ? ` (page of ${page.length}; pass nextCursor for more)` : ''}. ${r.meta.apiCallsUsed} Autotask call(s)${r.meta.incomplete.length ? ` — INCOMPLETE: ${r.meta.incomplete.join('; ')}` : ''}.`,
+        };
+      }],
+      ['autotask_report_resource_activity', async (a) => {
+        const w = await auditWindow(a);
+        if ('error' in w) return { result: null, message: w.error };
+        if (!w.resourceIds.length) return { result: null, message: 'resourceId or resourceIds is required.' };
+        const r = await collectAuditEvents(s, w.collect);
+        const per = w.resourceIds.map((rid) => {
+          const evs = r.events.filter((e) => e.resourceId === rid);
+          const count = (k: (e: typeof evs[number]) => string) => evs.reduce<Record<string, number>>((m, e) => { m[k(e)] = (m[k(e)] ?? 0) + 1; return m; }, {});
+          return { resourceId: rid, resourceName: evs[0]?.resourceName ?? null, eventCount: evs.length, byEntityType: count((e) => e.entityType), byAction: count((e) => e.action), events: evs };
+        });
+        return {
+          result: { window: w.window, resources: per, meta: r.meta },
+          message: `${w.window.label}: ${per.map((p) => `${p.resourceName ?? p.resourceId} ${p.eventCount} event(s)`).join(', ')}. ${r.meta.apiCallsUsed} Autotask call(s)${r.meta.incomplete.length ? ` — INCOMPLETE: ${r.meta.incomplete.join('; ')}` : ''}.`,
+        };
+      }],
+      ['autotask_report_resource_daily_audit', async (a) => {
+        const date = typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date) ? a.date : null;
+        if (!date) return { result: null, message: 'date (YYYY-MM-DD) is required.' };
+        const w = await auditWindow({ ...a, date });
+        if ('error' in w) return { result: null, message: w.error };
+        if (!w.resourceIds.length) return { result: null, message: 'resourceId or resourceIds is required.' };
+        const r = await collectAuditEvents(s, { ...w.collect, includeUnattributed: false });
+        const bhStart = /^\d{2}:\d{2}$/.test(String(a.businessHoursStart)) ? String(a.businessHoursStart) : '08:00';
+        const bhEnd = /^\d{2}:\d{2}$/.test(String(a.businessHoursEnd)) ? String(a.businessHoursEnd) : '17:00';
+        const names = await s.getResourceNames(w.resourceIds).catch(() => new Map<number, string>());
+        const audits = w.resourceIds.map((rid) => buildDailyAudit({ id: rid, name: names.get(rid) ?? null }, r.events, r.tickets, { date, timeZone: w.window.timeZone, businessHoursStart: bhStart, businessHoursEnd: bhEnd }));
+        const lines = audits.map((x) => `${x.resource.name ?? x.resource.id}: ${x.summary.hoursEntered}h entered, ${x.summary.ticketsTouched} ticket(s) + ${x.summary.tasksTouched} task(s) touched, ${x.summary.itemsWithoutTime} with no time${x.summary.closedItemsMissingLabor ? ` (${x.summary.closedItemsMissingLabor} closed — reopen to backfill)` : ''}, ${x.summary.afterHoursEvents} after-hours event(s), ${x.summary.lateEntries} late entr(ies) — ${x.summary.reviewItems} to review`);
+        return {
+          result: { audits, meta: r.meta },
+          message: `Daily audit ${date} (${w.window.timeZone}): ${lines.join(' | ')}. ${r.meta.apiCallsUsed} Autotask call(s)${r.meta.incomplete.length ? ` — INCOMPLETE: ${r.meta.incomplete.join('; ')}` : ''}.`,
+        };
+      }],
       ['autotask_shadow_status', async () => {
         const rt = getShadowRuntime();
         if (!rt) return { result: { enabled: false }, message: SHADOW_OFF };

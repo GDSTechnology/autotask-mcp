@@ -8,6 +8,7 @@
 // fallback) and serveStdio (stdio, same factory, era pinned per connection).
 
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
+import { ingestAutotaskWebhook } from '../db/webhook-ingest.js';
 import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
 import {
   createMcpHandler,
@@ -361,6 +362,23 @@ export class AutotaskMcpServer {
       if (req.method === 'OPTIONS') {
         res.writeHead(204);
         res.end();
+        return;
+      }
+
+      // Autotask webhook ingest (forwarded by n8n on the internal network). No
+      // MCP auth: authenticity is Autotask's own HMAC signature, re-verified here.
+      if (url.pathname === '/ingest/autotask-webhook') {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        req.on('data', (c: Buffer) => { size += c.length; if (size <= 1_000_000) chunks.push(c); });
+        req.on('end', () => {
+          if (size > 1_000_000) { res.writeHead(413); res.end(); return; }
+          const sig = req.headers['x-hook-signature'];
+          ingestAutotaskWebhook(Buffer.concat(chunks), Array.isArray(sig) ? sig[0] : sig)
+            .then((r) => { res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(r.body)); })
+            .catch((err) => { this.logger.error('webhook ingest failed', err); res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'ingest failed' })); });
+        });
         return;
       }
 

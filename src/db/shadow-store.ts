@@ -4,6 +4,7 @@
 
 import { Pool } from 'pg';
 import { ShadowEntity, modifiedAt } from './shadow-entities.js';
+import { rowDiffEvents, type AuditEvent } from '../utils/audit-events.js';
 import { ShadowFilter, SqlBuilder, assertField, groupExpr, whereClause } from './shadow-sql.js';
 
 export interface SyncState {
@@ -30,11 +31,41 @@ const MAX_LIMIT = 5000;
 const STATE_COLUMNS = new Set(['watermark', 'window_from', 'backfill_cursor', 'backfill_done', 'last_backfill_at', 'last_incremental_at', 'last_full_at', 'last_reconcile_at', 'last_error', 'last_error_at']);
 
 export class ShadowStore {
+  /** Receives row-diff audit events (set by the runtime to write the ledger). */
+  onDiff: ((events: AuditEvent[]) => Promise<unknown>) | null = null;
+
   constructor(private readonly pool: Pool) {}
+
+  /** One mirrored row (live or deleted), or null. */
+  async getRow(entity: string, id: number): Promise<Record<string, unknown> | null> {
+    const r = await this.pool.query<{ data: Record<string, unknown> }>(`SELECT data FROM shadow_record WHERE entity = $1 AND id = $2`, [entity, id]);
+    return r.rows[0]?.data ?? null;
+  }
+
+  /** Compare incoming rows with what's mirrored and emit diff events for the watched fields. */
+  private async emitDiffs(entity: ShadowEntity, rows: Array<Record<string, unknown>>): Promise<void> {
+    if (!entity.diff || !this.onDiff || !rows.length) return;
+    const ids = rows.map((r) => Number(r.id)).filter(Number.isFinite);
+    const prev = await this.pool.query<{ id: string; data: Record<string, unknown> }>(`SELECT id, data FROM shadow_record WHERE entity = $1 AND id = ANY($2::bigint[])`, [entity.name, ids]);
+    const byId = new Map(prev.rows.map((x) => [Number(x.id), x.data]));
+    const events: AuditEvent[] = [];
+    for (const r of rows) {
+      const old = byId.get(Number(r.id));
+      if (!old) continue; // first sight (backfill / create) — not a change
+      const at = modifiedAt(entity, r)?.toISOString() ?? new Date().toISOString();
+      for (const f of entity.diff.fields) {
+        const actor = entity.diff.actorField?.(f);
+        const by = actor && r[actor] != null ? Number(r[actor]) : null;
+        events.push(...rowDiffEvents(entity.diff.type, Number(r.id), old, r, [f], at, by, { companyId: r.companyID != null ? Number(r.companyID) : null }));
+      }
+    }
+    if (events.length) await this.onDiff(events);
+  }
 
   /** Insert or update rows (a revived row loses its deleted mark). Returns the count written. */
   async upsert(entity: ShadowEntity, rows: Array<Record<string, unknown>>): Promise<number> {
     if (!rows.length) return 0;
+    try { await this.emitDiffs(entity, rows); } catch { /* audit is best-effort — never block the mirror */ }
     const ids: number[] = [], datas: string[] = [], mods: Array<string | null> = [];
     for (const r of rows) {
       const id = Number(r.id);

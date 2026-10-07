@@ -22,6 +22,7 @@ import { Logger } from '../utils/logger.js';
 import { getPool } from './pool.js';
 import { loadPgFlags } from './config.js';
 import { ShadowStore, Freshness } from './shadow-store.js';
+import { AuditLedger } from './audit-ledger.js';
 import { ShadowSync, RunReport } from './shadow-sync.js';
 import { SHADOW_ENTITIES, shadowEntity } from './shadow-entities.js';
 import type { ShadowFilter } from './shadow-sql.js';
@@ -35,6 +36,8 @@ const intEnv = (v: string | undefined, d: number): number => { const n = Number(
 
 export interface ShadowRuntime {
   store: ShadowStore;
+  /** Normalized audit event ledger (ticket history cache, webhook + row-diff events). */
+  ledger: AuditLedger;
   sync: ShadowSync;
   serveReads: boolean;
   maxAgeSeconds: number;
@@ -53,7 +56,7 @@ export const getShadowRuntime = (): ShadowRuntime | null => runtime;
 export function writtenRow(path: string, body: unknown, response: unknown): { entity: string; id: number } | null {
   const segs = path.split('?')[0]!.split('/').filter(Boolean);
   if (!segs.length || segs[segs.length - 1] === 'query' || segs.includes('query')) return null;
-  const childMap: Record<string, string> = { Contacts: 'Contacts', Services: 'ContractServices', Blocks: 'ContractBlocks', Tasks: 'Tasks' };
+  const childMap: Record<string, string> = { Contacts: 'Contacts', Services: 'ContractServices', Blocks: 'ContractBlocks', Tasks: 'Tasks', ToDos: 'CompanyToDos' };
   const entityName = segs.length >= 3 ? childMap[segs[2]!] : segs[0];
   const e = entityName ? shadowEntity(entityName) : undefined;
   if (!e) return null;
@@ -70,6 +73,8 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
   const pool = getPool(logger, env);
   if (!pool) return null;
   const store = new ShadowStore(pool);
+  const ledger = new AuditLedger(pool);
+  store.onDiff = (events) => ledger.insert(events);
   const sync = new ShadowSync(() => service.httpClient(), store, logger, {
     maxCallsPerRun: intEnv(env.MCP_PG_SHADOW_MAX_CALLS_PER_RUN, 100),
     pauseAtPct: intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50),
@@ -127,7 +132,7 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
   first.unref?.(); timer.unref?.();
 
   runtime = {
-    store, sync,
+    store, ledger, sync,
     serveReads: String(env.MCP_PG_SHADOW_SERVE_READS).toLowerCase() === 'true',
     maxAgeSeconds: intEnv(env.MCP_PG_SHADOW_MAX_AGE_SECONDS, 900),
     syncEnabled: true,

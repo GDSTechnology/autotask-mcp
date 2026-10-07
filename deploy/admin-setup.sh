@@ -152,6 +152,8 @@ for _ in $(seq 1 30); do
 done
 [ "${UP:-0}" = 1 ] || fail "The console did not come up. Check: docker compose logs --tail 50 $SERVICE
     (If '$SERVICE' does not read $(basename "$ENV_FILE") as its env_file, the setting never reached it.)"
+# The restart above replaced the container: look its ID up again.
+CID="$(docker compose ps -q "$SERVICE")"
 
 # ── 5. first administrator ─────────────────────────────────────────────────
 step "5/6  First administrator"

@@ -33,6 +33,7 @@ import { AdminStore, AdminUser, AdminRole } from './store.js';
 import { dummyPasswordHash, generatePassword, passwordProblem, validUsername, verifyPassword } from './passwords.js';
 import { SETTINGS, settingDef, settingValue, isOverridden, loadOverrides, setOverride, clearOverride, coerceSetting } from './settings.js';
 import { toolAllowed, toolCategoryNames, isWriteTool } from './tool-gate.js';
+import { callerSummary, recentToolCalls, recentApiCalls, runJob, type CallQuery } from '../services/call-log.js';
 
 export interface AdminConsoleOptions {
   logger: Logger;
@@ -228,7 +229,7 @@ export function adminHandler(deps: AdminDeps) {
     const tenant = opts.authMode === 'env' ? opts.apiUsername?.toLowerCase() : undefined;
     // Autotask's own counter costs an API call — refresh at most every 5 minutes.
     if (tenant && (!thresholdCache || Date.now() - thresholdCache.at > 300_000)) {
-      const u = await opts.service.getApiUsage().catch((e) => ({ autotask: { error: String(e) } }));
+      const u = await runJob('admin console', () => opts.service.getApiUsage()).catch((e) => ({ autotask: { error: String(e) } }));
       thresholdCache = { at: Date.now(), value: u.autotask };
     }
     const pg = await pgHealthCheck(opts.logger, env);
@@ -331,6 +332,22 @@ export function adminHandler(deps: AdminDeps) {
     // ── read-only (viewer and admin) ──
     if (path === '/api/status' && method === 'GET') { requireUser(ctx); return send(res, 200, await status()); }
     if (path === '/api/settings' && method === 'GET') { requireUser(ctx); return send(res, 200, { settings: settingsView() }); }
+    if (path.startsWith('/api/calls') && method === 'GET') {
+      requireUser(ctx);
+      const q = new URL(req.url ?? '/', 'http://x').searchParams;
+      const num = (k: string) => { const n = Number(q.get(k)); return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined; };
+      const query: CallQuery = {};
+      const limit = num('limit'), before = num('before'), toolCallId = num('toolCallId');
+      if (limit) query.limit = limit;
+      if (before) query.beforeId = before;
+      if (toolCallId) query.toolCallId = toolCallId;
+      if (q.get('tool')) query.tool = q.get('tool')!.slice(0, 100);
+      if (q.get('source')) query.source = q.get('source')!.slice(0, 40);
+      if (q.get('errors') === '1') query.errorsOnly = true;
+      if (path === '/api/calls/summary') return send(res, 200, callerSummary(Math.min(num('minutes') ?? 60, 24 * 60)));
+      if (path === '/api/calls/tools') return send(res, 200, { calls: recentToolCalls(query) });
+      if (path === '/api/calls/api') return send(res, 200, { calls: recentApiCalls(query) });
+    }
 
     // ── admin ──
     const settingMatch = /^\/api\/settings\/([A-Za-z0-9_.]+)$/.exec(path);

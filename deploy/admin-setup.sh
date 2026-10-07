@@ -77,7 +77,7 @@ docker info >/dev/null 2>&1 || fail "Cannot talk to Docker. Run as a user in the
 ask DIR "Compose project directory" "$(pwd)"
 [ -d "$DIR" ] || fail "No such directory: $DIR"
 cd "$DIR"
-ls docker-compose.y*ml compose.y*ml >/dev/null 2>&1 || fail "No docker-compose.yml / compose.yml in $DIR."
+[ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ] || fail "No docker-compose.yml / compose.yml in $DIR."
 ask SERVICE "MCP service name" "autotask-mcp"
 CID="$(docker compose ps -q "$SERVICE" 2>/dev/null || true)"
 [ -n "$CID" ] || fail "Service '$SERVICE' is not running in $DIR. Start it first (docker compose up -d $SERVICE)."

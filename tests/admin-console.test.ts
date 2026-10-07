@@ -13,7 +13,7 @@ import { resolve } from 'node:path';
 import { hashPassword, verifyPassword, generatePassword, passwordProblem, hashToken, newSessionToken } from '../src/admin/passwords';
 import { settingValue, setOverride, loadOverrides, coerceSetting, _resetSettings, settingDef } from '../src/admin/settings';
 import { isWriteTool, toolBlockReason, toolCategoryNames } from '../src/admin/tool-gate';
-import { adminHandler, applySettings, _resetThrottle } from '../src/admin/server';
+import { adminHandler, applySettings, adminHealth, _resetThrottle } from '../src/admin/server';
 import type { AdminStore, AdminUser, AdminRole } from '../src/admin/store';
 import { cacheEnabled } from '../src/services/http-cache';
 import { _setShadowRuntime } from '../src/db/shadow-runtime';
@@ -76,6 +76,10 @@ describe('settings', () => {
     expect(cacheEnabled()).toBe(true);
     setOverride('cache.enabled', false);
     expect(cacheEnabled()).toBe(false);
+  });
+  test('/health admin block: absent when not configured; flags a console that is configured but not running', () => {
+    expect(adminHealth({})).toBeNull();
+    expect(adminHealth({ MCP_ADMIN_ENABLED: 'true' })).toEqual({ enabled: true, running: false });
   });
   test('applySettings pushes values into the running shadow', () => {
     const rt: any = { serveReads: false, maxAgeSeconds: 900, syncEnabled: true, sync: { setPauseAtPct: jest.fn() } };

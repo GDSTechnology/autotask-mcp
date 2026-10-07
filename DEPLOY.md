@@ -139,7 +139,7 @@ service, and prunes the old untagged image. Re-running it with nothing new
 released changes nothing.
 
 ```bash
-cd /opt/n8n && OLD=$(docker inspect n8n-autotask-mcp-1 --format '{{.Image}}') && docker compose pull autotask-mcp && NEW=$(docker image inspect ghcr.io/gdstechnology/autotask-mcp:latest --format '{{.Id}}') && if [ "$OLD" != "$NEW" ]; then docker tag "$OLD" ghcr.io/gdstechnology/autotask-mcp:rollback && docker compose up -d autotask-mcp && docker image prune -f; else echo "Already on the latest image - nothing changed"; fi; sleep 3; curl -s http://127.0.0.1:18080/health
+cd /opt/n8n && OLD=$(docker inspect n8n-autotask-mcp-1 --format '{{.Image}}') && docker compose pull autotask-mcp && NEW=$(docker image inspect ghcr.io/gdstechnology/autotask-mcp:latest --format '{{.Id}}') && if [ "$OLD" != "$NEW" ]; then docker tag "$OLD" ghcr.io/gdstechnology/autotask-mcp:rollback && docker compose run --rm --no-deps -T autotask-mcp node dist/db/migrate.js && docker compose up -d autotask-mcp && docker image prune -f; else echo "Already on the latest image - nothing changed"; fi; sleep 3; curl -s http://127.0.0.1:18080/health
 ```
 
 Only the `autotask-mcp` service is recreated — the tunnel and cron scheduler are
@@ -160,6 +160,22 @@ Why it is shaped this way:
   as `:rollback` unconditionally. Re-run with no new release, it pointed
   `:rollback` at the current version and the prune deleted the real previous
   one. The `if` makes a re-run a no-op.
+
+**What an update keeps.** The deploy replaces only the `autotask-mcp`
+container. The admin console's web pages ship inside the image, so they update
+with each release. Everything you configured lives outside the image and is
+kept:
+
+| What | Where it lives | Touched by a deploy? |
+|---|---|---|
+| Console on/off, port | `autotask-mcp.env` | No |
+| Console users, settings, activity log; the shadow | Postgres volume `autotask-mcp-pg` | No (migrations only add) |
+| Cloudflare Tunnel + its token | `autotask-mcp-admin-tunnel/` (own compose project) | No |
+
+After a deploy, `/health` shows `"admin": {"running": true, "schemaReady": true}`
+when the console came back up. **Never** run `docker compose down -v` in
+`/opt/n8n` — `-v` deletes the volumes, including the console's users and the
+shadow.
 
 Check what is kept at any time:
 
@@ -324,10 +340,12 @@ recreate `autotask-mcp`; the MCP goes back to live-only. The data volume stays.
 Needs §8 (the console keeps its users and settings in that Postgres). Full
 guide: [docs/ADMIN.md](docs/ADMIN.md).
 
-Run the setup wizard from the compose directory. It turns the console on in
+**Order:** merge → wait for the last release run → deploy it with §4 (pulls the
+image and runs the migrations) → confirm `/health` shows the new version → then
+run the setup wizard from the compose directory. It turns the console on in
 `autotask-mcp.env` (backup kept), runs the migrations, restarts the MCP,
-prints a **generated first-admin password once**, and can start a Cloudflare
-Tunnel for it:
+prints a **generated first-admin password once**, and walks through a Cloudflare Tunnel step by step (checking each step from the
+host); the dashboard steps are written out in docs/ADMIN.md:
 
 ```bash
 cd /opt/n8n && docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh && bash admin-setup.sh

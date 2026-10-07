@@ -168,52 +168,130 @@ case "$RC" in
 esac
 
 # ── 6. Cloudflare Tunnel ───────────────────────────────────────────────────
+# Guided: each Cloudflare dashboard step is shown, the wizard waits for Enter,
+# then checks what it can from here. The same walkthrough, in more detail:
+# docs/ADMIN.md "Cloudflare Tunnel, step by step".
 step "6/6  Publish with Cloudflare Tunnel (optional)"
 NET="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "$CID" | head -1)"
 if [ -z "$TUNNEL" ]; then
-  info "1) Run a new cloudflared container for the console (you have a tunnel token)"
-  info "2) I already run cloudflared — show me the route to add"
-  info "3) Skip — keep the console private (SSH port-forward only)"
+  info "1) Set up a NEW Cloudflare Tunnel for the console (guided, step by step)"
+  info "2) I already run cloudflared: guide me through adding the route"
+  info "3) Skip: keep the console private (SSH port-forward only)"
   ask CHOICE "Choose" "3"
   case "${CHOICE:-3}" in 1) TUNNEL=new ;; 2) TUNNEL=existing ;; *) TUNNEL=none ;; esac
 fi
 
-route_help() {
-  info "In Cloudflare Zero Trust → ${B}Networks → Tunnels${N} → your tunnel → ${B}Public hostnames → Add${N}:"
-  info "    Subdomain / domain : e.g. ${B}mcp-admin${N} . your-domain.com"
-  info "    Service            : ${B}HTTP${N}  →  ${B}$SERVICE:$PORT${N}"
-  info "Only the console is published: the MCP endpoint (/mcp) and webhook receiver"
-  info "live on a different port, so they stay unreachable through this hostname."
-  info ""
-  info "${Y}Strongly recommended:${N} put Cloudflare Access in front as a second lock —"
-  info "Zero Trust → ${B}Access → Applications → Add → Self-hosted${N}, the same hostname,"
-  info "with a policy allowing only your team's e-mails (one-time PIN or your SSO)."
+pause() { [ "$YES" = 1 ] && return 0; read -r -p "  ${D}Press Enter when done (Ctrl+C stops; re-running resumes safely)...${N}" _ </dev/tty || true; }
+sub()   { printf '\n  %s%s%s\n' "$B" "$1" "$N"; }
+HOST=""
+ACCESS_OK=0
+
+# Ask for the public hostname once and test it end to end from this host.
+check_hostname() {
+  sub "Check the hostname"
+  local CODE LOC attempt
+  ask HOST "The hostname you chose (e.g. mcp-admin.example.com)" ""
+  HOST="${HOST#https://}"; HOST="${HOST#http://}"; HOST="${HOST%%/*}"
+  [ -n "$HOST" ] || { warn "No hostname given, skipping the check."; return 0; }
+  command -v curl >/dev/null || { warn "curl is not installed; open https://$HOST in a browser instead."; return 0; }
+  for attempt in 1 2 3 4 5 6; do
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$HOST/healthz" || true)"
+    LOC="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 "https://$HOST/healthz" || true)"
+    case "$CODE" in
+      200) ok "https://$HOST reaches the console."
+           [ "$ACCESS_OK" = 1 ] || warn "Anyone on the internet reaches the sign-in page. Add Cloudflare Access (next) as a second lock."
+           return 0 ;;
+      302|303)
+           if printf '%s' "$LOC" | grep -q 'cloudflareaccess.com'; then ok "https://$HOST is up and protected by Cloudflare Access."; ACCESS_OK=1; return 0; fi
+           warn "https://$HOST redirects to $LOC, which is unexpected. Check the route's URL."; return 0 ;;
+      000) info "  No answer from $HOST yet (attempt $attempt/6); a new DNS record can take a minute..." ;;
+      502|503|504) info "  Cloudflare answers but cannot reach the console (HTTP $CODE, attempt $attempt/6)..." ;;
+      530) info "  Cloudflare says the tunnel is down (HTTP 530 / error 1033, attempt $attempt/6)..." ;;
+      *)   info "  Got HTTP $CODE (attempt $attempt/6)..." ;;
+    esac
+    sleep 10
+  done
+  warn "Could not confirm https://$HOST yet. Usual causes:"
+  info "   530 / error 1033 : the tunnel is not connected (check the cloudflared logs)"
+  info "   502              : the route's URL is wrong; it must be  $SERVICE:$PORT  with type HTTP"
+  info "   no answer        : no DNS record; the domain must use Cloudflare DNS"
+  info "   Fix it in the dashboard, then re-run this wizard (finished steps are skipped)."
+}
+
+route_steps() {
+  sub "Add the route to the console"
+  info "Cloudflare dashboard: ${B}Zero Trust > Networks > Tunnels${N}, click the tunnel,"
+  info "then the ${B}Public hostname${N} tab > ${B}Add a public hostname${N}"
+  info "(newer dashboards: the tunnel's ${B}Routes${N} > ${B}Add route${N} > ${B}Published application${N})."
+  info "Fill in:"
+  info "    Subdomain : ${B}mcp-admin${N}   (any name you like)"
+  info "    Domain    : pick your domain from the list"
+  info "    Path      : leave empty"
+  info "    Type      : ${B}HTTP${N}      (not HTTPS: the tunnel already encrypts it)"
+  info "    URL       : ${B}$SERVICE:$PORT${N}"
+  info "Save. Cloudflare creates the DNS record by itself."
+  info "${D}Only the console is published; /mcp and the webhook receiver use another port.${N}"
+  pause
+  check_hostname
+}
+
+access_steps() {
+  [ "$ACCESS_OK" = 1 ] && return 0
+  sub "Recommended: Cloudflare Access in front (a second lock)"
+  info "${B}Zero Trust > Access > Applications > Add an application > Self-hosted${N}"
+  info "    Application name : Autotask MCP Admin"
+  info "    Session duration : 24 hours"
+  info "    Public hostname  : the same subdomain and domain as the route"
+  info "Next > ${B}Add a policy${N}:"
+  info "    Policy name : Team"
+  info "    Action      : ${B}Allow${N}"
+  info "    Include     : ${B}Emails ending in${N}  @your-company.com   (or list exact e-mails)"
+  info "Next > keep the defaults > ${B}Add application${N}."
+  info "Sign-in method: Zero Trust > Settings > Authentication. 'One-time PIN' works with no"
+  info "setup (a code is e-mailed). Microsoft Entra ID or Google can be added later."
+  pause
+  check_hostname
+  [ "$ACCESS_OK" = 1 ] || warn "Access is not protecting the hostname yet; you can add it any time."
 }
 
 case "$TUNNEL" in
   new)
     TDIR="$DIR/autotask-mcp-admin-tunnel"
-    info "Create a tunnel first: Zero Trust → Networks → Tunnels → ${B}Create a tunnel${N} → Cloudflared,"
-    info "name it (e.g. autotask-mcp-admin), and copy the ${B}token${N} from the Docker install command"
-    info "(the long string after --token)."
-    TOKEN=""
-    if [ -f "$TDIR/.env" ] && grep -q '^TUNNEL_TOKEN=.' "$TDIR/.env" && confirm "A tunnel token is already saved in $TDIR/.env — keep it?"; then
+    sub "Before you start, you need"
+    info " - a Cloudflare account (the free plan is fine): https://dash.cloudflare.com/sign-up"
+    info " - a domain whose DNS is ON Cloudflare (nameservers point to Cloudflare)."
+    info "   Check: dashboard > your domain > Overview says ${B}Active${N}."
+    info " - Zero Trust switched on once: dashboard > ${B}Zero Trust${N} > choose a team name and"
+    info "   the ${B}Free${N} plan (Cloudflare may ask for a card even on Free; it is not charged)."
+    pause
+
+    sub "Create the tunnel"
+    info "${B}Zero Trust > Networks > Tunnels > Create a tunnel${N}  (newer: Networking > Tunnels)"
+    info "    Connector   : ${B}Cloudflared${N}"
+    info "    Tunnel name : ${B}autotask-mcp-admin${N}"
+    info "Save. The next page shows install commands; choose the ${B}Docker${N} tab. It looks like"
+    info "    docker run cloudflare/cloudflared:latest tunnel --no-autoupdate run --token ${B}eyJh...${N}"
+    info "Copy only the long part after ${B}--token${N}. ${Y}Do not run that command yourself${N}:"
+    info "this wizard runs cloudflared for you, wired so it can reach the MCP container."
+    if [ -f "$TDIR/.env" ] && grep -q '^TUNNEL_TOKEN=.' "$TDIR/.env" && confirm "A tunnel token is already saved in $TDIR/.env. Keep it?"; then
       ok "Keeping the saved token"
     else
-      read -r -s -p "  Paste the tunnel token (input hidden): " TOKEN </dev/tty; echo
+      TOKEN=""
+      read -r -s -p "  Paste the token here (input hidden): " TOKEN </dev/tty; echo
       TOKEN="$(printf '%s' "$TOKEN" | tr -d '[:space:]')"
-      TOKEN="${TOKEN#--token}"
-      [ "${#TOKEN}" -ge 80 ] || fail "That does not look like a tunnel token (too short)."
+      TOKEN="${TOKEN##*--token}"
+      [ "${#TOKEN}" -ge 80 ] || fail "That does not look like a tunnel token (too short). Copy just the part after --token and re-run."
       [[ "$TOKEN" =~ ^[A-Za-z0-9+/=_-]+$ ]] || fail "That does not look like a tunnel token (unexpected characters)."
       mkdir -p "$TDIR"; umask 077
       printf 'TUNNEL_TOKEN=%s\n' "$TOKEN" > "$TDIR/.env"; chmod 600 "$TDIR/.env"; umask 022
       unset TOKEN
-      ok "Token saved to $TDIR/.env (mode 600)"
+      ok "Token saved to $TDIR/.env (readable by its owner only)"
     fi
     cat > "$TDIR/docker-compose.yml" <<YAML
 # Cloudflare Tunnel for the Autotask MCP admin console (written by admin-setup.sh).
+# Its own compose project, so MCP deploys and updates never touch it.
 # Joins the MCP's Docker network so it can reach $SERVICE:$PORT by name.
-# The token is in .env next to this file (chmod 600) — never commit it.
+# The token is in .env next to this file (chmod 600); never commit it.
 name: autotask-mcp-admin-tunnel
 services:
   cloudflared:
@@ -229,23 +307,40 @@ networks:
     name: $NET
 YAML
     (cd "$TDIR" && docker compose up -d 2>&1 | sed 's/^/    /')
-    sleep 4
-    if docker compose -f "$TDIR/docker-compose.yml" logs --tail 30 cloudflared 2>&1 | grep -qi 'Registered tunnel connection'; then ok "Tunnel connected to Cloudflare"
-    else warn "Tunnel started; check it with: docker compose -f $TDIR/docker-compose.yml logs -f"; fi
-    route_help ;;
+    printf '  Waiting for the tunnel to connect'
+    TUP=0
+    for _ in $(seq 1 15); do
+      if docker compose -f "$TDIR/docker-compose.yml" logs cloudflared 2>&1 | grep -qi 'Registered tunnel connection'; then printf '\n'; ok "Tunnel connected to Cloudflare"; TUP=1; break; fi
+      printf '.'; sleep 2
+    done
+    if [ "$TUP" != 1 ]; then
+      printf '\n'; warn "The tunnel has not connected yet. Last log lines:"
+      docker compose -f "$TDIR/docker-compose.yml" logs --tail 8 cloudflared 2>&1 | sed 's/^/      /'
+      info "  'Unauthorized' or 'invalid token': copy the token again and re-run this wizard."
+    fi
+    info "Refresh the Tunnels page in the dashboard: the tunnel should show ${G}HEALTHY${N}."
+    pause
+    route_steps
+    access_steps ;;
   existing)
-    info "Your cloudflared must be able to reach the MCP container. Attach it to the"
-    info "MCP's network if it is not already:  ${B}docker network connect $NET <cloudflared-container>${N}"
-    info ""
-    route_help ;;
+    sub "Let your cloudflared reach the MCP"
+    info "Your cloudflared container must share a Docker network with '$SERVICE'. Run once:"
+    info "    ${B}docker network connect $NET <your-cloudflared-container>${N}"
+    info "(skip this if cloudflared runs in the same compose project as the MCP)."
+    pause
+    route_steps
+    access_steps ;;
   *)
     LP=$(( PORT < 10000 ? 10000 + PORT : PORT ))
     info "The console is not published. To use it privately, publish the port on"
-    info "localhost only — in the compose file, under '$SERVICE:', add to ports:"
+    info "localhost only. In the compose file, under '$SERVICE:', add to ports:"
     info "    ${B}- \"127.0.0.1:$LP:$PORT\"${N}     (then: docker compose up -d $SERVICE)"
     info "and from your workstation:  ${B}ssh -L $LP:127.0.0.1:$LP <this-host>${N}"
-    info "then open http://localhost:$LP" ;;
+    info "then open http://localhost:$LP"
+    info "Run this wizard again any time to add a Cloudflare Tunnel later." ;;
 esac
 
 printf '\n%s✓ Done.%s Sign in as %s%s%s, choose your own password, then add users under\n' "$G$B" "$N" "$B" "$ADMIN_USER" "$N"
-printf '  Users (choose "Read-only" for people who only need the metrics).\n\n'
+printf '  Users (choose "Read-only" for people who only need the metrics).\n'
+printf '  Updates keep all of this: users and settings live in Postgres, the console switch in\n'
+printf '  %s, and the tunnel in its own folder. The routine deploy recreates only the MCP.\n\n' "$(basename "$ENV_FILE")"

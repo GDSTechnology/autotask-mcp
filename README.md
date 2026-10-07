@@ -22,7 +22,9 @@ and `scripts/build-image.sh` for a traceable image build.
 **Admin console (optional).** A web UI to watch API usage and shadow health,
 switch features on/off without a restart (e.g. read-only mode), and manage
 administrator and read-only users. A guided SSH wizard sets it up, prints a
-generated first-admin password, and can publish it through a Cloudflare Tunnel:
+generated first-admin password, and walks you through publishing it with a
+Cloudflare Tunnel step by step. Deploy a release that includes the console
+first, then run:
 
 ```bash
 docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh

@@ -28,16 +28,32 @@ Give the **read-only** role to anyone who only needs the metrics.
   and the webhook secret stay in the env file; the console only shows whether each
   one is set.
 
-## Setup (wizard)
+## Setup
 
-Run the wizard on the Docker host, over SSH. Take the copy from the image you are
-running, so it always matches your version:
+### 0. Get a version with the console onto the server
+
+The console ships inside the MCP image, so the server has to be running a
+release that includes it before anything else:
+
+1. The change is merged to `main`. The release workflow then publishes a new
+   image. Wait for the **last** release run to finish.
+2. Deploy it with the routine command in DEPLOY.md §4. It pulls the image, runs
+   the database migrations and restarts the MCP.
+3. Check that `/health` reports the new `version`.
+
+The console stays **off** after this step. Nothing changes for agents until you
+run the wizard.
+
+### 1. Run the wizard
+
+Over SSH on the Docker host, from the compose project directory. Take the
+wizard out of the image you just deployed, so it always matches your version:
 
 ```bash
 docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh
 ```
 
-Read the script first, then run it from the compose project directory:
+Read the script first, then run it:
 
 ```bash
 bash admin-setup.sh
@@ -46,6 +62,7 @@ bash admin-setup.sh
 It walks through six steps and changes nothing until you confirm:
 
 1. **Find the MCP**: the compose directory and service (default `autotask-mcp`).
+   Stops if the running image is too old to have the console.
 2. **Check Postgres**: stops with instructions if the Postgres layer is off.
 3. **Turn the console on**: adds `MCP_ADMIN_ENABLED=true` and `MCP_ADMIN_PORT`
    to the service's env file. A backup copy of the file is saved first.
@@ -54,46 +71,166 @@ It walks through six steps and changes nothing until you confirm:
 5. **First administrator**: creates `admin` (or a name you choose) with a
    **generated password, printed once** in your SSH session. You must choose your
    own password at first sign-in.
-6. **Cloudflare Tunnel** (optional): see below.
+6. **Cloudflare Tunnel** (optional): a guided walkthrough. It shows each
+   Cloudflare dashboard step, waits for you, and then checks the result from the
+   server. The same steps, in more detail, follow below.
 
-Re-running is safe. Settings already in place are kept, migrations apply only
-what is new, and step 5 never overwrites an existing user.
-
-For an unattended run, take every default and choose the tunnel up front:
-
-```bash
-bash admin-setup.sh --yes --tunnel none
-```
+Re-running is safe, so you can stop at any point and come back later:
+- settings already in place are kept;
+- migrations apply only what is new;
+- step 5 never overwrites an existing user;
+- a saved tunnel token can be kept.
 
 `--help` lists every option.
 
-### Publishing with Cloudflare Tunnel
+## Cloudflare Tunnel, step by step
 
-The wizard offers three choices:
+A tunnel lets people open the console at an address like
+`https://mcp-admin.your-company.com`. No port is opened on the server's
+firewall: the server makes an outbound connection to Cloudflare.
 
-1. **New tunnel container.** In Cloudflare Zero Trust, go to **Networks → Tunnels
-   → Create a tunnel → Cloudflared** and copy the token. The wizard:
-   - asks for the token with hidden input and saves it to
-     `autotask-mcp-admin-tunnel/.env` (mode 600);
-   - writes a small compose file that joins the MCP's Docker network;
-   - starts `cloudflared`.
-2. **Existing cloudflared.** The wizard prints the route to add, plus the
-   `docker network connect` command if your cloudflared can't reach the MCP
-   container yet.
-3. **Skip.** The console stays private and the wizard prints the SSH
-   port-forward recipe.
+Cloudflare renames dashboard menus from time to time. Where a newer name is
+known, it is given in brackets.
 
-For choices 1 and 2, add a **public hostname** to the tunnel:
+### What you need first
 
-| Field | Value |
-|---|---|
-| Subdomain / domain | e.g. `mcp-admin.your-domain.com` |
-| Service | `HTTP` → `autotask-mcp:8090` (service name and console port) |
+- **A Cloudflare account.** The free plan is fine:
+  <https://dash.cloudflare.com/sign-up>.
+- **A domain whose DNS is hosted on Cloudflare.**
+  - In the dashboard, open the domain → **Overview**. The status must say
+    **Active**.
+  - If the domain isn't on Cloudflare yet: **Add a domain**, then change the
+    nameservers at your registrar to the two that Cloudflare shows. This can take
+    up to a day to switch over.
+  - A subdomain such as `mcp-admin` is created for you later, so you don't add a
+    DNS record yourself.
+- **Zero Trust switched on.** You only do this once per account.
+  1. Open **Zero Trust** from the dashboard's left menu.
+  2. Choose a team name, e.g. `your-company`.
+  3. Choose the **Free** plan. Cloudflare may ask for a payment card even on the
+     Free plan; it is not charged.
 
-**Recommended:** add Cloudflare Access in front of the hostname as a second lock:
-**Access → Applications → Self-hosted**, the same hostname, with a policy that
-allows only your team's e-mail addresses (one-time PIN or your SSO). The console
-still asks for its own sign-in behind it.
+### Step 1: Create the tunnel
+
+1. **Zero Trust → Networks → Tunnels** [Networking → Tunnels] → **Create a
+   tunnel**.
+2. Connector type: **Cloudflared** → **Next**.
+3. Name: `autotask-mcp-admin` → **Save tunnel**.
+4. The next page shows install commands. Pick the **Docker** tab. The command
+   looks like this:
+
+   ```text
+   docker run cloudflare/cloudflared:latest tunnel --no-autoupdate run --token eyJhIjoi...
+   ```
+
+5. Copy **only the long value after `--token`**. Treat it like a password: anyone
+   who has it can attach to your tunnel.
+6. **Don't run that command.** The wizard runs `cloudflared` for you, on the
+   MCP's Docker network. If you started it by hand, it couldn't reach the MCP
+   container.
+
+### Step 2: Give the token to the wizard
+
+In the wizard, at step 6, choose **1) Set up a NEW Cloudflare Tunnel** and paste
+the token when asked. The input is hidden. The wizard:
+
+- saves the token to `autotask-mcp-admin-tunnel/.env`, readable only by its
+  owner;
+- writes `autotask-mcp-admin-tunnel/docker-compose.yml` and starts
+  `cloudflared`;
+- waits for **"Registered tunnel connection"**.
+
+Back in the dashboard, refresh **Tunnels**. The tunnel should show **HEALTHY**.
+
+### Step 3: Point a hostname at the console
+
+1. Click the tunnel → **Edit** → **Public hostname** tab → **Add a public
+   hostname** [the tunnel's **Routes** → **Add route** → **Published
+   application**].
+2. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Subdomain | `mcp-admin` (any name) |
+   | Domain | your domain, picked from the list |
+   | Path | leave empty |
+   | Service type | **HTTP** (not HTTPS: the tunnel already encrypts the traffic) |
+   | URL | `autotask-mcp:8090` (the MCP service name, then the console port) |
+
+3. **Save**. Cloudflare creates the DNS record.
+
+The wizard then asks for the hostname and tests it from the server. Open
+`https://mcp-admin.your-domain.com` in a browser: you should see the console's
+sign-in page.
+
+### Step 4 (strongly recommended): Cloudflare Access
+
+Access adds a second lock: people must prove their e-mail address to Cloudflare
+before they even see the console's sign-in page.
+
+1. **Zero Trust → Access → Applications** [Access controls → Applications] →
+   **Add an application** → **Self-hosted**.
+2. Application name: `Autotask MCP Admin`. Session duration: `24 hours`.
+3. **Add public hostname**: the same subdomain and domain as in Step 3.
+4. **Next**, then **Add a policy**:
+
+   | Field | Value |
+   |---|---|
+   | Policy name | `Team` |
+   | Action | **Allow** |
+   | Include | **Emails ending in** → `@your-company.com`, or **Emails** → the exact addresses |
+
+5. **Next**, keep the defaults, then **Add application**.
+6. Choose how people sign in to Access: **Zero Trust → Settings →
+   Authentication**.
+   - **One-time PIN** works with no setup: Cloudflare e-mails a code.
+   - Microsoft Entra ID or Google can be added here later.
+
+Test in a private browser window. You should get Cloudflare's "enter your
+e-mail" page first, then the console's sign-in page. The wizard's check reports
+"protected by Cloudflare Access" when this works.
+
+### If it doesn't work
+
+| What you see | Cause | Fix |
+|---|---|---|
+| Error **1033** / HTTP **530** | The tunnel isn't connected | `docker compose -f autotask-mcp-admin-tunnel/docker-compose.yml logs --tail 30`. "Unauthorized" means a bad token: re-run the wizard and paste it again |
+| HTTP **502** / "Bad gateway" | Cloudflare can't reach the console | The route's URL must be `autotask-mcp:8090` with type **HTTP**. Check that the console is on: `/health` shows `"admin": {"running": true}` |
+| The address doesn't resolve | No DNS record | The domain must be **Active** on Cloudflare DNS. Re-save the hostname route |
+| The Access page loops or says "not authorized" | The Access policy doesn't match | Check the e-mail domain or list in the policy |
+| The console says "admin tables are missing" | Migrations not run | `docker compose run --rm --no-deps -T autotask-mcp node dist/db/migrate.js` |
+
+### Other choices in the wizard
+
+- **2) I already run cloudflared**:
+  - the wizard prints the `docker network connect` command that lets your
+    existing `cloudflared` reach the MCP container;
+  - then you follow Steps 3–4.
+- **3) Skip**: the console stays private. The wizard prints how to reach it
+  through an SSH port-forward instead.
+
+## Updates
+
+**Updating the MCP keeps your console.** The routine deploy (DEPLOY.md §4)
+replaces only the MCP container. The console's web pages are part of the image,
+so they update along with it.
+
+| What | Where it lives | Changed by an update? |
+|---|---|---|
+| Console on/off and port | the env file (`autotask-mcp.env`) | No |
+| Users, settings, activity log | the MCP's Postgres volume | No (migrations only add tables) |
+| Cloudflare Tunnel and its token | `autotask-mcp-admin-tunnel/`, its own compose project | No |
+
+After a deploy, `/health` should include `"admin": {"enabled": true, "running": true, "schemaReady": true}`.
+
+To update `cloudflared` itself, now and then:
+
+```bash
+docker compose -f autotask-mcp-admin-tunnel/docker-compose.yml pull && docker compose -f autotask-mcp-admin-tunnel/docker-compose.yml up -d
+```
+
+**Never** run `docker compose down -v` in the MCP's compose directory. The `-v`
+deletes the volumes, and with them the console's users and the shadow.
 
 ## Day-to-day
 

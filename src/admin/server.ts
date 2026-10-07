@@ -460,6 +460,16 @@ export function adminHandler(deps: AdminDeps) {
   };
 }
 
+// What /health reports about the console, so a deploy can confirm it survived.
+let state: { port: number; schemaReady: boolean; lastLoadError: string | null } | null = null;
+
+/** Compact console status for /health: null when the console is not configured. */
+export function adminHealth(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> | null {
+  if (!isAdminEnabled(env)) return null;
+  if (!state) return { enabled: true, running: false };
+  return { enabled: true, running: true, port: state.port, schemaReady: state.schemaReady, ...(state.lastLoadError ? { error: state.lastLoadError } : {}) };
+}
+
 /** Start the console listener (no-op unless MCP_ADMIN_ENABLED=true and Postgres is configured). */
 export async function startAdminConsole(opts: AdminConsoleOptions): Promise<AdminConsole | null> {
   const env = opts.env ?? process.env;
@@ -480,11 +490,14 @@ export async function startAdminConsole(opts: AdminConsoleOptions): Promise<Admi
       const dropped = loadOverrides(await store.loadSettings());
       if (dropped.length) opts.logger.warn(`admin: ignored invalid saved setting(s): ${dropped.join(', ')}`);
       applySettings();
+      if (state) { state.schemaReady = true; state.lastLoadError = null; }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (state) { state.schemaReady = !/relation "admin_/.test(msg); state.lastLoadError = /relation "admin_/.test(msg) ? 'admin tables missing: run the migrations' : msg; }
       opts.logger.warn(/relation "admin_/.test(msg) ? 'admin: settings table missing — run the database migrations' : `admin: could not load settings (${msg})`);
     }
   };
+  state = { port: Number(env.MCP_ADMIN_PORT) || 8090, schemaReady: false, lastLoadError: null };
   await reload();
   // Pick up changes made by the CLI or another instance.
   const timer = setInterval(() => { void reload(); }, 60_000);
@@ -499,6 +512,6 @@ export async function startAdminConsole(opts: AdminConsoleOptions): Promise<Admi
   opts.logger.info(`Admin console listening on http://${host}:${port}/` + (users === 0 ? ' — no users yet: run `node dist/admin/cli.js init` to create the first administrator' : ''));
   return {
     port,
-    stop: () => new Promise<void>((ok) => { clearInterval(timer); server.close(() => ok()); }),
+    stop: () => new Promise<void>((ok) => { clearInterval(timer); state = null; server.close(() => ok()); }),
   };
 }

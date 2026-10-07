@@ -8,7 +8,7 @@
 // fallback) and serveStdio (stdio, same factory, era pinned per connection).
 
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
-import { startAdminConsole, type AdminConsole } from '../admin/server.js';
+import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
 import {
   createMcpHandler,
   Server,
@@ -385,6 +385,7 @@ export class AutotaskMcpServer {
           timestamp: new Date().toISOString(),
           ...(u ? { apiUsage: { upstreamLastHour: u.upstreamLastHour, upstreamLastFiveMinutes: u.upstreamLastFiveMinutes, savedPct: u.savedPct, rateLimited: u.rateLimited, cacheEnabled: u.cacheEnabled } } : {}),
           ...shadowHealth(),
+          ...(adminHealth() ? { admin: adminHealth() } : {}),
         }));
         return;
       }

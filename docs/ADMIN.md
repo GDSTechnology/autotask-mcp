@@ -7,6 +7,7 @@ log of every sign-in and change.
 | You can… | Administrator | Read-only |
 |---|:---:|:---:|
 | See the dashboard: version, Autotask API usage, Postgres shadow health, busiest calls, audit ledger | ✓ | ✓ |
+| See the Calls log: who is calling, recent tool calls and the Autotask calls each one made | ✓ | ✓ |
 | See every setting and its default | ✓ | ✓ |
 | Change settings (read-only mode, tool groups, shadow, read cache) | ✓ | |
 | Start a shadow sync now | ✓ | |
@@ -261,6 +262,41 @@ How tool switches reach agents:
   administrator", if they call a switched-off tool.
 - Discovery tools (`list_categories`, `execute_tool`, `router`, `whoami`,
   `test_connection`) are never switched off.
+
+### Calls (diagnostics)
+
+The **Calls** page shows whether the MCP is working and who is using it.
+It refreshes every 10 seconds.
+
+**Who is calling (last hour).** One row per caller, with how many tool calls it
+made, how many failed, and how many Autotask calls they cost. A caller is the
+`source` the client declares (`n8n`, `chatgpt`, `cron`), plus the IP address
+and client name the request actually came from.
+Background work, such as the shadow sync and the console's own usage check, is
+listed separately.
+
+**Tool calls.** Each tool call with its result and how long it took. Click a row
+to see every Autotask request that call made, with each request's status code
+and duration. Each row also shows how many requests were answered from the read
+cache or the Postgres shadow instead of going to Autotask.
+
+**Autotask API calls.** Every request sent to Autotask, with its status code and
+the tool call or job that caused it.
+
+What the log reads like:
+
+- **401 errors** usually mean the API credentials are wrong. Each 401 shows up
+  as two requests, because the MCP retries once after looking up the tenant's
+  Autotask address again.
+- **429 errors** mean Autotask is throttling the tenant.
+- **"No answer"** is a network error or a timeout.
+
+What the log keeps:
+
+- It is held in memory: the last 500 tool calls and 2,000 Autotask calls since
+  the server started. A restart clears it.
+- Tool arguments and response bodies are **never** recorded. It keeps the tool
+  name, caller, result, timings, and a shortened error message.
 
 ### Locked out?
 

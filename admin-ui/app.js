@@ -60,6 +60,7 @@ async function api(method, path, body) {
 // ── shell ─────────────────────────────────────────────────────────────────
 const ROUTES = [
   { hash: '#/', label: 'Dashboard', view: dashboard },
+  { hash: '#/calls', label: 'Calls', view: calls },
   { hash: '#/settings', label: 'Settings', view: settings },
   { hash: '#/users', label: 'Users', view: users, admin: true },
   { hash: '#/activity', label: 'Activity', view: activity, admin: true },
@@ -236,6 +237,131 @@ async function dashboard(body) {
   };
   await draw();
   refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') draw().catch(() => undefined); }, 30_000);
+}
+
+// ── calls (diagnostics) ───────────────────────────────────────────────────
+const OUTCOME_LABEL = { ok: 'OK', error: 'Error', 'not-found': 'Not found', 'confirmation-required': 'Needs confirm', 'identification-required': 'Needs identity', 'idempotent-replay': 'Replayed', 'permission-denied': 'Denied', running: 'Running' };
+function outcomeBadge(o) {
+  const cls = o === 'ok' || o === 'idempotent-replay' ? 'ok' : o === 'running' ? '' : o === 'error' || o === 'permission-denied' ? 'bad' : 'warn';
+  return h('span', { class: `badge ${cls}` }, OUTCOME_LABEL[o] || o);
+}
+function statusBadge(s) {
+  if (s == null) return h('span', { class: 'badge' }, '…');
+  if (s === 0) return h('span', { class: 'badge bad' }, 'No answer');
+  return h('span', { class: `badge ${s >= 500 || s === 429 ? 'bad' : s >= 400 ? 'warn' : 'ok'}` }, String(s));
+}
+const ms = (n) => (n == null ? '—' : n >= 1000 ? `${(n / 1000).toFixed(1)} s` : `${n} ms`);
+const timeOf = (iso) => new Date(iso).toLocaleTimeString();
+function callerCell(r) {
+  return h('div', null,
+    h('span', { class: 'badge' }, r.source || 'unknown'),
+    r.user ? h('span', { class: 'muted' }, ` ${r.user}`) : null,
+    r.ip || r.userAgent ? h('div', { class: 'muted mono' }, [r.ip, r.userAgent].filter(Boolean).join(' · ')) : null);
+}
+
+async function calls(body) {
+  const state = { tab: 'tools', errors: false, tool: '', source: '', auto: true, open: new Set() };
+  const content = h('div');
+  const errBox = h('input', { type: 'checkbox', onchange: (e) => { state.errors = e.target.checked; draw(); } });
+  const toolBox = h('input', { type: 'text', placeholder: 'Filter by tool or path…', style: 'max-width:260px', oninput: (e) => { state.tool = e.target.value.trim(); clearTimeout(toolBox._t); toolBox._t = setTimeout(draw, 300); } });
+  const sourceSel = h('select', { style: 'max-width:180px', onchange: (e) => { state.source = e.target.value; draw(); } }, h('option', { value: '' }, 'All callers'));
+  const autoBox = h('input', { type: 'checkbox', checked: true, onchange: (e) => { state.auto = e.target.checked; } });
+  const tabBtn = (id, label) => h('button', { class: `small ${state.tab === id ? 'primary' : ''}`, onclick: () => { state.tab = id; draw(); } }, label);
+
+  const qs = () => {
+    const p = new URLSearchParams({ limit: '150' });
+    if (state.errors) p.set('errors', '1');
+    if (state.tool) p.set('tool', state.tool);
+    if (state.source && state.tab === 'tools') p.set('source', state.source);
+    return p.toString();
+  };
+
+  async function apiCallsOf(id, cell) {
+    cell.replaceChildren(h('span', { class: 'muted' }, 'Loading…'));
+    const r = await api('GET', `/api/calls/api?toolCallId=${id}&limit=200`);
+    cell.replaceChildren(r.calls.length
+      ? h('table', null, h('tbody', null, r.calls.map((c) => h('tr', null,
+          h('td', { class: 'muted' }, timeOf(c.at)), h('td', { class: 'mono' }, `${c.method} ${c.path}`), h('td', null, statusBadge(c.status)), h('td', { class: 'num' }, ms(c.durationMs)),
+          h('td', { class: 'muted' }, c.error || '')))))
+      : h('span', { class: 'muted' }, 'No Autotask calls: answered from the cache or the Postgres shadow, or the tool made none.'));
+  }
+
+  async function draw() {
+    const [sum, list] = await Promise.all([
+      api('GET', '/api/calls/summary?minutes=60'),
+      api('GET', `/api/calls/${state.tab === 'tools' ? 'tools' : 'api'}?${qs()}`),
+    ]);
+    const sources = [...new Set(sum.callers.map((c) => c.source))].sort();
+    if (sourceSel.options.length - 1 !== sources.length) {
+      sourceSel.replaceChildren(h('option', { value: '' }, 'All callers'), ...sources.map((s) => h('option', { value: s }, s)));
+      sourceSel.value = state.source;
+    }
+
+    const callers = h('section', { class: 'panel' },
+      h('h2', null, 'Who is calling (last hour)'),
+      sum.callers.length || sum.background.length
+        ? h('div', { class: 'table-wrap' }, h('table', null,
+            h('thead', null, h('tr', null, h('th', null, 'Caller'), h('th', { class: 'num' }, 'Tool calls'), h('th', { class: 'num' }, 'Errors'), h('th', { class: 'num' }, 'Autotask calls'), h('th', null, 'Last seen'))),
+            h('tbody', null,
+              sum.callers.map((c) => h('tr', null, h('td', null, callerCell(c)), h('td', { class: 'num' }, fmt(c.calls)),
+                h('td', { class: 'num' }, c.errors ? h('span', { class: 'badge bad' }, fmt(c.errors)) : '0'), h('td', { class: 'num' }, fmt(c.apiCalls)),
+                h('td', null, `${ago(c.lastAt)} · `, h('span', { class: 'mono' }, c.lastTool)))),
+              sum.background.map((b) => h('tr', null, h('td', null, h('span', { class: 'badge accent' }, 'background'), ' ', b.job), h('td', { class: 'num muted' }, '—'),
+                h('td', { class: 'num' }, b.errors ? h('span', { class: 'badge bad' }, fmt(b.errors)) : '0'), h('td', { class: 'num' }, fmt(b.apiCalls)), h('td', null, ago(b.lastAt)))))))
+        : h('p', { class: 'muted' }, 'No calls in the last hour.'));
+
+    let table;
+    if (state.tab === 'tools') {
+      const rows = [];
+      for (const c of list.calls) {
+        const detail = h('td', { colspan: '6' });
+        const detailRow = h('tr', { hidden: !state.open.has(c.id) }, detail);
+        if (state.open.has(c.id)) apiCallsOf(c.id, detail).catch((e) => detail.replaceChildren(e.message));
+        rows.push(h('tr', { style: 'cursor:pointer', title: 'Show the Autotask calls this tool call made', onclick: () => {
+          detailRow.hidden = !detailRow.hidden;
+          if (detailRow.hidden) state.open.delete(c.id); else { state.open.add(c.id); apiCallsOf(c.id, detail).catch((e) => detail.replaceChildren(e.message)); }
+        } },
+          h('td', { class: 'muted' }, timeOf(c.at)),
+          h('td', null, h('span', { class: 'mono' }, c.tool.replace(/^autotask_/, '')), c.error ? h('div', { class: 'error', style: 'margin:2px 0 0;font-size:12.5px' }, c.error) : null),
+          h('td', null, callerCell(c)),
+          h('td', null, outcomeBadge(c.outcome)),
+          h('td', { class: 'num' }, ms(c.durationMs)),
+          h('td', { class: 'num' }, `${c.apiCalls} API`, c.cacheHits ? h('div', { class: 'muted' }, `${c.cacheHits} cached`) : null, c.shadowReads ? h('div', { class: 'muted' }, `${c.shadowReads} shadow`) : null)));
+        rows.push(detailRow);
+      }
+      table = h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Tool'), h('th', null, 'Caller'), h('th', null, 'Result'), h('th', { class: 'num' }, 'Took'), h('th', { class: 'num' }, 'Autotask'))),
+        h('tbody', null, rows));
+    } else {
+      table = h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Request'), h('th', null, 'Status'), h('th', { class: 'num' }, 'Took'), h('th', null, 'Caused by'))),
+        h('tbody', null, list.calls.map((c) => h('tr', null,
+          h('td', { class: 'muted' }, timeOf(c.at)),
+          h('td', null, h('span', { class: 'mono' }, `${c.method} ${c.path}`), c.error ? h('div', { class: 'error', style: 'margin:2px 0 0;font-size:12.5px' }, c.error) : null),
+          h('td', null, statusBadge(c.status)),
+          h('td', { class: 'num' }, ms(c.durationMs)),
+          h('td', null, c.tool ? h('span', { class: 'mono' }, c.tool.replace(/^autotask_/, '')) : h('span', { class: 'badge accent' }, c.job || 'background'))))));
+    }
+
+    content.replaceChildren(callers,
+      h('section', { class: 'panel' },
+        h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:10px' },
+          h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls')),
+          h('div', { class: 'row' }, toolBox, state.tab === 'tools' ? sourceSel : null,
+            h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center;margin:0' }, errBox, 'Errors only'))),
+        list.calls.length ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, 'Nothing matches.'),
+        h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'tools'
+          ? 'Newest first; click a row to see the Autotask calls it made. Arguments are never recorded.'
+          : 'Newest first. Calls answered from the read cache or the Postgres shadow never reach Autotask, so they are not listed here.')));
+  }
+
+  body.replaceChildren(
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('h1', null, 'Calls'),
+      h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, autoBox, 'Refresh every 10 s')),
+    h('p', { class: 'muted' }, 'Recent tool calls from n8n, ChatGPT and other clients, and every request this MCP sent to Autotask. Kept in memory: the last 500 tool calls and 2,000 Autotask calls since the server started.'),
+    content);
+  await draw();
+  refreshTimer = setInterval(() => { if (state.auto && document.visibilityState === 'visible') draw().catch(() => undefined); }, 10_000);
 }
 
 // ── settings ──────────────────────────────────────────────────────────────

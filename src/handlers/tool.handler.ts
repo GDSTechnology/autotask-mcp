@@ -82,6 +82,7 @@ import {
 } from '../utils/request-context.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { toolAllowed, toolBlockReason } from '../admin/tool-gate.js';
+import { runToolCall, noteToolAudit } from '../services/call-log.js';
 import { buildTicketCard } from './card.builder.js';
 
 // Default concurrency for company/resource name enrichment. Autotask allows
@@ -3399,9 +3400,19 @@ export class AutotaskToolHandler {
   private recordAudit(ctx: CallerContext, entry: AuditEntry): void {
     emitAudit(this.logger, ctx, entry);
     this.auditSink?.record(ctx, entry);
+    // Admin console "Calls" log (in memory; caller + outcome, never arguments).
+    noteToolAudit({
+      outcome: entry.outcome, durationMs: entry.durationMs, source: ctx.source,
+      user: ctx.trustedActingUserEmail ?? ctx.requestingUserEmail,
+      ip: ctx.origin?.forwardedFor ?? ctx.origin?.remoteAddr, userAgent: ctx.origin?.userAgent, error: entry.error,
+    });
   }
 
   async callTool(name: string, args: Record<string, any>, meta?: Record<string, any>): Promise<McpToolResult> {
+    return runToolCall(name, () => this.dispatchToolCall(name, args, meta));
+  }
+
+  private async dispatchToolCall(name: string, args: Record<string, any>, meta?: Record<string, any>): Promise<McpToolResult> {
     // Caller context (who/where/correlation) for audit + future permissions
     // (§3.5/§23). Strip the reserved `_context` key so it never reaches tool logic.
     const ctx = extractCallerContext(meta, args);

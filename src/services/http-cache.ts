@@ -19,6 +19,7 @@
 // AUTOTASK_CACHE=off disables caching (coalescing + metrics stay on).
 
 import { settingValue } from '../admin/settings.js';
+import { noteCacheHit } from './call-log.js';
 
 export type CacheClass ='fields' | 'reference' | 'slow-reference' | 'volatile' | 'never';
 
@@ -143,6 +144,7 @@ export async function cachedRead<T>(tenant: string, key: string, path: string, f
     const hit = cache.get(key);
     if (hit && hit.expires > now) {
       statsFor(tenant).cacheHits++;
+      noteCacheHit();
       cache.delete(key); cache.set(key, hit); // LRU touch
       return structuredClone(hit.value) as T; // callers mutate results (e.g. _card) — never share the cached object
     }
@@ -152,6 +154,7 @@ export async function cachedRead<T>(tenant: string, key: string, path: string, f
   const pending = inFlight.get(flightKey);
   if (pending) {
     statsFor(tenant).coalesced++;
+    noteCacheHit();
     return structuredClone(await pending) as T;
   }
   const p = (async () => {

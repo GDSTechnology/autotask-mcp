@@ -842,7 +842,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_update_ticket',
-    description: 'Update ticket record. Only provided fields are changed.',
+    description: 'Update a ticket — only the fields given change. Covers status, priority, QUEUE (move between queues), assignee + role, contact, title/description, issue / sub-issue type, source, ticket type, category, SLA, due date, estimated hours, work type, resolution, location, configuration item, PO number, opportunity, problem ticket, external id. Picklist fields (status, priority, queueID, issueType, subIssueType, source, ticketType, ticketCategory, serviceLevelAgreementID) accept the id or the label ("Tier 1 Support"); an unknown value returns the choices and writes nothing. Reads the ticket back and reports each field old → new, warning if Autotask did not apply a value. Contract and company changes are NOT done here — use autotask_set_ticket_contract / autotask_move_ticket_to_company.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -901,7 +901,23 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         configurationItemID: {
           type: 'number',
           description: 'Associated configuration item (asset) ID. Must belong to the ticket\'s company.'
-        }
+        },
+        queueID: {
+          type: 'number',
+          description: 'Move the ticket to another queue (queue id). Or pass `queue` with the name instead. Unknown → the active choices, nothing written. List with autotask_get_picklists { entity: "Tickets", fields: ["queueID"] }.'
+        },
+        queue: { type: 'string', description: 'Move the ticket to the queue with this NAME, e.g. "Tier 1 Support" (alternative to queueID).' },
+        source: { type: 'number', description: 'Ticket source (picklist id or label, e.g. "Email", "Phone").' },
+        ticketType: { type: 'number', description: 'Ticket type (picklist id or label, e.g. "Service Request", "Incident").' },
+        ticketCategory: { type: 'number', description: 'Ticket category (picklist id or label).' },
+        serviceLevelAgreementID: { type: 'number', description: 'Service level agreement (picklist id or label).' },
+        estimatedHours: { type: 'number', description: 'Estimated hours.' },
+        billingCodeID: { type: 'number', description: 'Work type (billing code) id for the ticket.' },
+        resolution: { type: 'string', description: 'Resolution text.' },
+        purchaseOrderNumber: { type: 'string', description: 'Purchase order number.' },
+        opportunityID: { type: 'number', description: 'Linked opportunity id.' },
+        problemTicketId: { type: 'number', description: 'Parent problem ticket id (group this ticket as an incident of a problem).' },
+        externalID: { type: 'string', description: 'External id (integration / idempotency key).' }
       },
       required: ['ticketId']
     }

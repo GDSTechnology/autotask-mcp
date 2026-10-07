@@ -132,8 +132,13 @@ const TICKET_WRITABLE_FIELDS = [
   'contractServiceID',
   'contractServiceBundleID',
   'externalID',
-  'problemTicketId'
+  'problemTicketId',
+  'purchaseOrderNumber',
+  'opportunityID'
 ] as const;
+
+/** Tickets picklist fields update_ticket resolves by label or id (verified on the live schema). */
+const TICKET_PICKLIST_FIELDS = new Set(['status', 'priority', 'queueID', 'issueType', 'subIssueType', 'source', 'ticketType', 'ticketCategory', 'serviceLevelAgreementID']);
 
 function buildTicketPayload(args: Record<string, any>): Record<string, any> {
   const payload: Record<string, any> = {};
@@ -1315,9 +1320,54 @@ export class AutotaskToolHandler {
       }],
       ['autotask_update_ticket', async (a) => {
         const { ticketId, ...rest } = a;
+        // Contract and company moves have their own guarded tools (financial
+        // confirmation / company-move checks) — never a side door through here.
+        const routed: Record<string, string> = { contractID: 'autotask_set_ticket_contract', contractServiceID: 'autotask_set_ticket_contract', contractServiceBundleID: 'autotask_set_ticket_contract', companyID: 'autotask_move_ticket_to_company' };
+        const blocked = Object.keys(routed).filter((k) => rest[k] !== undefined);
+        if (blocked.length) {
+          return { result: { status: 'use_dedicated_tool', fields: blocked }, message: `Nothing written: ${blocked.join(', ')} can't be changed with update_ticket — use ${[...new Set(blocked.map((k) => routed[k]))].join(' / ')} (it validates and moves the related records too).` };
+        }
+        if (rest.queueID === undefined && typeof rest.queue === 'string' && rest.queue.trim()) rest.queueID = rest.queue.trim();
         const payload = buildTicketPayload(rest);
+        if (!Object.keys(payload).length) return { result: null, message: `Nothing to update on ticket ${ticketId} — no writable fields given.` };
+        // Picklists by label or id: "Tier 1 Support" → its queue id; an unknown
+        // label or inactive id returns the choices instead of a failed write.
+        const pick = Object.keys(payload).filter((k) => TICKET_PICKLIST_FIELDS.has(k));
+        let fields: Awaited<ReturnType<typeof s.getFieldInfo>> = [];
+        if (pick.length) {
+          try { fields = await s.getFieldInfo('Tickets'); } catch { fields = []; }
+          for (const k of pick) {
+            const values = fields.find((f) => f.name === k)?.picklistValues;
+            // Picklist unavailable: a numeric id passes through (Autotask still validates); a label can't be resolved.
+            if (!values?.length) {
+              if (/^\d+$/.test(String(payload[k]))) { payload[k] = Number(payload[k]); continue; }
+              return { result: { status: 'invalid_value', field: k, requested: payload[k] }, message: `Nothing written: couldn't load the ${k} choices to resolve "${payload[k]}" — pass the numeric id.` };
+            }
+            const m = matchPicklist(values, payload[k]);
+            if (!m.ok) return { result: { status: 'invalid_value', field: k, requested: payload[k], choices: m.choices }, message: `Nothing written: ${k} "${payload[k]}" is not an active choice. Choices: ${formatChoices(m.choices)}` };
+            payload[k] = m.value;
+          }
+        }
+        // Old values from the Postgres shadow (0 Autotask calls) when it mirrors the ticket.
+        const before = await getShadowRuntime()?.store.query('Tickets', [{ op: 'eq', field: 'id', value: Number(ticketId) }], { limit: 1 }).then((r) => (r.rows[0] as Record<string, unknown>) ?? null).catch(() => null) ?? null;
         await s.updateTicket(ticketId, payload);
-        return { result: ticketId, message: `Successfully updated ticket ${ticketId}` };
+        // Read back: report old → new per field, and anything Autotask didn't apply.
+        let after: Record<string, unknown> | null = null;
+        try { after = await s.getTicket(Number(ticketId), true) as Record<string, unknown> | null; } catch { /* verification is best-effort */ }
+        if (!after) return { result: ticketId, message: `Successfully updated ticket ${ticketId}` };
+        if (!fields.length) { try { fields = await s.getFieldInfo('Tickets'); } catch { /* raw values */ } }
+        const lbl = (k: string, v: unknown) => fields.find((f) => f.name === k)?.picklistValues?.find((p) => String(p.value) === String(v))?.label ?? v;
+        const changes = Object.keys(payload).filter((k) => k !== 'userDefinedFields' && k !== 'ticketAdditionalContacts').map((k) => ({
+          field: k, from: before ? lbl(k, before[k] ?? null) : undefined, to: lbl(k, after![k] ?? null),
+          applied: JSON.stringify(after![k] ?? null) === JSON.stringify(payload[k] ?? null) || String(after![k]) === String(payload[k]),
+        }));
+        const notApplied = changes.filter((c) => !c.applied);
+        const tn = (after.ticketNumber as string) ?? `ticket ${ticketId}`;
+        const desc = changes.filter((c) => c.applied).map((c) => `${c.field}${c.from !== undefined ? ` ${c.from ?? '∅'} →` : ' →'} ${c.to ?? '∅'}`).join('; ');
+        return {
+          result: { ticketId, ticketNumber: after.ticketNumber ?? null, changes, verified: notApplied.length === 0 },
+          message: `Updated ${tn}${desc ? `: ${desc}` : ''}.${notApplied.length ? ` WARNING — Autotask did not apply: ${notApplied.map((c) => `${c.field} (now ${c.to ?? '∅'})`).join(', ')}.` : ''}`,
+        };
       }],
       ['autotask_move_ticket_to_company', async (a) => {
         const r = await s.moveTicketToCompany(a.ticketId, a.companyID, { contactID: a.contactID, force: a.force });

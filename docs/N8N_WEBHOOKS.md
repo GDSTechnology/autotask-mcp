@@ -91,3 +91,23 @@ The payload is parsed **only** after the signature checks out, so nothing downst
 | Webhook stops firing | Autotask deactivated it after failures; it called the `deactivationUrl`. Fix the receiver, then reactivate with `autotask_update_webhook` `isActive: true` |
 
 The snippet above is exercised by `tests/n8n-webhook-signature-doc.test.ts`, which extracts it from this file and runs it against signed sample payloads, so the documented code is the tested code.
+
+## 5. Forward to the MCP audit ledger
+
+For the resource-activity audit, forward each verified callout to the MCP over
+the internal Docker network. The MCP checks Autotask's signature itself, so
+forward the **raw body unchanged** with the original header:
+
+```
+Webhook (Raw Body ON) → [verify, as above] → HTTP Request
+  Method:  POST
+  URL:     http://autotask-mcp:8080/ingest/autotask-webhook
+  Send Headers:  X-Hook-Signature = {{ $('Webhook').item.json.headers['x-hook-signature'] }}
+                 Content-Type     = application/json
+  Send Body:     n8n Binary File, input field "data"   (the raw body, byte for byte)
+```
+
+Responses: `200 {ok, events, stored, duplicate}` (a re-delivered callout is
+stored once), `202` for an entity type that isn't audited, `401` bad signature,
+`503` when the MCP has no secret or no Postgres. The endpoint is not exposed
+publicly — n8n reaches it by service name.

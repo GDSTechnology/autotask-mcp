@@ -4,6 +4,23 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-07
+
+- **TicketHistory is NOT queryable by resource** ("ResourceID is not queryable") —
+  only per ticket. Resource-centric audit = changed tickets first, then history
+  per ticket, cached in `audit_event` (199 calls first pass → 8 cached).
+- **Webhook callouts carry `PersonID`** ("the Resource ID of the user whose action
+  triggered the callout in the UI") and only NEW values (update = changed fields
+  only). Webhook-capable: Tickets, TicketNotes, Companies, Contacts, CIs only.
+- **Who-changed is not recorded** on ServiceCalls / CompanyToDos / Opportunities /
+  CIs (no lastModifiedBy); creators are. TimeEntries DO record `creatorUserID` and
+  `lastModifiedUserID`; Tasks `completedByResourceID`.
+- An automation completes To-Dos hourly at :17 — attributing a To-Do completion
+  to its assignee produced 26 false "after-hours / missing labor" items. Such
+  weak attributions are shown but never counted.
+- Delete logs exist: DeletedTicketActivityLogs, DeletedTaskActivityLogs,
+  DeletedTicketLogs (deletedByResourceID, deletedDateTime). No TimeSheets entity.
+
 ## Learnings - 2026-10-06
 
 - **Autotask API limits** (official docs): **10,000 requests/hour per DATABASE**

@@ -1108,6 +1108,67 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_search_audit_activity',
+    description: 'READ-ONLY. Normalized event stream of everything attributable to one or more resources in a time window — the evidence layer under the activity reports. Each event: eventId, timestamp, resourceId/Name, action (create/update/delete/complete/reopen/assign/note/time/cancel), entityType/Id/Reference, parent, company, field/oldValue/newValue, source, systemGenerated. Sources: ticket history (status/queue/priority/assignee/contract/… with old→new — fetched per changed ticket and cached, so a past day costs nothing the second time), ticket/task/project notes by creator (body, internal vs client-visible), time entries (date worked vs entered/modified, entered/edited by someone else, entered late), tasks created/completed, service calls created/cancelled, To-Dos created/completed, appointments, ticket charges, delete logs, plus Autotask webhook events (who changed companies/contacts/CIs/tickets in the UI) and row diffs (service-call/To-Do changes — editor unknown). "Touched" = an action; assignment alone is never reported as work. Bulk resourceIds; paginated (cursor); meta reports apiCallsUsed / recordsScanned and anything left incomplete by the call budget.',
+    annotations: { title: 'Search audit activity (resource events)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceIds: { type: 'array', items: { type: 'number' }, description: 'Resources to audit (bulk — one pass serves all)' },
+        resourceId: { type: 'number', description: 'A single resource (alternative to resourceIds)' },
+        date: { type: 'string', description: 'Local day YYYY-MM-DD (with timeZone) — or use startDateTime/endDateTime' },
+        timeZone: { type: 'string', description: 'IANA/Windows timezone for date. Default: the first resource\'s location timezone.' },
+        startDateTime: { type: 'string', description: 'Window start (ISO with offset), max 31 days' },
+        endDateTime: { type: 'string', description: 'Window end (ISO with offset, exclusive)' },
+        entityTypes: { type: 'array', items: { type: 'string', enum: ['ticket', 'ticketNote', 'taskNote', 'projectNote', 'timeEntry', 'task', 'project', 'serviceCall', 'todo', 'appointment', 'ticketCharge', 'company', 'contact', 'configurationItem'] }, description: 'Only these entity types (default all)' },
+        includeSystemGenerated: { type: 'boolean', description: 'Include workflow/triage-rule and system-account events. Default false.' },
+        includeUnattributed: { type: 'boolean', description: 'Include events whose actor Autotask does not record (service-call / To-Do changes). Default false.' },
+        maxApiCalls: { type: 'number', description: 'Autotask call budget for this request (default 400, max 2000)' },
+        limit: { type: 'number', description: 'Events per page (default 500, max 2000)' },
+        cursor: { type: 'string', description: 'nextCursor from the previous page' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_report_resource_activity',
+    description: 'READ-ONLY. Everything each resource did in Autotask in a window (date + timeZone, or start/end): per resource, the event stream from autotask_search_audit_activity plus counts by entity type and action. Bulk resourceIds share one pass (a 15-person team costs about the same as one). Meta reports Autotask calls used.',
+    annotations: { title: 'Report resource activity', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceIds: { type: 'array', items: { type: 'number' } },
+        resourceId: { type: 'number' },
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        timeZone: { type: 'string' },
+        startDateTime: { type: 'string' },
+        endDateTime: { type: 'string' },
+        includeSystemGenerated: { type: 'boolean' },
+        includeUnattributed: { type: 'boolean' },
+        maxApiCalls: { type: 'number' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_report_resource_daily_audit',
+    description: 'READ-ONLY. End-of-day labor reconciliation for one or more resources on a date: TIME ENTERED (hours, entries); TICKETS and PROJECTS/TASKS TOUCHED (first/last activity, actions, whether time exists); SCHEDULING; CRM/ADMIN; CONFIGURATION; AFTER-HOURS activity (businessHoursStart/End, weekends; whether an after-hours time entry exists); ACTIVITY WITH NO CORRESPONDING TIME; POTENTIAL MISMATCHES (time with no other activity, time entered/edited by someone else); LATE/BACKFILLED TIME (entered after the day worked); CLOSED ITEMS WITH POSSIBLE MISSING LABOR (requiresReopenForBackfill); deletes. Activity timestamps are evidence, not hours worked — it never decides durations. Timesheet status is reported as unknown: Autotask does not expose it through the API.',
+    annotations: { title: 'Resource daily audit (labor reconciliation)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceIds: { type: 'array', items: { type: 'number' } },
+        resourceId: { type: 'number' },
+        date: { type: 'string', description: 'YYYY-MM-DD (local day)' },
+        timeZone: { type: 'string', description: 'Default: the first resource\'s location timezone' },
+        businessHoursStart: { type: 'string', description: 'HH:MM, default 08:00' },
+        businessHoursEnd: { type: 'string', description: 'HH:MM, default 17:00' },
+        maxApiCalls: { type: 'number', description: 'Autotask call budget (default 400)' }
+      },
+      required: ['date']
+    }
+  },
+  {
     name: 'autotask_shadow_status',
     description: 'READ-ONLY. State of the Postgres shadow — the read-only mirror of Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts, ContractServices, ContractBlocks and Resources: per entity row count, whether the backfill is done, data age, Autotask calls spent, last error; whether search tools are being served from it; the last sync run.',
     annotations: { title: 'Shadow status', readOnlyHint: true },
@@ -5972,7 +6033,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_activity_without_time', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_activity_without_time', 'autotask_search_audit_activity', 'autotask_report_resource_activity', 'autotask_report_resource_daily_audit', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

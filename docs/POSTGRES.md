@@ -148,3 +148,29 @@ and answers the 4th with **429**. Every upstream call now passes a gate keyed by
 endpoint (Tickets, TimeEntries, …): at most `AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT`
 (default **2**, max 3) in flight, the rest **wait their turn** instead of failing.
 Cached and shared (coalesced) reads never reach upstream, so they take no slot.
+
+## Audit event ledger — resource activity / daily labor audit
+
+Migration `0003_audit_events.sql` adds `audit_event` (one normalized row per
+attributable event) and `ticket_history_fetch`. It powers
+`autotask_search_audit_activity`, `autotask_report_resource_activity` and
+`autotask_report_resource_daily_audit`.
+
+- **Ticket history** can't be queried by resource in Autotask, so the tickets
+  changed since the window opened are found (from the shadow: 0 calls) and their
+  history read **per ticket, then cached here**. A past day's history never
+  changes: measured at GDS, auditing one tech's day cost **199 calls the first
+  time and 8 the second** (190 changed tickets), and the first pass serves every
+  resource that day.
+- **Webhooks** (Tickets, TicketNotes, Companies, Contacts, ConfigurationItems)
+  arrive via n8n at `POST /ingest/autotask-webhook` (internal only). The MCP
+  re-verifies Autotask's `X-Hook-Signature`, records `PersonID` as the actor, takes
+  the new values from the callout and the **old values from the shadow row**.
+  See [N8N_WEBHOOKS.md](N8N_WEBHOOKS.md#5-forward-to-the-mcp-audit-ledger).
+- **Row diffs** — ServiceCalls and CompanyToDos are mirrored with watched fields;
+  a change between syncs is recorded old → new. Autotask doesn't record who made
+  these changes, so the actor is unknown (except who cancelled a service call).
+- **Weak attribution is never counted as work** — e.g. a To-Do completed while
+  assigned to someone (automations complete To-Dos too) is listed, not scored.
+- **Timesheet status is not available** through the Autotask API (no entity); the
+  daily audit reports it as unknown.

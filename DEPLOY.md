@@ -318,3 +318,35 @@ cd /opt/n8n && docker compose config --quiet && docker compose up -d autotask-mc
 
 **Turn it off** — `MCP_PG_SHADOW_ENABLED=false` (or `MCP_PG_ENABLED=false`) and
 recreate `autotask-mcp`; the MCP goes back to live-only. The data volume stays.
+
+## 9. Admin console (optional — web UI for status, switches and users)
+
+Needs §8 (the console keeps its users and settings in that Postgres). Full
+guide: [docs/ADMIN.md](docs/ADMIN.md).
+
+Run the setup wizard from the compose directory. It turns the console on in
+`autotask-mcp.env` (backup kept), runs the migrations, restarts the MCP,
+prints a **generated first-admin password once**, and can start a Cloudflare
+Tunnel for it:
+
+```bash
+cd /opt/n8n && docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh && bash admin-setup.sh
+```
+
+The console listens on its own port (`MCP_ADMIN_PORT`, default `8090`) inside
+the container — not published on the host. A tunnel route points at
+`autotask-mcp:8090`, so the MCP endpoint and webhook receiver on `8080` are never
+reachable through it.
+
+| Var | Purpose |
+|---|---|
+| `MCP_ADMIN_ENABLED` | `true` starts the console (HTTP transport + Postgres layer required) |
+| `MCP_ADMIN_PORT` / `MCP_ADMIN_HOST` | Default `8090` / `0.0.0.0` |
+| `MCP_ADMIN_COOKIE_SECURE` | `auto` (Secure behind HTTPS), `true`, `false` |
+| `MCP_ADMIN_TRUST_PROXY` | `true` (default): client IP from `CF-Connecting-IP` / `X-Forwarded-For` |
+
+Locked out: `docker compose exec autotask-mcp node dist/admin/cli.js reset-password admin`.
+
+**Turn it off** — `MCP_ADMIN_ENABLED=false` and recreate `autotask-mcp`. Settings
+saved in the console stop applying, so the env file rules again. To pause the
+tunnel only: `docker compose -f autotask-mcp-admin-tunnel/docker-compose.yml down`.

@@ -19,6 +19,18 @@ This server runs as a docker-compose service built locally from this repository.
 See **[DEPLOY.md](DEPLOY.md)** for the build → deploy → verify → rollback runbook,
 and `scripts/build-image.sh` for a traceable image build.
 
+**Admin console (optional).** A web UI to watch API usage and shadow health,
+switch features on/off without a restart (e.g. read-only mode), and manage
+administrator and read-only users. A guided SSH wizard sets it up, prints a
+generated first-admin password, and can publish it through a Cloudflare Tunnel:
+
+```bash
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh
+bash admin-setup.sh
+```
+
+See **[docs/ADMIN.md](docs/ADMIN.md)**. It requires the Postgres layer.
+
 Building an automation on top of the MCP (n8n, Hermes, ChatGPT)? See the
 **[integration cheatsheet](docs/INTEGRATION.md)** — result shapes, caller identity,
 the confirmation/idempotency/permission gates, and the common gotchas.

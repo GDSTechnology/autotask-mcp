@@ -37,6 +37,8 @@ export interface ShadowRuntime {
   sync: ShadowSync;
   serveReads: boolean;
   maxAgeSeconds: number;
+  /** False pauses the scheduled sync (admin console). runNow still works. */
+  syncEnabled: boolean;
   /** Run one sync now (under the lock). Returns null if another instance holds it. */
   runNow(): Promise<RunReport | null>;
   lastRun(): { at: string; report: RunReport } | null;
@@ -119,14 +121,15 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
   });
 
   const intervalMs = Math.max(30, intEnv(env.MCP_PG_SHADOW_INTERVAL_SECONDS, 300)) * 1000;
-  const first = setTimeout(() => { void tick(); }, 15_000);
-  const timer = setInterval(() => { void tick(); }, intervalMs);
+  const first = setTimeout(() => { if (runtime?.syncEnabled !== false) void tick(); }, 15_000);
+  const timer = setInterval(() => { if (runtime?.syncEnabled !== false) void tick(); }, intervalMs);
   first.unref?.(); timer.unref?.();
 
   runtime = {
     store, sync,
     serveReads: String(env.MCP_PG_SHADOW_SERVE_READS).toLowerCase() === 'true',
     maxAgeSeconds: intEnv(env.MCP_PG_SHADOW_MAX_AGE_SECONDS, 900),
+    syncEnabled: true,
     runNow: tick,
     lastRun: () => last,
     stop: () => { clearTimeout(first); clearInterval(timer); setWriteListener(null); runtime = null; },

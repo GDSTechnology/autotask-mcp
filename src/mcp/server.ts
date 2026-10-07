@@ -8,6 +8,7 @@
 // fallback) and serveStdio (stdio, same factory, era pinned per connection).
 
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
+import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
 import {
   createMcpHandler,
   Server,
@@ -44,6 +45,7 @@ export class AutotaskMcpServer {
   private mcpHandler: McpHttpHandler | undefined;
   private stdioHandle: StdioServerHandle | undefined;
   private lazyLoading: boolean;
+  private adminConsole: AdminConsole | null = null;
 
   constructor(config: McpServerConfig, logger: Logger, envConfig?: EnvironmentConfig) {
     this.logger = logger;
@@ -289,6 +291,16 @@ export class AutotaskMcpServer {
 
     if (transportType === 'http') {
       await this.startHttpTransport();
+      // Admin console on its own port (no-op unless MCP_ADMIN_ENABLED=true).
+      // HTTP deployments only: a stdio server is one per desktop client.
+      try {
+        this.adminConsole = await startAdminConsole({
+          logger: this.logger, service: this.autotaskService,
+          version: getServerVersion(this.envConfig?.server?.version),
+          authMode: this.envConfig?.auth?.mode === 'gateway' ? 'gateway' : 'env',
+          apiUsername: this.envConfig?.autotask?.username,
+        });
+      } catch (err) { this.logger.error('Admin console failed to start (continuing without it)', err); }
     } else {
       await this.startStdioTransport();
     }
@@ -373,6 +385,7 @@ export class AutotaskMcpServer {
           timestamp: new Date().toISOString(),
           ...(u ? { apiUsage: { upstreamLastHour: u.upstreamLastHour, upstreamLastFiveMinutes: u.upstreamLastFiveMinutes, savedPct: u.savedPct, rateLimited: u.rateLimited, cacheEnabled: u.cacheEnabled } } : {}),
           ...shadowHealth(),
+          ...(adminHealth() ? { admin: adminHealth() } : {}),
         }));
         return;
       }
@@ -476,6 +489,7 @@ export class AutotaskMcpServer {
   async stop(): Promise<void> {
     this.logger.info('Stopping Autotask MCP Server...');
     getShadowRuntime()?.stop();
+    await this.adminConsole?.stop();
     if (this.httpServer) {
       await new Promise<void>((resolve, reject) => {
         this.httpServer!.close((err) => err ? reject(err) : resolve());

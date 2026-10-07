@@ -81,6 +81,7 @@ import {
   isImpersonationAllowedForSource,
 } from '../utils/request-context.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
+import { toolAllowed, toolBlockReason } from '../admin/tool-gate.js';
 import { buildTicketCard } from './card.builder.js';
 
 // Default concurrency for company/resource name enrichment. Autotask allows
@@ -985,8 +986,10 @@ export class AutotaskToolHandler {
       this.logger.debug(`Lazy loading mode: exposing ${metaTools.length} meta-tools (${TOOL_DEFINITIONS.length} total available)`);
       return metaTools;
     }
-    this.logger.debug(`Listed ${TOOL_DEFINITIONS.length} available tools`);
-    return TOOL_DEFINITIONS;
+    // Tools switched off in the admin console (read-only mode, disabled groups) are hidden.
+    const tools = TOOL_DEFINITIONS.filter((t) => toolAllowed(t.name));
+    this.logger.debug(`Listed ${tools.length} available tools`);
+    return tools;
   }
 
   /**
@@ -3210,7 +3213,7 @@ export class AutotaskToolHandler {
           const available = Object.keys(TOOL_CATEGORIES).join(', ');
           throw new Error(`Unknown category "${a.category}". Available: ${available}`);
         }
-        const tools = TOOL_DEFINITIONS.filter(t => category.tools.includes(t.name));
+        const tools = TOOL_DEFINITIONS.filter(t => category.tools.includes(t.name) && toolAllowed(t.name));
         return { result: tools, message: `Found ${tools.length} tools in "${a.category}" category` };
       }],
       ['autotask_execute_tool', async (a, ctx) => {
@@ -3220,6 +3223,8 @@ export class AutotaskToolHandler {
         if (!handler) throw new Error(`Unknown tool: ${toolName}`);
         // Prevent recursive meta-tool calls
         if (toolName === 'autotask_execute_tool') throw new Error('Cannot recursively execute autotask_execute_tool');
+        const blocked = toolBlockReason(toolName);
+        if (blocked) throw new Error(blocked);
         return handler(toolArgs, ctx);
       }],
 
@@ -3419,6 +3424,9 @@ export class AutotaskToolHandler {
     try {
       const handler = this.getDispatchTable().get(name);
       if (!handler) throw new Error(`Unknown tool: ${name}`);
+      // Admin console switches (read-only mode / disabled tool groups).
+      const blocked = toolBlockReason(name);
+      if (blocked) throw new Error(blocked);
 
       const risk = this.toolRisk.get(name) ?? 'reversible-update';
 

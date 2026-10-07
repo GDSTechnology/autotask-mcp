@@ -1,0 +1,517 @@
+// Admin console: a small web UI + JSON API on its OWN port (MCP_ADMIN_PORT,
+// default 8090), separate from /mcp. Point a Cloudflare tunnel (or any reverse
+// proxy) at this port only, so publishing the console never publishes the MCP
+// endpoint or the webhook receiver.
+//
+// Requires the Postgres layer (users, sessions, settings and the change log
+// live there — migration 0004). Off unless MCP_ADMIN_ENABLED=true.
+//
+// Security model:
+//   - Local console users, scrypt-hashed; roles 'admin' and 'viewer'.
+//   - Session cookie: random 256-bit token, HttpOnly, SameSite=Strict, Secure
+//     behind HTTPS; only its SHA-256 is stored. 12 h idle / 7 day maximum.
+//   - Every state-changing request must carry the `X-Atmcp: 1` header (a
+//     cross-site page cannot set it without a CORS preflight this server never
+//     approves) and, when the browser sends an Origin, it must be this host.
+//   - Failed logins are throttled per IP and per username.
+//   - Strict CSP: no inline script, nothing loaded from other origins.
+//   - Secrets (API credentials, DB passwords, webhook secret) are never sent to
+//     the browser — only whether each is set.
+
+import { createServer, IncomingMessage, ServerResponse, Server as HttpServer } from 'node:http';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import type { Pool } from 'pg';
+import { Logger } from '../utils/logger.js';
+import { getPool, pgHealthCheck } from '../db/pool.js';
+import { isPgEnabled, loadPgFlags } from '../db/config.js';
+import { getShadowRuntime } from '../db/shadow-runtime.js';
+import { usageSnapshot } from '../services/http-cache.js';
+import { TOOL_DEFINITIONS } from '../handlers/tool.definitions.js';
+import type { AutotaskService } from '../services/autotask.service.js';
+import { AdminStore, AdminUser, AdminRole } from './store.js';
+import { dummyPasswordHash, generatePassword, passwordProblem, validUsername, verifyPassword } from './passwords.js';
+import { SETTINGS, settingDef, settingValue, isOverridden, loadOverrides, setOverride, clearOverride, coerceSetting } from './settings.js';
+import { toolAllowed, toolCategoryNames, isWriteTool } from './tool-gate.js';
+
+export interface AdminConsoleOptions {
+  logger: Logger;
+  service: AutotaskService;
+  version: string;
+  authMode: 'env' | 'gateway';
+  apiUsername?: string | undefined;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface AdminConsole { port: number; stop(): Promise<void> }
+
+const boolEnv = (v: string | undefined): boolean => /^(true|1|yes|on)$/i.test(v ?? '');
+
+export function isAdminEnabled(env: NodeJS.ProcessEnv = process.env): boolean { return boolEnv(env.MCP_ADMIN_ENABLED); }
+
+/** Push the effective settings into the running subsystems. */
+export function applySettings(): void {
+  const rt = getShadowRuntime();
+  if (rt) {
+    rt.serveReads = settingValue<boolean>('shadow.serveReads');
+    rt.maxAgeSeconds = settingValue<number>('shadow.maxAgeSeconds');
+    rt.syncEnabled = settingValue<boolean>('shadow.syncEnabled');
+    rt.sync.setPauseAtPct(settingValue<number>('shadow.pauseAtPct'));
+  }
+}
+
+// ── login throttling ───────────────────────────────────────────────────────
+const WINDOW_MS = 15 * 60_000;
+const MAX_PER_IP = 20, MAX_PER_USER = 6;
+const failures = new Map<string, number[]>();
+function recentFailures(key: string, now = Date.now()): number[] {
+  const list = (failures.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
+  if (list.length) failures.set(key, list); else failures.delete(key);
+  return list;
+}
+export function loginThrottled(ip: string, username: string): number | null {
+  const a = recentFailures(`ip:${ip}`), b = recentFailures(`user:${username.toLowerCase()}`);
+  const blocked = a.length >= MAX_PER_IP ? a : b.length >= MAX_PER_USER ? b : null;
+  return blocked ? Math.ceil((blocked[0]! + WINDOW_MS - Date.now()) / 1000) : null;
+}
+function noteFailure(ip: string, username: string): void {
+  const now = Date.now();
+  for (const k of [`ip:${ip}`, `user:${username.toLowerCase()}`]) failures.set(k, [...recentFailures(k, now), now]);
+}
+function clearFailures(username: string): void { failures.delete(`user:${username.toLowerCase()}`); }
+export function _resetThrottle(): void { failures.clear(); }
+
+// ── HTTP helpers ───────────────────────────────────────────────────────────
+const SECURITY_HEADERS: Record<string, string> = {
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'X-Frame-Options': 'DENY',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+};
+
+class HttpError extends Error { constructor(public status: number, message: string, public code?: string) { super(message); } }
+
+function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string | string[]> = {}): void {
+  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+  res.end(JSON.stringify(body));
+}
+
+async function readJson(req: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > limit) throw new HttpError(413, 'Request too large.');
+    chunks.push(c as Buffer);
+  }
+  if (!size) return {};
+  try {
+    const v = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error();
+    return v as Record<string, unknown>;
+  } catch { throw new HttpError(400, 'Body must be a JSON object.'); }
+}
+
+function header(req: IncomingMessage, name: string): string | undefined {
+  const v = req.headers[name];
+  return Array.isArray(v) ? v[0] : v;
+}
+
+export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
+  if (trustProxy) {
+    const cf = header(req, 'cf-connecting-ip');
+    if (cf) return cf.trim();
+    const xff = header(req, 'x-forwarded-for');
+    if (xff) return xff.split(',')[0]!.trim();
+  }
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
+function isHttps(req: IncomingMessage, mode: string): boolean {
+  if (mode === 'true') return true;
+  if (mode === 'false') return false;
+  return header(req, 'x-forwarded-proto')?.split(',')[0]?.trim() === 'https';
+}
+
+const COOKIE_SECURE = '__Host-atmcp_session';
+const COOKIE_PLAIN = 'atmcp_session';
+
+function readCookie(req: IncomingMessage): string | null {
+  for (const part of (header(req, 'cookie') ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    const k = part.slice(0, i).trim();
+    if (k === COOKIE_SECURE || k === COOKIE_PLAIN) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
+}
+
+function sessionCookie(token: string | null, secure: boolean): string {
+  const name = secure ? COOKIE_SECURE : COOKIE_PLAIN;
+  const base = `${name}=${token ? encodeURIComponent(token) : ''}; Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`;
+  return token ? base : `${base}; Max-Age=0`;
+}
+
+/** Reject cross-site state changes: custom header + same-origin Origin (when sent). */
+export function csrfProblem(req: IncomingMessage): string | null {
+  if (header(req, 'x-atmcp') !== '1') return 'Missing X-Atmcp header.';
+  const origin = header(req, 'origin');
+  if (origin && origin !== 'null') {
+    const host = header(req, 'x-forwarded-host') ?? header(req, 'host');
+    let originHost: string;
+    try { originHost = new URL(origin).host; } catch { return 'Bad Origin.'; }
+    if (!host || originHost.toLowerCase() !== host.split(',')[0]!.trim().toLowerCase()) return 'Cross-origin request refused.';
+  }
+  return null;
+}
+
+// ── static UI ──────────────────────────────────────────────────────────────
+const STATIC: Record<string, string> = {
+  '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/app.css': 'app.css', '/favicon.svg': 'favicon.svg',
+};
+const TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' };
+
+export function uiDir(): string {
+  // dist/admin/server.js → repo root → admin-ui/
+  return resolve(__dirname, '..', '..', 'admin-ui');
+}
+
+function loadStatic(dir: string): Map<string, { body: Buffer; type: string }> {
+  const m = new Map<string, { body: Buffer; type: string }>();
+  for (const [route, file] of Object.entries(STATIC)) {
+    const p = join(dir, file);
+    if (existsSync(p)) m.set(route, { body: readFileSync(p), type: TYPES[file.split('.').pop()!]! });
+  }
+  return m;
+}
+
+// ── the console ────────────────────────────────────────────────────────────
+type Ctx = { req: IncomingMessage; res: ServerResponse; ip: string; secure: boolean; user: AdminUser | null; sessionHash: string | null };
+
+export interface AdminDeps { store: AdminStore; pool: Pool | null; opts: AdminConsoleOptions; startedAt: number }
+
+const publicUser = (u: AdminUser) => ({ id: u.id, username: u.username, role: u.role, mustChangePassword: u.mustChangePassword, disabled: u.disabled, createdAt: u.createdAt, createdBy: u.createdBy, passwordChangedAt: u.passwordChangedAt, lastLoginAt: u.lastLoginAt });
+
+let thresholdCache: { at: number; value: unknown } | null = null;
+
+/** Build the request handler (exported for tests). */
+export function adminHandler(deps: AdminDeps) {
+  const { store, opts } = deps;
+  const env = opts.env ?? process.env;
+  const trustProxy = env.MCP_ADMIN_TRUST_PROXY == null ? true : boolEnv(env.MCP_ADMIN_TRUST_PROXY);
+  const cookieMode = (env.MCP_ADMIN_COOKIE_SECURE ?? 'auto').toLowerCase();
+  const statics = loadStatic(env.MCP_ADMIN_UI_DIR || uiDir());
+  const log = (ctx: Ctx, action: string, details: Record<string, unknown> = {}) =>
+    store.logEvent(ctx.user?.username ?? null, action, details, ctx.ip).catch((e) => opts.logger.warn('admin: change log write failed', e));
+
+  const requireUser = (ctx: Ctx, role?: AdminRole): AdminUser => {
+    if (!ctx.user) throw new HttpError(401, 'Sign in first.', 'unauthenticated');
+    if (ctx.user.mustChangePassword) throw new HttpError(403, 'Choose a new password first.', 'password_change_required');
+    if (role === 'admin' && ctx.user.role !== 'admin') throw new HttpError(403, 'Administrators only.', 'forbidden');
+    return ctx.user;
+  };
+
+  const settingsView = () => {
+    const shadowOn = !!getShadowRuntime();
+    return SETTINGS.map((d) => ({
+      key: d.key, group: d.group, label: d.label, description: d.description, type: d.type,
+      ...(d.min != null ? { min: d.min } : {}), ...(d.max != null ? { max: d.max } : {}), ...(d.choices ? { choices: d.choices } : {}),
+      value: settingValue(d.key, env), default: d.envDefault(env), overridden: isOverridden(d.key),
+      available: d.requires === 'shadow' ? shadowOn : true,
+    }));
+  };
+
+  const status = async () => {
+    const rt = getShadowRuntime();
+    const tenant = opts.authMode === 'env' ? opts.apiUsername?.toLowerCase() : undefined;
+    // Autotask's own counter costs an API call — refresh at most every 5 minutes.
+    if (tenant && (!thresholdCache || Date.now() - thresholdCache.at > 300_000)) {
+      const u = await opts.service.getApiUsage().catch((e) => ({ autotask: { error: String(e) } }));
+      thresholdCache = { at: Date.now(), value: u.autotask };
+    }
+    const pg = await pgHealthCheck(opts.logger, env);
+    const states = rt ? await rt.store.allStates().catch(() => []) : [];
+    const last = rt?.lastRun() ?? null;
+    let audit: unknown = null;
+    if (deps.pool) {
+      try {
+        const has = await deps.pool.query<{ t: string | null }>(`SELECT to_regclass('audit_event')::text AS t`);
+        if (has.rows[0]?.t) {
+          const r = await deps.pool.query<{ source: string; n: string }>(`SELECT source, count(*) AS n FROM audit_event WHERE occurred_at > now() - interval '24 hours' GROUP BY source ORDER BY source`);
+          audit = { last24h: Object.fromEntries(r.rows.map((x) => [x.source, Number(x.n)])) };
+        }
+      } catch { /* the ledger is optional */ }
+    }
+    const enabledTools = TOOL_DEFINITIONS.filter((t) => toolAllowed(t.name));
+    return {
+      version: opts.version,
+      startedAt: new Date(deps.startedAt).toISOString(),
+      uptimeSeconds: Math.round((Date.now() - deps.startedAt) / 1000),
+      node: process.version,
+      authMode: opts.authMode,
+      api: tenant ? { server: usageSnapshot(tenant, 15), autotask: thresholdCache?.value ?? null, autotaskCheckedAt: thresholdCache ? new Date(thresholdCache.at).toISOString() : null } : null,
+      postgres: { enabled: pg.enabled, ok: pg.ok, latencyMs: pg.latencyMs ?? null, error: pg.error ?? null },
+      shadow: rt ? {
+        enabled: true, serveReads: rt.serveReads, syncEnabled: rt.syncEnabled, maxAgeSeconds: rt.maxAgeSeconds, pauseAtPct: rt.sync.pauseAtPct, pendingRowRefreshes: rt.sync.dirtyCount(),
+        lastRun: last ? { at: last.at, calls: last.report.calls, skipped: last.report.skipped ?? null, entities: last.report.entities } : null,
+        entities: states.map((s) => {
+          const times = [s.last_incremental_at, s.last_full_at, s.last_backfill_at].filter(Boolean).map((d) => new Date(d as Date).getTime());
+          const at = times.length ? Math.max(...times) : null;
+          return { entity: s.entity, rows: s.row_count, ready: s.backfill_done, lastSyncedAt: at ? new Date(at).toISOString() : null, ageSeconds: at ? Math.round((Date.now() - at) / 1000) : null,
+            windowFrom: s.window_from ? new Date(s.window_from).toISOString().slice(0, 10) : null, apiCallsTotal: s.api_calls_total, lastError: s.last_error, lastErrorAt: s.last_error_at ? new Date(s.last_error_at).toISOString() : null };
+        }),
+      } : { enabled: false, flag: loadPgFlags(env).shadow },
+      tools: {
+        total: TOOL_DEFINITIONS.length, enabled: enabledTools.length,
+        writeTools: TOOL_DEFINITIONS.filter((t) => isWriteTool(t.name)).length,
+        writesEnabled: settingValue<boolean>('tools.writesEnabled', env), disabledCategories: settingValue<string[]>('tools.disabledCategories', env),
+      },
+      secrets: {
+        autotaskCredentials: !!(env.AUTOTASK_USERNAME && env.AUTOTASK_SECRET && env.AUTOTASK_INTEGRATION_CODE),
+        webhookSecret: !!env.AUTOTASK_WEBHOOK_SECRET,
+      },
+      audit,
+    };
+  };
+
+  const idParam = (s: string | undefined): number => { const n = Number(s); if (!Number.isInteger(n) || n <= 0) throw new HttpError(404, 'Not found.'); return n; };
+
+  async function api(ctx: Ctx, method: string, path: string): Promise<void> {
+    const { req, res } = ctx;
+    if (method !== 'GET' && method !== 'HEAD') {
+      const bad = csrfProblem(req);
+      if (bad) throw new HttpError(403, bad, 'csrf');
+    }
+
+    // ── session ──
+    if (path === '/api/login' && method === 'POST') {
+      const b = await readJson(req, 8 * 1024);
+      const username = String(b.username ?? '').trim(), password = String(b.password ?? '');
+      const wait = loginThrottled(ctx.ip, username);
+      if (wait) throw new HttpError(429, `Too many failed sign-ins. Try again in ${Math.ceil(wait / 60)} minute(s).`, 'throttled');
+      const u = validUsername(username) ? await store.findForLogin(username) : null;
+      const ok = await verifyPassword(password, u?.passwordHash ?? await dummyPasswordHash());
+      if (!u || !ok || u.disabled) {
+        noteFailure(ctx.ip, username);
+        void store.logEvent(username || null, 'login.failed', { reason: !u ? 'unknown user' : u.disabled ? 'disabled' : 'wrong password' }, ctx.ip).catch(() => undefined);
+        throw new HttpError(401, 'Wrong username or password.', 'bad_credentials');
+      }
+      clearFailures(username);
+      const s = await store.createSession(u.id, ctx.ip, header(req, 'user-agent') ?? null);
+      await store.recordLogin(u.id);
+      ctx.user = u;
+      void log(ctx, 'login');
+      const { passwordHash: _h, ...user } = u;
+      return send(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(s.token, ctx.secure) });
+    }
+    if (path === '/api/logout' && method === 'POST') {
+      if (ctx.sessionHash) await store.deleteSession(ctx.sessionHash);
+      return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(null, ctx.secure) });
+    }
+    if (path === '/api/me' && method === 'GET') {
+      if (!ctx.user) throw new HttpError(401, 'Sign in first.', 'unauthenticated');
+      return send(res, 200, { user: publicUser(ctx.user) });
+    }
+    if (path === '/api/me/password' && method === 'POST') {
+      if (!ctx.user) throw new HttpError(401, 'Sign in first.', 'unauthenticated');
+      const b = await readJson(req, 8 * 1024);
+      const current = String(b.currentPassword ?? ''), next = b.newPassword;
+      const hash = await store.passwordHashOf(ctx.user.id);
+      if (!hash || !(await verifyPassword(current, hash))) throw new HttpError(400, 'Your current password is wrong.', 'bad_credentials');
+      const problem = passwordProblem(next, ctx.user.username);
+      if (problem) throw new HttpError(400, problem, 'weak_password');
+      if (next === current) throw new HttpError(400, 'Choose a password different from the current one.', 'weak_password');
+      await store.setPassword(ctx.user.id, next as string, false, ctx.sessionHash ?? undefined);
+      void log(ctx, 'password.changed');
+      return send(res, 200, { user: publicUser({ ...ctx.user, mustChangePassword: false }) });
+    }
+
+    // ── read-only (viewer and admin) ──
+    if (path === '/api/status' && method === 'GET') { requireUser(ctx); return send(res, 200, await status()); }
+    if (path === '/api/settings' && method === 'GET') { requireUser(ctx); return send(res, 200, { settings: settingsView() }); }
+
+    // ── admin ──
+    const settingMatch = /^\/api\/settings\/([A-Za-z0-9_.]+)$/.exec(path);
+    if (settingMatch && method === 'PUT') {
+      requireUser(ctx, 'admin');
+      const key = settingMatch[1]!;
+      const def = settingDef(key);
+      if (!def) throw new HttpError(404, `Unknown setting "${key}".`);
+      const b = await readJson(req);
+      const before = settingValue(key, env);
+      if (b.reset === true) {
+        await store.clearSetting(key);
+        clearOverride(key);
+      } else {
+        let v: unknown;
+        try { v = coerceSetting(key, b.value); } catch (e) { throw new HttpError(400, (e as Error).message, 'invalid'); }
+        await store.saveSetting(key, v, ctx.user!.username);
+        setOverride(key, v);
+      }
+      applySettings();
+      const after = settingValue(key, env);
+      void log(ctx, b.reset === true ? 'setting.reset' : 'setting.changed', { key, from: before, to: after });
+      return send(res, 200, { settings: settingsView() });
+    }
+
+    if (path === '/api/actions/shadow-sync' && method === 'POST') {
+      requireUser(ctx, 'admin');
+      const rt = getShadowRuntime();
+      if (!rt) throw new HttpError(409, 'The Postgres shadow is not running on this server.');
+      void log(ctx, 'action.shadow_sync');
+      void rt.runNow().catch((e) => opts.logger.error('admin: manual shadow sync failed', e));
+      return send(res, 202, { ok: true, message: 'Sync started. Refresh the status in a minute to see the result.' });
+    }
+
+    if (path === '/api/users' && method === 'GET') { requireUser(ctx, 'admin'); return send(res, 200, { users: (await store.listUsers()).map(publicUser) }); }
+    if (path === '/api/users' && method === 'POST') {
+      requireUser(ctx, 'admin');
+      const b = await readJson(req, 8 * 1024);
+      const username = String(b.username ?? '').trim(), role = b.role;
+      if (!validUsername(username)) throw new HttpError(400, 'Usernames are 2–64 characters: letters, digits, dot, dash, underscore or @.', 'invalid');
+      if (role !== 'admin' && role !== 'viewer') throw new HttpError(400, 'Role must be admin or viewer.', 'invalid');
+      if (await store.findForLogin(username)) throw new HttpError(409, `User "${username}" already exists.`, 'exists');
+      const password = generatePassword();
+      const u = await store.createUser(username, password, role, ctx.user!.username, true);
+      void log(ctx, 'user.created', { username, role });
+      return send(res, 201, { user: publicUser(u), password });
+    }
+    const userMatch = /^\/api\/users\/(\d+)(\/reset-password|\/sign-out)?$/.exec(path);
+    if (userMatch) {
+      const me = requireUser(ctx, 'admin');
+      const id = idParam(userMatch[1]);
+      const target = await store.getUser(id);
+      if (!target) throw new HttpError(404, 'No such user.');
+      const action = userMatch[2];
+      if (action === '/reset-password' && method === 'POST') {
+        const password = generatePassword();
+        await store.setPassword(id, password, true, id === me.id ? ctx.sessionHash ?? undefined : undefined);
+        void log(ctx, 'user.password_reset', { username: target.username });
+        return send(res, 200, { user: publicUser({ ...target, mustChangePassword: true }), password });
+      }
+      if (action === '/sign-out' && method === 'POST') {
+        await store.deleteSessionsOf(id);
+        void log(ctx, 'user.signed_out', { username: target.username });
+        return send(res, 200, { ok: true });
+      }
+      if (!action && method === 'PATCH') {
+        const b = await readJson(req, 8 * 1024);
+        const patch: { role?: AdminRole; disabled?: boolean } = {};
+        if (b.role !== undefined) { if (b.role !== 'admin' && b.role !== 'viewer') throw new HttpError(400, 'Role must be admin or viewer.', 'invalid'); patch.role = b.role; }
+        if (b.disabled !== undefined) { if (typeof b.disabled !== 'boolean') throw new HttpError(400, 'disabled must be true or false.', 'invalid'); patch.disabled = b.disabled; }
+        const losesAdmin = target.role === 'admin' && !target.disabled && ((patch.role && patch.role !== 'admin') || patch.disabled === true);
+        if (losesAdmin && (await store.otherActiveAdmins(id)) === 0) throw new HttpError(409, 'This is the last active administrator. Make someone else an administrator first.', 'last_admin');
+        if (id === me.id && patch.disabled) throw new HttpError(409, 'You cannot disable your own account.', 'self');
+        const u = await store.updateUser(id, patch);
+        void log(ctx, 'user.updated', { username: target.username, ...patch });
+        return send(res, 200, { user: u ? publicUser(u) : null });
+      }
+      if (!action && method === 'DELETE') {
+        if (id === me.id) throw new HttpError(409, 'You cannot delete your own account.', 'self');
+        if (target.role === 'admin' && !target.disabled && (await store.otherActiveAdmins(id)) === 0) throw new HttpError(409, 'This is the last active administrator.', 'last_admin');
+        await store.deleteUser(id);
+        void log(ctx, 'user.deleted', { username: target.username });
+        return send(res, 200, { ok: true });
+      }
+    }
+
+    if (path === '/api/events' && method === 'GET') {
+      requireUser(ctx, 'admin');
+      const u = new URL(req.url ?? '/', 'http://x');
+      const before = Number(u.searchParams.get('before')) || undefined;
+      return send(res, 200, { events: await store.listEvents(Number(u.searchParams.get('limit')) || 200, before) });
+    }
+
+    throw new HttpError(404, 'Not found.');
+  }
+
+  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const url = new URL(req.url ?? '/', 'http://admin.local');
+    const method = (req.method ?? 'GET').toUpperCase();
+    const ctx: Ctx = { req, res, ip: clientIp(req, trustProxy), secure: isHttps(req, cookieMode), user: null, sessionHash: null };
+    try {
+      if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+      if (url.pathname.startsWith('/api/')) {
+        const token = readCookie(req);
+        if (token) {
+          const s = await store.sessionUser(token);
+          if (s) { ctx.user = s.user; ctx.sessionHash = s.tokenHash; }
+        }
+        return await api(ctx, method, url.pathname);
+      }
+      const file = statics.get(url.pathname);
+      if (file && (method === 'GET' || method === 'HEAD')) {
+        res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': file.type, 'Cache-Control': url.pathname === '/' || url.pathname.endsWith('.html') ? 'no-store' : 'no-cache' });
+        res.end(method === 'HEAD' ? undefined : file.body);
+        return;
+      }
+      if (!statics.size && url.pathname === '/') return send(res, 500, { error: 'Admin UI files are missing from this build (admin-ui/).' });
+      send(res, 404, { error: 'Not found.' });
+    } catch (err) {
+      if (err instanceof HttpError) return send(res, err.status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+      const msg = err instanceof Error ? err.message : String(err);
+      // Most likely cause on a fresh install: migration 0004 not applied yet.
+      if (/relation "admin_/.test(msg)) return send(res, 503, { error: 'The admin tables are missing — run the database migrations (node dist/db/migrate.js).', code: 'migrations' });
+      opts.logger.error('admin console error', err);
+      send(res, 500, { error: 'Internal error.' });
+    }
+  };
+}
+
+// What /health reports about the console, so a deploy can confirm it survived.
+let state: { port: number; schemaReady: boolean; lastLoadError: string | null } | null = null;
+
+/** Compact console status for /health: null when the console is not configured. */
+export function adminHealth(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> | null {
+  if (!isAdminEnabled(env)) return null;
+  if (!state) return { enabled: true, running: false };
+  return { enabled: true, running: true, port: state.port, schemaReady: state.schemaReady, ...(state.lastLoadError ? { error: state.lastLoadError } : {}) };
+}
+
+/** Start the console listener (no-op unless MCP_ADMIN_ENABLED=true and Postgres is configured). */
+export async function startAdminConsole(opts: AdminConsoleOptions): Promise<AdminConsole | null> {
+  const env = opts.env ?? process.env;
+  if (!isAdminEnabled(env)) return null;
+  if (!isPgEnabled(env)) {
+    opts.logger.error('MCP_ADMIN_ENABLED=true but the Postgres layer is off (MCP_PG_ENABLED) — the admin console needs it for users and settings. Console not started.');
+    return null;
+  }
+  const pool = getPool(opts.logger, env);
+  if (!pool) return null;
+  const store = new AdminStore(pool);
+  // The tool-group setting can only name groups that exist.
+  const cats = settingDef('tools.disabledCategories');
+  if (cats) cats.choices = toolCategoryNames();
+
+  const reload = async () => {
+    try {
+      const dropped = loadOverrides(await store.loadSettings());
+      if (dropped.length) opts.logger.warn(`admin: ignored invalid saved setting(s): ${dropped.join(', ')}`);
+      applySettings();
+      if (state) { state.schemaReady = true; state.lastLoadError = null; }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (state) { state.schemaReady = !/relation "admin_/.test(msg); state.lastLoadError = /relation "admin_/.test(msg) ? 'admin tables missing: run the migrations' : msg; }
+      opts.logger.warn(/relation "admin_/.test(msg) ? 'admin: settings table missing — run the database migrations' : `admin: could not load settings (${msg})`);
+    }
+  };
+  state = { port: Number(env.MCP_ADMIN_PORT) || 8090, schemaReady: false, lastLoadError: null };
+  await reload();
+  // Pick up changes made by the CLI or another instance.
+  const timer = setInterval(() => { void reload(); }, 60_000);
+  timer.unref?.();
+
+  const handler = adminHandler({ store, pool, opts, startedAt: Date.now() });
+  const server: HttpServer = createServer((req, res) => { void handler(req, res); });
+  const port = Number(env.MCP_ADMIN_PORT) || 8090;
+  const host = env.MCP_ADMIN_HOST || '0.0.0.0';
+  await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(port, host, () => ok()); });
+  const users = await store.countUsers().catch(() => null);
+  opts.logger.info(`Admin console listening on http://${host}:${port}/` + (users === 0 ? ' — no users yet: run `node dist/admin/cli.js init` to create the first administrator' : ''));
+  return {
+    port,
+    stop: () => new Promise<void>((ok) => { clearInterval(timer); state = null; server.close(() => ok()); }),
+  };
+}

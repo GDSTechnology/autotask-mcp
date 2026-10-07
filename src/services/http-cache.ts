@@ -18,7 +18,9 @@
 // caching that would defeat read-after-write retries); errors are never cached.
 // AUTOTASK_CACHE=off disables caching (coalescing + metrics stay on).
 
-export type CacheClass = 'fields' | 'reference' | 'slow-reference' | 'volatile' | 'never';
+import { settingValue } from '../admin/settings.js';
+
+export type CacheClass ='fields' | 'reference' | 'slow-reference' | 'volatile' | 'never';
 
 /** Entities whose data changes rarely (people / org structure / catalogs). */
 const REFERENCE = new Set([
@@ -49,8 +51,9 @@ export function ttlMs(cls: CacheClass): number {
   }
 }
 
+/** AUTOTASK_CACHE, unless the admin console overrides it ("Read cache"). */
 export function cacheEnabled(): boolean {
-  return !/^(off|false|0|no)$/i.test(process.env.AUTOTASK_CACHE ?? '');
+  return settingValue<boolean>('cache.enabled');
 }
 
 /** Top-level entity of a REST path: "/Tickets/123/Notes/query" → "Tickets". */

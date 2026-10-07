@@ -55,6 +55,9 @@ export class ShadowSync {
     if (!e || !Number.isFinite(id)) return;
     (this.dirty.get(e.name) ?? this.dirty.set(e.name, new Set()).get(e.name)!).add(id);
   }
+  /** Change the usage threshold at runtime (admin console). */
+  setPauseAtPct(pct: number): void { this.opts.pauseAtPct = pct; }
+  get pauseAtPct(): number { return this.opts.pauseAtPct; }
   dirtyCount(): number { let n = 0; for (const s of this.dirty.values()) n += s.size; return n; }
 
   private budgetLeft(): number { return this.opts.maxCallsPerRun - this.calls; }

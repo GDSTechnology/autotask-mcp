@@ -100,8 +100,88 @@ export function noteToolAudit(info: { outcome: string; durationMs: number; sourc
   rec.error = clip(info.error);
 }
 
-export function noteCacheHit(): void { const r = scope.getStore()?.tool; if (r) r.cacheHits++; }
-export function noteShadowRead(): void { const r = scope.getStore()?.tool; if (r) r.shadowReads++; }
+export function noteCacheHit(path?: string): void { const r = scope.getStore()?.tool; if (r) r.cacheHits++; if (path) noteRead(entityOfPath(path), 'cache'); }
+export function noteShadowRead(entity?: string): void { const r = scope.getStore()?.tool; if (r) r.shadowReads++; if (entity) noteRead(entity, 'shadow'); }
+
+// ── reads by entity: where each read was answered (cache candidates) ────────
+// Hourly buckets for the last 24 h: per entity, how many reads went to Autotask
+// vs were answered by the read cache or the Postgres shadow, plus writes, and
+// which callers (tool or background job) caused the Autotask reads. Lets an
+// operator see what is read heavily but never cached — candidates to mirror.
+
+type ReadSource = 'upstream' | 'cache' | 'shadow' | 'write';
+interface EntityCounts { upstream: number; cache: number; shadow: number; write: number; callers: Map<string, number> }
+const HOURS = 24;
+const buckets = new Map<number, Map<string, EntityCounts>>();
+
+/** Top-level entity of an Autotask path ("/Tickets/5/Notes/query" → "Tickets"). */
+export function entityOfPath(path: string): string {
+  return cleanPath(path).split('/').filter(Boolean)[0] ?? '?';
+}
+
+/** A read: GET, or a query POST (incl. continuation pages). */
+function isReadCall(method: string, path: string): boolean {
+  const m = method.toUpperCase();
+  return m === 'GET' || (m === 'POST' && /\/query(\/|\?|$)/i.test(path));
+}
+
+function noteRead(entity: string, source: ReadSource): void {
+  if (!entity || entity === '?') return;
+  const hour = Math.floor(Date.now() / 3_600_000);
+  let b = buckets.get(hour);
+  if (!b) {
+    b = new Map(); buckets.set(hour, b);
+    for (const h of buckets.keys()) if (h <= hour - HOURS) buckets.delete(h);
+  }
+  let c = b.get(entity);
+  if (!c) { c = { upstream: 0, cache: 0, shadow: 0, write: 0, callers: new Map() }; b.set(entity, c); }
+  c[source]++;
+  if (source === 'upstream') {
+    const s = scope.getStore();
+    const who = s?.tool?.tool ?? (s?.job ? `job: ${s.job}` : 'other background');
+    c.callers.set(who, (c.callers.get(who) ?? 0) + 1);
+  }
+}
+
+export interface EntityReadStats {
+  entity: string;
+  /** Reads sent to Autotask. */
+  upstream: number;
+  /** Reads answered by the read cache (incl. shared in-flight reads). */
+  cache: number;
+  /** Reads answered by the Postgres shadow. */
+  shadow: number;
+  writes: number;
+  /** Share of reads answered without Autotask, %. */
+  localPct: number | null;
+  /** Who caused the Autotask reads, busiest first. */
+  topCallers: Array<{ caller: string; count: number }>;
+}
+
+/** Reads per entity over the last `hours` (max 24), busiest-upstream first. */
+export function entityReadStats(hours = 24): { since: string; entities: EntityReadStats[] } {
+  const h = Math.min(Math.max(Math.floor(hours), 1), HOURS);
+  const now = Math.floor(Date.now() / 3_600_000);
+  const agg = new Map<string, EntityCounts>();
+  for (const [hour, b] of buckets) {
+    if (hour <= now - h) continue;
+    for (const [e, c] of b) {
+      const a = agg.get(e) ?? { upstream: 0, cache: 0, shadow: 0, write: 0, callers: new Map() };
+      a.upstream += c.upstream; a.cache += c.cache; a.shadow += c.shadow; a.write += c.write;
+      for (const [k, v] of c.callers) a.callers.set(k, (a.callers.get(k) ?? 0) + v);
+      agg.set(e, a);
+    }
+  }
+  const entities = [...agg.entries()].map(([entity, c]) => {
+    const reads = c.upstream + c.cache + c.shadow;
+    return {
+      entity, upstream: c.upstream, cache: c.cache, shadow: c.shadow, writes: c.write,
+      localPct: reads ? Math.round(((c.cache + c.shadow) / reads) * 1000) / 10 : null,
+      topCallers: [...c.callers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([caller, count]) => ({ caller, count })),
+    };
+  }).sort((a, b) => b.upstream - a.upstream || b.cache + b.shadow - (a.cache + a.shadow));
+  return { since: new Date((now - h + 1) * 3_600_000).toISOString(), entities };
+}
 
 /** Start an upstream Autotask call; call the returned function when it ends. */
 export function startApiCall(method: string, path: string): (status: number, error?: string) => void {
@@ -109,6 +189,7 @@ export function startApiCall(method: string, path: string): (status: number, err
   const rec: ApiCallRecord = { id: nextApi++, at: new Date().toISOString(), method: method.toUpperCase(), path: cleanPath(path), status: null, durationMs: null, toolCallId: s?.tool?.id ?? null, tool: s?.tool?.tool ?? null, job: s?.job ?? null, error: null };
   push(api, rec, MAX_API);
   if (s?.tool) s.tool.apiCalls++;
+  noteRead(entityOfPath(path), isReadCall(method, path) ? 'upstream' : 'write');
   const started = Date.now();
   return (status, error) => { rec.status = status; rec.durationMs = Date.now() - started; rec.error = clip(error, 200); };
 }
@@ -180,4 +261,4 @@ export function callerSummary(minutes = 60): { callers: CallerSummary[]; backgro
 }
 
 /** Tests only. */
-export function _resetCallLog(): void { tools.length = 0; api.length = 0; nextTool = 1; nextApi = 1; }
+export function _resetCallLog(): void { tools.length = 0; api.length = 0; nextTool = 1; nextApi = 1; buckets.clear(); }

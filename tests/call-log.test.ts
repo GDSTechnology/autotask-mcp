@@ -2,7 +2,7 @@
 // calls are linked to the tool call (or background job) that made them, cache /
 // shadow answers are counted, and nothing outside the scope leaks in.
 
-import { runToolCall, runJob, noteToolAudit, noteCacheHit, noteShadowRead, startApiCall, recentToolCalls, recentApiCalls, callerSummary, cleanPath, _resetCallLog } from '../src/services/call-log';
+import { runToolCall, runJob, noteToolAudit, noteCacheHit, noteShadowRead, startApiCall, recentToolCalls, recentApiCalls, callerSummary, cleanPath, entityReadStats, _resetCallLog } from '../src/services/call-log';
 
 beforeEach(() => _resetCallLog());
 
@@ -60,5 +60,27 @@ describe('call log', () => {
   test('paths are logged without host or query string', () => {
     expect(cleanPath('https://ws.autotask.net/ATServicesRest/v1.0/Tickets/query/next?paging=abc')).toBe('/Tickets/query/next');
     expect(cleanPath('Companies/5')).toBe('/Companies/5');
+  });
+});
+
+describe('reads by entity (cache candidates)', () => {
+  test('counts where each read was answered, who caused the Autotask reads, and writes', async () => {
+    await runToolCall('autotask_search_invoices', async () => {
+      for (let i = 0; i < 3; i++) startApiCall('POST', '/Invoices/query')(200);
+      startApiCall('GET', 'https://ws.autotask.net/ATServicesRest/v1.0/Invoices/7')(200);
+      noteCacheHit('/Invoices/query');
+      return {};
+    });
+    await runJob('shadow sync', async () => { startApiCall('POST', '/Tickets/query')(200); });
+    noteShadowRead('Tickets'); noteShadowRead('Tickets');
+    startApiCall('PATCH', '/Tickets')(200);
+    const { entities } = entityReadStats(24);
+    const inv = entities.find((e) => e.entity === 'Invoices')!;
+    expect(inv).toMatchObject({ upstream: 4, cache: 1, shadow: 0, writes: 0, localPct: 20 });
+    expect(inv.topCallers).toEqual([{ caller: 'autotask_search_invoices', count: 4 }]);
+    const t = entities.find((e) => e.entity === 'Tickets')!;
+    expect(t).toMatchObject({ upstream: 1, shadow: 2, writes: 1 });
+    expect(t.topCallers).toEqual([{ caller: 'job: shadow sync', count: 1 }]);
+    expect(entities[0]!.entity).toBe('Invoices'); // busiest upstream first
   });
 });

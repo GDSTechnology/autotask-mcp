@@ -272,7 +272,7 @@ function callerCell(r) {
 }
 
 async function calls(body) {
-  const state = { tab: 'tools', errors: false, tool: '', source: '', auto: true, open: new Set() };
+  const state = { tab: 'tools', errors: false, tool: '', source: '', auto: true, open: new Set(), hours: 24 };
   const content = h('div');
   const errBox = h('input', { type: 'checkbox', onchange: (e) => { state.errors = e.target.checked; draw(); } });
   const toolBox = h('input', { type: 'text', placeholder: 'Filter by tool or path…', style: 'max-width:260px', oninput: (e) => { state.tool = e.target.value.trim(); clearTimeout(toolBox._t); toolBox._t = setTimeout(draw, 300); } });
@@ -301,7 +301,8 @@ async function calls(body) {
   async function draw() {
     const [sum, list] = await Promise.all([
       api('GET', '/api/calls/summary?minutes=60'),
-      state.tab === 'logs' ? api('GET', '/api/logs?limit=300').then((r) => ({ calls: r.logs.filter((l) => (!state.errors || l.level === 'error') && (!state.tool || (l.message + (l.meta || '')).toLowerCase().includes(state.tool.toLowerCase()))) }))
+      state.tab === 'entities' ? api('GET', `/api/calls/entities?hours=${state.hours}`).then((r) => ({ ...r, calls: r.entities.filter((e) => !state.tool || e.entity.toLowerCase().includes(state.tool.toLowerCase())) }))
+      : state.tab === 'logs' ? api('GET', '/api/logs?limit=300').then((r) => ({ calls: r.logs.filter((l) => (!state.errors || l.level === 'error') && (!state.tool || (l.message + (l.meta || '')).toLowerCase().includes(state.tool.toLowerCase()))) }))
         : api('GET', `/api/calls/${state.tab === 'tools' ? 'tools' : 'api'}?${qs()}`),
     ]);
     const sources = [...new Set(sum.callers.map((c) => c.source))].sort();
@@ -324,7 +325,23 @@ async function calls(body) {
         : h('p', { class: 'muted' }, 'No calls in the last hour.'));
 
     let table;
-    if (state.tab === 'logs') {
+    if (state.tab === 'entities') {
+      const keep = (e) => {
+        const out = [];
+        if (e.mirrored) out.push(h('span', { class: `badge ${e.servedFromShadow ? 'ok' : ''}` }, e.servedFromShadow ? 'Mirrored · serving' : 'Mirrored · not serving'));
+        out.push(h('span', { class: 'badge' }, e.cacheTtlSeconds ? `Cache ${e.cacheTtlSeconds >= 120 ? `${Math.round(e.cacheTtlSeconds / 60)} min` : `${e.cacheTtlSeconds} s`}` : 'Not cached'));
+        if (e.candidate) out.push(h('span', { class: 'badge warn' }, 'Candidate to mirror'));
+        return h('div', { class: 'row', style: 'gap:4px' }, out);
+      };
+      table = h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Entity'), h('th', { class: 'num' }, 'Autotask reads'), h('th', { class: 'num' }, 'From cache'), h('th', { class: 'num' }, 'From shadow'), h('th', { class: 'num' }, 'Writes'), h('th', null, 'Answered locally'), h('th', null, 'Kept locally'), h('th', null, 'Who causes the Autotask reads'))),
+        h('tbody', null, list.calls.map((e) => h('tr', null,
+          h('td', null, h('strong', null, e.entity)),
+          h('td', { class: 'num' }, fmt(e.upstream)), h('td', { class: 'num' }, fmt(e.cache)), h('td', { class: 'num' }, fmt(e.shadow)), h('td', { class: 'num muted' }, fmt(e.writes)),
+          h('td', { style: 'min-width:110px' }, e.localPct == null ? '—' : [`${e.localPct}%`, h('div', { class: `bar ${e.localPct < 25 ? 'bad' : e.localPct < 60 ? 'warn' : ''}` }, h('span', { style: `width:${e.localPct}%` }))]),
+          h('td', null, keep(e)),
+          h('td', { class: 'muted' }, e.topCallers.map((c) => h('div', { class: 'mono' }, `${c.caller.replace(/^autotask_/, '')} × ${fmt(c.count)}`)))))));
+    } else if (state.tab === 'logs') {
       table = h('table', null,
         h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Level'), h('th', null, 'Message'))),
         h('tbody', null, list.calls.map((l) => h('tr', null,
@@ -366,11 +383,14 @@ async function calls(body) {
     content.replaceChildren(callers,
       h('section', { class: 'panel' },
         h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:10px' },
-          h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls'), tabBtn('logs', 'Server log')),
+          h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls'), tabBtn('entities', 'Reads by entity'), tabBtn('logs', 'Server log'),
+            state.tab === 'entities' ? h('select', { style: 'max-width:150px', 'aria-label': 'Period', onchange: (e) => { state.hours = Number(e.target.value); draw(); } }, [1, 6, 24].map((n) => { const o = h('option', { value: String(n) }, `Last ${n} h`); o.selected = n === state.hours; return o; })) : null),
           h('div', { class: 'row' }, toolBox, state.tab === 'tools' ? sourceSel : null,
             h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center;margin:0' }, errBox, 'Errors only'))),
-        list.calls.length ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, state.tab === 'logs' ? 'No warnings or errors since the server started.' : 'Nothing matches.'),
-        h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'logs'
+        list.calls.length ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, state.tab === 'logs' ? 'No warnings or errors since the server started.' : state.tab === 'entities' ? 'No Autotask reads recorded in this period yet.' : 'Nothing matches.'),
+        h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'entities'
+          ? `Where each read was answered: Autotask, the short-lived read cache, or the Postgres shadow. "Candidate to mirror": ${list.candidateRule}. Counts reset on restart.`
+          : state.tab === 'logs'
           ? 'Warnings and errors the server logged since it started (last 500). Credential-like fields are redacted.'
           : state.tab === 'tools'
           ? 'Newest first; click a row to see the Autotask calls it made. Arguments are never recorded.'
@@ -385,6 +405,7 @@ async function calls(body) {
       dl('Diagnostics bundle (JSON)', 'kind=bundle'),
       dl('Tool calls (CSV)', 'kind=tools&format=csv'),
       dl('Autotask calls (CSV)', 'kind=api&format=csv'),
+      dl('Reads by entity (CSV)', 'kind=entities&format=csv'),
       dl('Server log (CSV)', 'kind=logs&format=csv')),
     h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'The bundle holds the dashboard status, settings, callers for the last 24 h, every logged tool and Autotask call, the server log' + (me.role === 'admin' ? ', and the console activity log.' : '.')));
   body.replaceChildren(

@@ -165,7 +165,7 @@ export async function shadowRead<T>(entity: string, filters: ShadowFilter[], lim
     const def = shadowEntity(entity)!;
     if (f.windowFrom && def.windowCovers && !def.windowCovers(filters, f.windowFrom)) return null;
     const r = await rt.store.query(name, filters, { limit, order: 'id_asc' });
-    noteShadowRead();
+    noteShadowRead(name);
     return { rows: r.rows as T[], ageSeconds: f.ageSeconds };
   } catch {
     return null; // unsupported filter, PG hiccup — the live API answers instead

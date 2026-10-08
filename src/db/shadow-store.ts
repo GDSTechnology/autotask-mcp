@@ -36,6 +36,27 @@ export class ShadowStore {
 
   constructor(private readonly pool: Pool) {}
 
+  /** The field names a mirrored row carries (Autotask returns every field, nulls included). */
+  async fieldNames(entity: string): Promise<string[]> {
+    const r = await this.pool.query<{ k: string }>(`SELECT jsonb_object_keys(data) AS k FROM (SELECT data FROM shadow_record WHERE entity = $1 AND deleted_at IS NULL LIMIT 1) s`, [entity]);
+    return r.rows.map((x) => x.k);
+  }
+
+  /** Highest mirrored id (live or deleted) — new rows are those above it (Autotask ids only grow). */
+  async maxId(entity: string): Promise<number> {
+    const r = await this.pool.query<{ m: string | null }>(`SELECT max(id) AS m FROM shadow_record WHERE entity = $1`, [entity]);
+    return Number(r.rows[0]?.m ?? 0);
+  }
+
+  /** Live ids matching Autotask-style filters (for deletion detection over a window). */
+  async liveIdsMatching(entity: string, filters: ShadowFilter[]): Promise<number[]> {
+    const b = new SqlBuilder();
+    const ent = b.bind(entity);
+    const where = whereClause(filters, b);
+    const r = await this.pool.query<{ id: string }>(`SELECT id FROM shadow_record WHERE entity = ${ent} AND deleted_at IS NULL AND ${where}`, b.params);
+    return r.rows.map((x) => Number(x.id));
+  }
+
   /** One mirrored row (live or deleted), or null. */
   async getRow(entity: string, id: number): Promise<Record<string, unknown> | null> {
     const r = await this.pool.query<{ data: Record<string, unknown> }>(`SELECT data FROM shadow_record WHERE entity = $1 AND id = $2`, [entity, id]);

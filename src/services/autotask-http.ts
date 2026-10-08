@@ -90,6 +90,27 @@ export type WriteListener = (method: string, path: string, body: unknown, respon
 let writeListener: WriteListener | null = null;
 export function setWriteListener(fn: WriteListener | null): void { writeListener = fn; }
 
+/**
+ * Read interceptor (set by the Postgres shadow runtime): lets EVERY query and
+ * by-id GET — not only the paged search tools — be answered from the mirror
+ * when it can. Returning null/undefined means "go to Autotask". Never used for
+ * the shadow's own sync reads (noCache) or impersonated reads.
+ */
+export interface ReadInterceptor {
+  query(tenant: string, entity: string, filter: QueryFilter[], limit: number): Promise<unknown[] | null>;
+  get(tenant: string, entity: string, id: number): Promise<unknown | undefined>;
+}
+let readInterceptor: ReadInterceptor | null = null;
+export function setReadInterceptor(fn: ReadInterceptor | null): void { readInterceptor = fn; }
+/** The shadow's query cap: larger reads always go to Autotask. */
+const SHADOW_MAX_ROWS = 5000;
+
+function project<T>(rows: unknown[], fields?: string[]): T[] {
+  if (!fields?.length) return rows as T[];
+  const keep = new Set([...fields, 'id']);
+  return rows.map((r) => Object.fromEntries(Object.entries(r as Record<string, unknown>).filter(([k]) => keep.has(k)))) as T[];
+}
+
 /** The object endpoint a path hits: "/Tickets/query" → "Tickets"; absolute URLs use their path. */
 export function endpointOf(path: string): string {
   const p = path.replace(/^https?:\/\/[^/]+/i, '').replace(/^\/?(atservicesrest\/)?(v1\.0\/)?/i, '/');
@@ -691,6 +712,10 @@ export class AutotaskHttpClient {
    * GET /{Entity}/{id} — returns the entity, or null on 404.
    */
   async get<T>(entity: string, id: number): Promise<T | null> {
+    if (readInterceptor && getImpersonationResourceId() === undefined) {
+      const hit = await readInterceptor.get(this.username.toLowerCase(), entity, id).catch(() => undefined);
+      if (hit != null) return hit as T;
+    }
     try {
       const res = await this.request<{ item?: T } & T>('GET', `/${entity}/${id}`);
       return unwrapEntity<T>(res);
@@ -766,6 +791,11 @@ export class AutotaskHttpClient {
     };
     if (opts.includeFields && opts.includeFields.length > 0) {
       body.IncludeFields = opts.includeFields;
+    }
+
+    if (readInterceptor && !opts.noCache && totalCap <= SHADOW_MAX_ROWS && getImpersonationResourceId() === undefined) {
+      const rows = await readInterceptor.query(this.username.toLowerCase(), entity, filter, totalCap).catch(() => null);
+      if (rows) return project<T>(rows, opts.includeFields);
     }
 
     const items: T[] = [];

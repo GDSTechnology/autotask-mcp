@@ -40,7 +40,9 @@ describe('filter → SQL', () => {
 describe('entities + write detection', () => {
   test('registry: watermark fields verified live; modifiedAt falls back to the create stamp', () => {
     expect(shadowEntity('timeentries')!.watermarkField).toBe('lastModifiedDateTime');
-    expect(SHADOW_ENTITIES.filter((e) => !e.watermarkField).map((e) => e.name)).toEqual(['ContractServices', 'ContractBlocks', 'Resources']);
+    expect(SHADOW_ENTITIES.filter((e) => !e.watermarkField && !e.window).map((e) => e.name)).toEqual(['ContractServices', 'ContractBlocks', 'Resources']);
+    // Billing entities: windowed, watermark resolved per tenant (window refresh when none).
+    expect(SHADOW_ENTITIES.filter((e) => e.watermarkCandidates).map((e) => e.name)).toEqual(['Invoices', 'BillingItems', 'TicketCharges', 'ProjectCharges', 'ContractCharges']);
     expect(modifiedAt(shadowEntity('Tickets')!, { createDate: '2026-10-01T00:00:00Z' })?.toISOString()).toBe('2026-10-01T00:00:00.000Z');
   });
   test('writtenRow: top-level PATCH/POST, by-id DELETE, child-route create; ignores queries and unmirrored entities', () => {
@@ -191,7 +193,7 @@ describe('ShadowSync', () => {
 });
 
 describe('shadowRead (search read path)', () => {
-  const store = (f: any, rows: any[] = [{ id: 1 }]) => ({ freshness: jest.fn(async () => f), query: jest.fn(async () => ({ rows, total: rows.length })) });
+  const store = (f: any, rows: any[] = [{ id: 1 }]) => ({ freshness: jest.fn(async () => f), query: jest.fn(async () => ({ rows, total: rows.length })), fieldNames: jest.fn(async () => ['id', 'status', 'contractID', 'companyID']) });
   test('serves only when enabled, mirrored, backfilled and fresh; otherwise null (→ live)', async () => {
     expect(await shadowRead('Tickets', [], 10)).toBeNull(); // no runtime
     const s = store({ entity: 'Tickets', ready: true, ageSeconds: 30, rows: 1 });
@@ -209,6 +211,10 @@ describe('shadowRead (search read path)', () => {
     expect(await shadowRead('Tickets', [{ op: 'noteq', field: 'status', value: 5 }], 10)).not.toBeNull(); // open tickets: in window
     _setShadowRuntime({ store: store({ ready: true, ageSeconds: 5, windowFrom: '2026-04-06' }), serveReads: true, maxAgeSeconds: 900 } as any);
     expect(await shadowRead('Tickets', [{ op: 'eq', field: 'contractID', value: 9 }], 10)).toBeNull(); // could reach older → live
+    _setShadowRuntime({ store: store({ ready: true, ageSeconds: 5 }), serveReads: true, maxAgeSeconds: 900 } as any);
+    expect(await shadowRead('Tickets', [{ op: 'eq', field: 'companyId', value: 9 }], 10)).toBeNull(); // wrong case: Autotask would match, jsonb would not → live
+    expect(await shadowRead('Tickets', [{ op: 'or', items: [{ op: 'eq', field: 'companyID', value: 9 }, { op: 'eq', field: 'nope', value: 1 }] }], 10)).toBeNull(); // unknown field inside an OR → live
+    expect(await shadowRead('Tickets', [{ op: 'eq', field: 'companyID', value: 9 }], 10)).not.toBeNull();
     const bad = store({ ready: true, ageSeconds: 5 }); bad.query.mockRejectedValue(new Error('Unsupported filter op'));
     _setShadowRuntime({ store: bad, serveReads: true, maxAgeSeconds: 900 } as any);
     expect(await shadowRead('Tickets', [], 10)).toBeNull(); // untranslatable → live

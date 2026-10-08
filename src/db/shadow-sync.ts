@@ -25,6 +25,8 @@ import type { ShadowFilter } from './shadow-sql.js';
 
 export interface SyncHttp {
   query<T>(entity: string, filter: ShadowFilter[], opts?: { maxRecords?: number; includeFields?: string[]; noCache?: boolean }): Promise<T[]>;
+  /** Entity field list (entityInformation/fields); used to resolve tenant-dependent fields. */
+  fieldInfo?(entity: string): Promise<{ fields: Array<{ name?: string; isQueryable?: boolean }> }>;
 }
 
 export interface SyncOptions {
@@ -35,9 +37,11 @@ export interface SyncOptions {
   usagePct?: () => Promise<number | null>;
   /** Backfill only this many months of history for windowed entities (0/absent = everything). */
   historyMonths?: number;
+  /** Window-refresh entities: how many recent days the hourly refresh re-reads (default 30). */
+  refreshDays?: number;
 }
 
-export interface EntityReport { entity: string; mode: 'backfill' | 'incremental' | 'full' | 'skip'; calls: number; rows: number; done?: boolean; deleted?: number; error?: string }
+export interface EntityReport { entity: string; mode: 'backfill' | 'incremental' | 'full' | 'refresh' | 'skip'; calls: number; rows: number; done?: boolean; deleted?: number; error?: string }
 export interface RunReport { skipped?: string; calls: number; entities: EntityReport[] }
 
 const PAGE = 500;
@@ -46,6 +50,9 @@ type Row = Record<string, unknown> & { id: number };
 export class ShadowSync {
   private calls = 0;
   private readonly dirty = new Map<string, Set<number>>();
+  private readonly lastWrite = new Map<string, number>();
+  /** Per-process resolution of tenant-dependent fields (see ShadowEntity.watermarkCandidates). */
+  private readonly resolved = new Map<string, ShadowEntity | { error: string }>();
 
   constructor(private readonly http: () => Promise<SyncHttp>, private readonly store: ShadowStore, private readonly logger: Logger, private readonly opts: SyncOptions) {}
 
@@ -54,6 +61,40 @@ export class ShadowSync {
     const e = shadowEntity(entity);
     if (!e || !Number.isFinite(id)) return;
     (this.dirty.get(e.name) ?? this.dirty.set(e.name, new Set()).get(e.name)!).add(id);
+    this.lastWrite.set(e.name, Date.now());
+  }
+  /** A row the MCP wrote that the mirror hasn't re-read yet (by-id reads must go live). */
+  isDirty(entity: string, id: number): boolean { return this.dirty.get(shadowEntity(entity)?.name ?? entity)?.has(id) ?? false; }
+  /** The MCP wrote this entity within `ms` (searches go live briefly: a just-created row isn't mirrored yet). */
+  writtenWithin(entity: string, ms: number): boolean { const t = this.lastWrite.get(shadowEntity(entity)?.name ?? entity); return t !== undefined && Date.now() - t < ms; }
+
+  /**
+   * The entity as it applies to this tenant: a watermark picked from the
+   * candidates, and required fields checked — one field-list call per entity
+   * per process. Unresolvable (field list unreadable) → used as declared.
+   */
+  async effective(e: ShadowEntity): Promise<ShadowEntity | { error: string }> {
+    if (!e.watermarkCandidates && !e.requiredFields) return e;
+    const hit = this.resolved.get(e.name);
+    if (hit) return hit;
+    const h = await this.http();
+    if (!h.fieldInfo) { this.resolved.set(e.name, e); return e; }
+    this.calls++;
+    let fields: Array<{ name?: string; isQueryable?: boolean }>;
+    try { fields = (await h.fieldInfo(e.name)).fields ?? []; } catch (err) { return { error: `could not read the ${e.name} field list: ${err instanceof Error ? err.message : String(err)}` }; }
+    const names = new Set(fields.filter((f) => f.isQueryable !== false).map((f) => String(f.name ?? '').toLowerCase()));
+    const actual = (want: string) => fields.find((f) => String(f.name ?? '').toLowerCase() === want.toLowerCase())?.name;
+    const missing = (e.requiredFields ?? []).filter((f) => !names.has(f.toLowerCase()));
+    if (missing.length && fields.length) {
+      const r = { error: `not mirrored on this tenant: field(s) ${missing.join(', ')} not available on ${e.name}` };
+      this.resolved.set(e.name, r);
+      return r;
+    }
+    const wm = (e.watermarkCandidates ?? []).find((f) => names.has(f.toLowerCase()));
+    const out: ShadowEntity = wm ? { ...e, watermarkField: actual(wm) ?? wm } : e;
+    this.resolved.set(e.name, out);
+    if (wm) this.logger.info(`shadow: ${e.name} has ${out.watermarkField} — incremental sync`);
+    return out;
   }
   /** Change the usage threshold at runtime (admin console). */
   setPauseAtPct(pct: number): void { this.opts.pauseAtPct = pct; }
@@ -84,7 +125,13 @@ export class ShadowSync {
       if (this.budgetLeft() <= 0) { entities.push({ entity: e.name, mode: 'skip', calls: 0, rows: 0, error: 'run budget spent' }); continue; }
       const before = this.calls;
       try {
-        entities.push(await this.syncEntity(e, now));
+        const eff = await this.effective(e);
+        if ('error' in eff) {
+          await this.store.saveState(e.name, { last_error: eff.error.slice(0, 500), last_error_at: now, apiCalls: this.calls - before });
+          entities.push({ entity: e.name, mode: 'skip', calls: this.calls - before, rows: 0, error: eff.error });
+          continue;
+        }
+        entities.push(await this.syncEntity(eff, now));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await this.store.saveState(e.name, { last_error: msg.slice(0, 500), last_error_at: now, apiCalls: this.calls - before });
@@ -96,6 +143,10 @@ export class ShadowSync {
 
   private async syncEntity(e: ShadowEntity, now: Date): Promise<EntityReport> {
     const st = await this.store.getState(e.name);
+    if (!e.watermarkField && e.window) {
+      if (!st?.backfill_done) return this.backfill(e, st?.backfill_cursor ?? 0, st?.watermark ?? null, st?.window_from ?? null, now);
+      return this.windowRefresh(e, st, now);
+    }
     if (!e.watermarkField) return this.fullRefresh(e, st?.last_full_at ?? null, now);
     if (!st?.backfill_done) return this.backfill(e, st?.backfill_cursor ?? 0, st?.watermark ?? null, st?.window_from ?? null, now);
     return this.incremental(e, st.watermark, now);
@@ -140,6 +191,55 @@ export class ShadowSync {
     // Only move the watermark when every changed row was read; otherwise the next run resumes from the same point.
     await this.store.saveState(e.name, { ...(complete ? { watermark: new Date(newest || now.getTime()), last_incremental_at: now, last_error: null } : {}), apiCalls: this.calls - before });
     return { entity: e.name, mode: 'incremental', calls: this.calls - before, rows, done: complete };
+  }
+
+  /**
+   * Window-refresh mode: new rows every run (id above the highest mirrored);
+   * edits by re-reading the last refreshDays every refreshEveryMinutes, and the
+   * whole window once a day. Rows a complete re-read no longer returns are
+   * marked deleted (only within the re-read range).
+   */
+  private async windowRefresh(e: ShadowEntity, st: { window_from: Date | null; last_full_at: Date | null; last_reconcile_at: Date | null; last_backfill_at: Date | null }, now: Date): Promise<EntityReport> {
+    const before = this.calls;
+    let rows = 0;
+    // 1. New rows.
+    let cursor = await this.store.maxId(e.name), newDone = false;
+    while (this.budgetLeft() > 0) {
+      const page = await this.page(e, [{ op: 'gt', field: 'id', value: cursor }]);
+      rows += await this.store.upsert(e, page);
+      if (page.length) cursor = Math.max(...page.map((r) => Number(r.id)));
+      if (page.length < PAGE) { newDone = true; break; }
+    }
+    if (newDone) await this.store.saveState(e.name, { last_incremental_at: now, last_error: null });
+    // 2. Edits: the recent days hourly, the whole window daily.
+    const day = (d: Date) => d.toISOString().slice(0, 10);
+    const windowDay = st.window_from ? day(new Date(st.window_from)) : null;
+    // A just-finished backfill counts as both refreshes.
+    const lastFull = st.last_reconcile_at ?? st.last_backfill_at, lastHot = st.last_full_at ?? st.last_backfill_at;
+    const fullDue = !lastFull || now.getTime() - new Date(lastFull).getTime() > 20 * 3600_000;
+    const hotDue = !lastHot || now.getTime() - new Date(lastHot).getTime() >= (e.refreshEveryMinutes ?? 60) * 60_000;
+    let deleted = 0, refreshed = false;
+    if (newDone && (fullDue || hotDue) && e.window) {
+      const hot = new Date(now); hot.setUTCDate(hot.getUTCDate() - (this.opts.refreshDays ?? 30));
+      const fromDay = fullDue ? windowDay : (windowDay && windowDay > day(hot) ? windowDay : day(hot));
+      const range: ShadowFilter[] = fromDay ? [e.window(fromDay)] : [];
+      const seen = new Set<number>();
+      let c = 0, complete = false;
+      while (this.budgetLeft() > 0) {
+        const page = await this.page(e, [...range, { op: 'gt', field: 'id', value: c }]);
+        rows += await this.store.upsert(e, page);
+        for (const r of page) seen.add(Number(r.id));
+        if (page.length) c = Math.max(...page.map((r) => Number(r.id)));
+        if (page.length < PAGE) { complete = true; break; }
+      }
+      if (complete) {
+        deleted = await this.store.markDeleted(e.name, (await this.store.liveIdsMatching(e.name, range)).filter((id) => !seen.has(id)));
+        await this.store.saveState(e.name, fullDue ? { last_full_at: now, last_reconcile_at: now } : { last_full_at: now });
+        refreshed = true;
+      }
+    }
+    await this.store.saveState(e.name, { apiCalls: this.calls - before });
+    return { entity: e.name, mode: refreshed ? 'refresh' : 'incremental', calls: this.calls - before, rows, done: newDone, deleted };
   }
 
   private async fullRefresh(e: ShadowEntity, lastFull: Date | null, now: Date): Promise<EntityReport> {

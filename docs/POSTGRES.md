@@ -106,6 +106,32 @@ their last-modified field), ContractServices, ContractBlocks, Resources (small;
 refreshed in full hourly). One table, `shadow_record (entity, id, data jsonb, …)`,
 plus `shadow_sync_state` (migration `0002_shadow.sql`).
 
+**Billing / financial review** (since 3.57): Invoices, BillingItems, and
+TicketCharges, ProjectCharges and ContractCharges.
+
+- **Window.** Each is limited to the history window by its own date:
+  `invoiceDateTime`, `itemDate` and `datePurchased`.
+- **No reliable "last modified" field.** These records are edited after they are
+  created: invoices get paid or voided, billing items get invoiced. So they run
+  in **window-refresh** mode:
+  - **New rows every run.** Autotask ids only grow, so new rows are the ones
+    with an id above the highest mirrored one.
+  - **The last `MCP_PG_SHADOW_REFRESH_DAYS` (30) re-read hourly**, to pick up
+    those edits.
+  - **The whole window re-read once a day.**
+  - **Deletions.** A row that a complete re-read no longer returns is marked
+    deleted, but only within the range that was re-read.
+
+  Edits to these records can therefore be **up to an hour old**. New rows appear
+  within one sync run.
+- **Field check at start-up.** The sync reads each entity's field list once per
+  start-up. If the tenant offers a queryable `lastModifiedDateTime` /
+  `lastModifiedDate`, the entity uses normal incremental sync instead. If a
+  needed date field is missing, the entity is skipped with a clear
+  `last_error` instead of failing queries.
+- **Cost.** Roughly the backfill (≈ 2 calls per 1,000 rows), plus about 1–20
+  calls an hour for the recent-days re-read, depending on volume.
+
 **How it stays fresh**
 - **Backfill** — first load walks `id > cursor` in 500-row pages (Autotask returns
   ≤ 500 rows sorted by id), resumable across runs. About 750 calls for the whole
@@ -137,6 +163,16 @@ plus `shadow_sync_state` (migration `0002_shadow.sql`).
   the entity is backfilled and younger than `MCP_PG_SHADOW_MAX_AGE_SECONDS` (900);
   otherwise, or for any filter the shadow can't translate, they go live.
   Verified: same ids, order and `hasMore` as the live API.
+  **Every query and by-id read of the MCP's own tenant asks the shadow first**,
+  not only the paged search tools: reports, invoice and billing tools, and the
+  lookups inside other tools. They are answered from the shadow when it can,
+  and go live in these cases:
+  - the read was made while impersonating a user;
+  - it asks for more than 5,000 rows;
+  - its filters reach outside the window;
+  - the MCP wrote that entity in the last 90 s (a just-created row isn't mirrored
+    yet);
+  - it is a by-id read of a row the MCP wrote since the last sync.
 - `autotask_shadow_status` — rows, backfill progress, age, calls spent, errors.
 - `autotask_shadow_sync` — run now / re-read ids / reconcile one entity.
 - `/health` shows `shadow.lastRunAt` / `lastRunCalls` (no DB round-trip).

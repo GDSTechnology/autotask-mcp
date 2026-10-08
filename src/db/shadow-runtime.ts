@@ -26,7 +26,7 @@ import { AuditLedger } from './audit-ledger.js';
 import { ShadowSync, RunReport } from './shadow-sync.js';
 import { SHADOW_ENTITIES, shadowEntity } from './shadow-entities.js';
 import type { ShadowFilter } from './shadow-sql.js';
-import { setWriteListener } from '../services/autotask-http.js';
+import { setWriteListener, setReadInterceptor } from '../services/autotask-http.js';
 import type { AutotaskService } from '../services/autotask.service.js';
 import { runJob, noteShadowRead } from '../services/call-log.js';
 
@@ -57,7 +57,9 @@ export function writtenRow(path: string, body: unknown, response: unknown): { en
   const segs = path.split('?')[0]!.split('/').filter(Boolean);
   if (!segs.length || segs[segs.length - 1] === 'query' || segs.includes('query')) return null;
   const childMap: Record<string, string> = { Contacts: 'Contacts', Services: 'ContractServices', Blocks: 'ContractBlocks', Tasks: 'Tasks', ToDos: 'CompanyToDos' };
-  const entityName = segs.length >= 3 ? childMap[segs[2]!] : segs[0];
+  // "Charges" is a child of several parents: /Tickets/1/Charges → TicketCharges, etc.
+  const parentChild: Record<string, string> = { 'Tickets/Charges': 'TicketCharges', 'Projects/Charges': 'ProjectCharges', 'Contracts/Charges': 'ContractCharges' };
+  const entityName = segs.length >= 3 ? (parentChild[`${segs[0]}/${segs[2]}`] ?? childMap[segs[2]!]) : segs[0];
   const e = entityName ? shadowEntity(entityName) : undefined;
   if (!e) return null;
   const idFromPath = segs.length === 2 ? Number(segs[1]) : segs.length === 4 ? Number(segs[3]) : NaN;
@@ -79,6 +81,7 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
     maxCallsPerRun: intEnv(env.MCP_PG_SHADOW_MAX_CALLS_PER_RUN, 100),
     pauseAtPct: intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50),
     historyMonths: intEnv(env.MCP_PG_SHADOW_HISTORY_MONTHS, 6),
+    refreshDays: intEnv(env.MCP_PG_SHADOW_REFRESH_DAYS, 30),
     usagePct: async () => { const u = await service.getApiUsage(); return 'usedPct' in u.autotask ? (u.autotask.usedPct ?? null) : null; },
   });
   const reconcileHour = intEnv(env.MCP_PG_SHADOW_RECONCILE_HOUR_UTC, 7);
@@ -138,13 +141,74 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
     syncEnabled: true,
     runNow: tick,
     lastRun: () => last,
-    stop: () => { clearTimeout(first); clearInterval(timer); setWriteListener(null); runtime = null; },
+    stop: () => { clearTimeout(first); clearInterval(timer); setWriteListener(null); setReadInterceptor(null); runtime = null; },
   };
+  // Every Autotask query / by-id read of THIS tenant asks the shadow first.
+  const tenant = (env.AUTOTASK_USERNAME ?? '').toLowerCase();
+  setReadInterceptor({
+    query: async (t, entity, filter, limit) => (t === tenant ? (await shadowRead(entity, filter as ShadowFilter[], limit))?.rows ?? null : null),
+    get: async (t, entity, id) => (t === tenant ? shadowGet(entity, id) : undefined),
+  });
   logger.info(`Postgres shadow enabled: sync every ${intervalMs / 1000}s, ≤${intEnv(env.MCP_PG_SHADOW_MAX_CALLS_PER_RUN, 100)} calls/run, pause at ${intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50)}% usage, serve reads: ${runtime.serveReads}`);
   return runtime;
 }
 
 const freshCache = new Map<string, { at: number; f: Freshness }>();
+const fieldCache = new Map<string, { at: number; names: Set<string> }>();
+
+/** Every field a filter names (walking and/or groups); udf filters are reported as unknown. */
+function filterFields(filters: ShadowFilter[], out: string[] = []): string[] {
+  for (const f of filters as Array<ShadowFilter & { items?: ShadowFilter[]; udf?: boolean }>) {
+    if (f.items) filterFields(f.items, out);
+    else if (f.udf) out.push('\u0000udf');
+    else if (f.field != null) out.push(String(f.field));
+  }
+  return out;
+}
+
+/**
+ * Autotask matches field names case-insensitively; the jsonb mirror doesn't.
+ * Serve only when every filtered field is a real key of the mirrored rows,
+ * spelled exactly so — otherwise a "companyId" filter would silently match
+ * nothing. Unknown → go live.
+ */
+async function fieldsKnown(rt: ShadowRuntime, name: string, filters: ShadowFilter[]): Promise<boolean> {
+  const want = filterFields(filters);
+  if (!want.length) return true;
+  let c = fieldCache.get(name);
+  if (!c || Date.now() - c.at > 600_000) { c = { at: Date.now(), names: new Set(await rt.store.fieldNames(name)) }; fieldCache.set(name, c); }
+  return c.names.size > 0 && want.every((f) => c!.names.has(f));
+}
+/** After an MCP write to an entity, its searches read live this long (until the next sync re-reads the row). */
+const WRITE_BYPASS_MS = 90_000;
+
+async function freshEnough(rt: ShadowRuntime, name: string): Promise<Freshness | null> {
+  let c = freshCache.get(name);
+  if (!c || Date.now() - c.at > 15_000) { c = { at: Date.now(), f: await rt.store.freshness(name) }; freshCache.set(name, c); }
+  const f = c.f;
+  if (!f.ready || f.ageSeconds == null || f.ageSeconds + Math.round((Date.now() - c.at) / 1000) > rt.maxAgeSeconds) return null;
+  return f;
+}
+
+/**
+ * One row by id from the shadow, or undefined to go live: serving reads on,
+ * mirrored, fresh, the row present (a windowed mirror may not hold old rows)
+ * and not written by the MCP since the last sync.
+ */
+export async function shadowGet(entity: string, id: number): Promise<unknown | undefined> {
+  const rt = runtime;
+  const def = shadowEntity(entity);
+  if (!rt?.serveReads || !def || !Number.isFinite(id)) return undefined;
+  try {
+    if (rt.sync?.isDirty(def.name, id) || !(await freshEnough(rt, def.name))) return undefined;
+    const r = await rt.store.query(def.name, [{ op: 'eq', field: 'id', value: id }], { limit: 1 });
+    if (!r.rows[0]) return undefined;
+    noteShadowRead(def.name);
+    return r.rows[0];
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Answer a search from the shadow, or null to go live. Only when serving reads
@@ -156,6 +220,8 @@ export async function shadowRead<T>(entity: string, filters: ShadowFilter[], lim
   if (!rt?.serveReads || !shadowEntity(entity)) return null;
   try {
     const name = shadowEntity(entity)!.name;
+    // The MCP just wrote this entity: a created/edited row isn't mirrored yet — read live for a moment.
+    if (rt.sync?.writtenWithin(name, WRITE_BYPASS_MS)) return null;
     let c = freshCache.get(name);
     if (!c || Date.now() - c.at > 15_000) { c = { at: Date.now(), f: await rt.store.freshness(name) }; freshCache.set(name, c); }
     const f = c.f;
@@ -164,6 +230,7 @@ export async function shadowRead<T>(entity: string, filters: ShadowFilter[], lim
     // filters stay inside it (e.g. open tickets, dateWorked ≥ window start).
     const def = shadowEntity(entity)!;
     if (f.windowFrom && def.windowCovers && !def.windowCovers(filters, f.windowFrom)) return null;
+    if (!(await fieldsKnown(rt, name, filters))) return null;
     const r = await rt.store.query(name, filters, { limit, order: 'id_asc' });
     noteShadowRead(name);
     return { rows: r.rows as T[], ageSeconds: f.ageSeconds };
@@ -173,4 +240,4 @@ export async function shadowRead<T>(entity: string, filters: ShadowFilter[], lim
 }
 
 /** Test hook. */
-export function _setShadowRuntime(rt: ShadowRuntime | null): void { runtime = rt; freshCache.clear(); }
+export function _setShadowRuntime(rt: ShadowRuntime | null): void { runtime = rt; freshCache.clear(); fieldCache.clear(); }

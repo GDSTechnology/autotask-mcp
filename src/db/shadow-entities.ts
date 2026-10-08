@@ -2,7 +2,8 @@
 // Verified live (2026-10-06): every entity pages in ascending id order (so a
 // backfill can walk `id > cursor`), and these are the queryable change fields.
 
-export type ShadowEntityName = 'Tickets' | 'TimeEntries' | 'Tasks' | 'Projects' | 'ServiceCalls' | 'CompanyToDos' | 'Companies' | 'Contacts' | 'Contracts' | 'ContractServices' | 'ContractBlocks' | 'Resources';
+export type ShadowEntityName = 'Tickets' | 'TimeEntries' | 'Tasks' | 'Projects' | 'ServiceCalls' | 'CompanyToDos' | 'Companies' | 'Contacts' | 'Contracts' | 'ContractServices' | 'ContractBlocks' | 'Resources'
+  | 'Invoices' | 'BillingItems' | 'TicketCharges' | 'ProjectCharges' | 'ContractCharges';
 
 import type { ShadowFilter } from './shadow-sql.js';
 
@@ -27,6 +28,22 @@ export interface ShadowEntity {
    * these entities aren't webhook-capable and don't record who changed them).
    */
   diff?: { type: 'serviceCall' | 'todo'; fields: string[]; actorField?: (field: string) => string | null };
+  /**
+   * Not verified on every tenant: possible last-modified fields, resolved at
+   * sync start from the entity's field list (the first that exists and is
+   * queryable becomes the watermark). None found → "window refresh" mode.
+   */
+  watermarkCandidates?: string[];
+  /** Fields the window filter needs; when one is missing on this tenant the entity is not mirrored (clear error, no failing queries). */
+  requiredFields?: string[];
+  /**
+   * Window refresh (entities with a window but no watermark — e.g. Invoices,
+   * which get paid/voided after creation): every run reads NEW rows (id above
+   * the highest mirrored); every this-many minutes it re-reads the recent part
+   * of the window (MCP_PG_SHADOW_REFRESH_DAYS, default 30) to pick up edits;
+   * once a day the whole window. Default 60.
+   */
+  refreshEveryMinutes?: number;
 }
 
 const lowerBoundAtLeast = (filters: ShadowFilter[], fields: string[], cutoffDay: string): boolean =>
@@ -66,6 +83,28 @@ export const SHADOW_ENTITIES: ShadowEntity[] = [
   { name: 'ContractServices', watermarkField: null, createField: null, fullEveryMinutes: 60 },
   { name: 'ContractBlocks', watermarkField: null, createField: null, fullEveryMinutes: 60 },
   { name: 'Resources', watermarkField: null, createField: null, fullEveryMinutes: 60 },
+
+  // ── Billing / financial review (2026-10-08) ─────────────────────────────
+  // Windowed by their own date; no confirmed last-modified field, so they run
+  // in window-refresh mode unless the tenant's field list offers one.
+  {
+    name: 'Invoices', watermarkField: null, createField: 'createDateTime', requiredFields: ['invoiceDateTime'],
+    watermarkCandidates: ['lastModifiedDateTime', 'lastModifiedDate'], refreshEveryMinutes: 60,
+    window: (c) => ({ op: 'gte', field: 'invoiceDateTime', value: c }),
+    windowCovers: (fs, c) => lowerBoundAtLeast(fs, ['invoiceDateTime'], c),
+  },
+  {
+    name: 'BillingItems', watermarkField: null, createField: null, requiredFields: ['itemDate'],
+    watermarkCandidates: ['lastModifiedDateTime', 'lastModifiedDate'], refreshEveryMinutes: 60,
+    window: (c) => ({ op: 'gte', field: 'itemDate', value: c }),
+    windowCovers: (fs, c) => lowerBoundAtLeast(fs, ['itemDate'], c),
+  },
+  ...(['TicketCharges', 'ProjectCharges', 'ContractCharges'] as const).map((name): ShadowEntity => ({
+    name, watermarkField: null, createField: null, requiredFields: ['datePurchased'],
+    watermarkCandidates: ['lastModifiedDateTime', 'lastModifiedDate'], refreshEveryMinutes: 60,
+    window: (c) => ({ op: 'gte', field: 'datePurchased', value: c }),
+    windowCovers: (fs, c) => lowerBoundAtLeast(fs, ['datePurchased'], c),
+  })),
 ];
 
 export const shadowEntity = (name: string): ShadowEntity | undefined =>

@@ -84,6 +84,7 @@ Read cache and lookups (defaults are fine; tune only if needed):
 | `AUTOTASK_CACHE_TTL_REFERENCE_SECONDS` | Reference data, e.g. roles, work types (default `900`) |
 | `AUTOTASK_CACHE_TTL_SLOW_REFERENCE_SECONDS` | Companies / contacts / contracts (default `300`) |
 | `AUTOTASK_CACHE_TTL_VOLATILE_SECONDS` | Tickets, notes, time entries (default `30`) |
+| `AUTOTASK_AUTH_PAUSE_SECONDS` | After Autotask rejects the API credentials (HTTP 401), pause all calls for this long (default `300`, doubling per repeat up to 60 min) so failed logins don't lock the API user; `0` disables. Clear early with **Retry now** in the admin console |
 | `AUTOTASK_COMPANY_PREWARM` | `on` restores the eager walk of every company at startup. Off by default: company names are looked up on demand |
 
 Keep secrets in the server's env file / secret store — never in the image.

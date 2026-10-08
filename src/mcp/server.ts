@@ -34,6 +34,7 @@ import { parseActingHeaders, TrustedActing } from '../utils/impersonation.js';
 import { extractRequestOrigin } from '../utils/origin.js';
 import { runWithRequestContext } from '../utils/request-context.js';
 import { usageSnapshot } from '../services/http-cache.js';
+import { authBlockStatus } from '../services/autotask-http.js';
 
 export class AutotaskMcpServer {
   private config: McpServerConfig;
@@ -404,6 +405,7 @@ export class AutotaskMcpServer {
           ...(u ? { apiUsage: { upstreamLastHour: u.upstreamLastHour, upstreamLastFiveMinutes: u.upstreamLastFiveMinutes, savedPct: u.savedPct, rateLimited: u.rateLimited, cacheEnabled: u.cacheEnabled } } : {}),
           ...shadowHealth(),
           ...(adminHealth() ? { admin: adminHealth() } : {}),
+          ...(apiUser && authBlockStatus(apiUser) ? { autotaskAuth: authBlockStatus(apiUser) } : {}),
         }));
         return;
       }

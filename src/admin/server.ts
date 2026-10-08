@@ -33,7 +33,9 @@ import { AdminStore, AdminUser, AdminRole } from './store.js';
 import { dummyPasswordHash, generatePassword, passwordProblem, validUsername, verifyPassword } from './passwords.js';
 import { SETTINGS, settingDef, settingValue, isOverridden, loadOverrides, setOverride, clearOverride, coerceSetting } from './settings.js';
 import { toolAllowed, toolCategoryNames, isWriteTool } from './tool-gate.js';
-import { callerSummary, recentToolCalls, recentApiCalls, runJob, type CallQuery } from '../services/call-log.js';
+import { callerSummary, recentToolCalls, recentApiCalls, runJob, entityReadStats, type CallQuery } from '../services/call-log.js';
+import { classify, ttlMs, cacheEnabled } from '../services/http-cache.js';
+import { shadowEntity } from '../db/shadow-entities.js';
 import { authBlockStatus, clearAuthBlock } from '../services/autotask-http.js';
 import { recentLogs } from '../utils/logger.js';
 
@@ -216,6 +218,37 @@ const publicUser = (u: AdminUser) => ({ id: u.id, username: u.username, role: u.
 
 let thresholdCache: { at: number; value: unknown } | null = null;
 
+/** Autotask reads at/above this per 24 h, mostly not answered locally, mark an entity as a mirroring candidate. */
+const CANDIDATE_MIN_UPSTREAM = 50;
+
+/**
+ * Reads per entity with how each is kept locally: mirrored in the Postgres shadow
+ * (and whether searches are served from it), the read-cache class + TTL, and a
+ * "candidate" flag for heavy, mostly-uncached entities worth mirroring next.
+ */
+export function readSourceReport(hours = 24): Record<string, unknown> {
+  const { since, entities } = entityReadStats(hours);
+  const rt = getShadowRuntime();
+  const scale = 24 / Math.min(Math.max(hours, 1), 24);
+  return {
+    since,
+    hours: Math.min(Math.max(Math.floor(hours), 1), 24),
+    candidateRule: `≥ ${CANDIDATE_MIN_UPSTREAM} Autotask reads per 24 h, under 50% answered locally, not mirrored`,
+    entities: entities.map((e) => {
+      const mirrored = !!shadowEntity(e.entity);
+      const cls = classify(`/${e.entity}`);
+      const ttl = cacheEnabled() ? Math.round(ttlMs(cls) / 1000) : 0;
+      return {
+        ...e,
+        mirrored,
+        servedFromShadow: mirrored && !!rt?.serveReads,
+        cacheClass: cls, cacheTtlSeconds: ttl,
+        candidate: !mirrored && e.upstream * scale >= CANDIDATE_MIN_UPSTREAM && (e.localPct ?? 0) < 50,
+      };
+    }),
+  };
+}
+
 /** Build the request handler (exported for tests). */
 export function adminHandler(deps: AdminDeps) {
   const { store, opts } = deps;
@@ -367,6 +400,7 @@ export function adminHandler(deps: AdminDeps) {
       if (q.get('source')) query.source = q.get('source')!.slice(0, 40);
       if (q.get('errors') === '1') query.errorsOnly = true;
       if (path === '/api/calls/summary') return send(res, 200, callerSummary(Math.min(num('minutes') ?? 60, 24 * 60)));
+      if (path === '/api/calls/entities') return send(res, 200, readSourceReport(num('hours') ?? 24));
       if (path === '/api/calls/tools') return send(res, 200, { calls: recentToolCalls(query) });
       if (path === '/api/calls/api') return send(res, 200, { calls: recentApiCalls(query) });
     }
@@ -385,17 +419,19 @@ export function adminHandler(deps: AdminDeps) {
       if (kind === 'tools') rows = recentToolCalls({ limit: 10_000 }) as unknown as Array<Record<string, unknown>>;
       else if (kind === 'api') rows = recentApiCalls({ limit: 10_000 }) as unknown as Array<Record<string, unknown>>;
       else if (kind === 'logs') rows = recentLogs() as unknown as Array<Record<string, unknown>>;
+      else if (kind === 'entities') rows = (readSourceReport(24).entities as Array<Record<string, unknown>>).map((e) => ({ ...e, topCallers: (e.topCallers as Array<{ caller: string; count: number }>).map((c) => `${c.caller} x${c.count}`).join('; ') }));
       else if (kind === 'bundle') {
         const bundle = {
           exportedAt: new Date().toISOString(), exportedBy: u.username,
           note: 'Autotask MCP diagnostics. Contains no credentials, tool arguments or response bodies.',
           status: await status(), settings: settingsView(), callers: callerSummary(24 * 60),
+          readsByEntity: readSourceReport(24),
           toolCalls: recentToolCalls({ limit: 10_000 }), apiCalls: recentApiCalls({ limit: 10_000 }), serverLog: recentLogs(),
           ...(u.role === 'admin' ? { consoleActivity: await store.listEvents(500) } : {}),
         };
         void log(ctx, 'export', { kind });
         return sendFile(res, `autotask-mcp-diagnostics-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(bundle, null, 2));
-      } else throw new HttpError(400, 'kind must be tools, api, logs or bundle.');
+      } else throw new HttpError(400, 'kind must be tools, api, entities, logs or bundle.');
       void log(ctx, 'export', { kind, format });
       return format === 'csv'
         ? sendFile(res, `autotask-mcp-${kind}-${stamp}.csv`, 'text/csv; charset=utf-8', toCsv(rows))

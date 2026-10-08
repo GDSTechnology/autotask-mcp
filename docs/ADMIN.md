@@ -280,6 +280,26 @@ to see every Autotask request that call made, with each request's status code
 and duration. Each row also shows how many requests were answered from the read
 cache or the Postgres shadow instead of going to Autotask.
 
+**Reads by entity (what to cache next).** For each Autotask entity (Invoices,
+Tickets, BillingItems…), where its reads were answered over the last 1, 6 or 24
+hours:
+
+- **Autotask reads:** sent to Autotask.
+- **From cache:** answered by the short-lived read cache.
+- **From shadow:** answered by the Postgres mirror.
+
+Each row also shows how the entity is kept locally today: whether it is mirrored
+and serving reads, and the read cache's time-to-live for it. It names the tools
+or jobs that caused its Autotask reads.
+
+An entity is marked **Candidate to mirror** when it meets all three:
+- 50 or more Autotask reads per 24 hours;
+- under 50% answered locally;
+- not mirrored yet.
+
+Those are the ones worth adding to the shadow next. The table can also be
+downloaded as a CSV and is part of the diagnostics bundle.
+
 **Autotask API calls.** Every request sent to Autotask, with its status code and
 the tool call or job that caused it.
 

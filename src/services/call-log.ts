@@ -30,6 +30,8 @@ export interface ToolCallRecord {
   apiCalls: number;
   cacheHits: number;
   shadowReads: number;
+  /** For autotask_raw_request: what it did, e.g. "POST /Tickets/query". */
+  raw?: string;
 }
 
 export interface ApiCallRecord {
@@ -83,7 +85,141 @@ export async function runToolCall<T extends { isError?: boolean }>(tool: string,
     throw err;
   } finally {
     rec.durationMs ??= Date.now() - started;
+    if (rec.raw) noteGap(rec);
   }
+}
+
+// ── tool gaps: raw_request use and fallbacks ────────────────────────────────
+// autotask_raw_request is the escape hatch: a caller reaches for it when no
+// tool does the job, or after a tool failed. Tallied per request shape for 24 h
+// (who, how often, failures), plus "fallbacks": a tool failed and the same
+// caller used raw_request within FALLBACK_WINDOW_MS — a strong sign that tool
+// is missing something.
+
+/** Request shape: method + path with ids generalised and no query string — "PATCH /Tickets", "GET /Tickets/{id}/Notes". */
+export function rawShape(method: string, path: string): string {
+  const p = cleanPath(String(path ?? '')).split('/').filter(Boolean).map((s) => (/^\d+$/.test(s) ? '{id}' : s)).join('/');
+  return `${String(method ?? '').toUpperCase()} /${p}`;
+}
+
+/** Called by the raw_request tool before it runs. */
+export function noteRawRequest(method: string, path: string): void {
+  const r = scope.getStore()?.tool;
+  if (r) r.raw = rawShape(method, path);
+}
+
+const FALLBACK_WINDOW_MS = 10 * 60_000;
+interface GapCounts { calls: number; errors: number; callers: Map<string, number>; lastAt: string; lastError: string | null }
+interface FallbackCounts { count: number; lastAt: string; lastError: string | null }
+const gapBuckets = new Map<number, Map<string, GapCounts>>();
+const fallbackBuckets = new Map<number, Map<string, FallbackCounts>>();
+const callerKey = (r: ToolCallRecord) => `${r.source ?? 'unknown'}|${r.ip ?? ''}|${r.userAgent ?? ''}`;
+const callerLabel = (r: ToolCallRecord) => [r.source ?? 'unknown', r.ip, r.userAgent].filter(Boolean).join(' · ');
+
+function hourBucket<T>(buckets: Map<number, Map<string, T>>): Map<string, T> {
+  const hour = Math.floor(Date.now() / 3_600_000);
+  let b = buckets.get(hour);
+  if (!b) { b = new Map(); buckets.set(hour, b); for (const h of buckets.keys()) if (h <= hour - HOURS) buckets.delete(h); }
+  return b;
+}
+
+function noteGap(rec: ToolCallRecord): void {
+  const shape = rec.raw!;
+  const failed = isErr(rec.outcome);
+  const g = hourBucket(gapBuckets);
+  const c = g.get(shape) ?? { calls: 0, errors: 0, callers: new Map(), lastAt: rec.at, lastError: null };
+  c.calls++; if (failed) { c.errors++; c.lastError = rec.error; }
+  c.lastAt = rec.at;
+  const who = callerLabel(rec);
+  c.callers.set(who, (c.callers.get(who) ?? 0) + 1);
+  g.set(shape, c);
+  // Fallback: the same caller's most recent failed (non-raw) tool call, shortly before.
+  const key = callerKey(rec), at = Date.parse(rec.at);
+  for (let i = tools.length - 1; i >= 0; i--) {
+    const t = tools[i]!;
+    if (t.id >= rec.id) continue;
+    if (at - Date.parse(t.at) > FALLBACK_WINDOW_MS) break;
+    if (callerKey(t) !== key) continue;
+    if (t.raw) break; // that earlier raw_request already answered for any failure before it
+    if (isErr(t.outcome)) {
+      const f = hourBucket(fallbackBuckets);
+      const fk = `${t.tool}|${shape}`;
+      const fc = f.get(fk) ?? { count: 0, lastAt: rec.at, lastError: null };
+      fc.count++; fc.lastAt = rec.at; fc.lastError = t.error;
+      f.set(fk, fc);
+    }
+    break; // only the call right before counts
+  }
+}
+
+export interface ToolGapStats {
+  since: string;
+  raw: Array<{ shape: string; calls: number; errors: number; lastAt: string; lastError: string | null; callers: Array<{ caller: string; count: number }> }>;
+  fallbacks: Array<{ failedTool: string; thenRaw: string; count: number; lastAt: string; lastError: string | null }>;
+}
+
+/** raw_request use and fallbacks over the last `hours` (max 24). */
+export function toolGapStats(hours = 24): ToolGapStats {
+  const h = Math.min(Math.max(Math.floor(hours), 1), HOURS);
+  const now = Math.floor(Date.now() / 3_600_000);
+  const raw = new Map<string, GapCounts>();
+  for (const [hour, b] of gapBuckets) {
+    if (hour <= now - h) continue;
+    for (const [shape, c] of b) {
+      const a = raw.get(shape) ?? { calls: 0, errors: 0, callers: new Map(), lastAt: c.lastAt, lastError: null };
+      a.calls += c.calls; a.errors += c.errors;
+      if (c.lastAt >= a.lastAt) { a.lastAt = c.lastAt; a.lastError = c.lastError ?? a.lastError; }
+      for (const [k, v] of c.callers) a.callers.set(k, (a.callers.get(k) ?? 0) + v);
+      raw.set(shape, a);
+    }
+  }
+  const fb = new Map<string, FallbackCounts>();
+  for (const [hour, b] of fallbackBuckets) {
+    if (hour <= now - h) continue;
+    for (const [k, c] of b) {
+      const a = fb.get(k) ?? { count: 0, lastAt: c.lastAt, lastError: null };
+      a.count += c.count; if (c.lastAt >= a.lastAt) { a.lastAt = c.lastAt; a.lastError = c.lastError; }
+      fb.set(k, a);
+    }
+  }
+  return {
+    since: new Date((now - h + 1) * 3_600_000).toISOString(),
+    raw: [...raw.entries()].map(([shape, c]) => ({ shape, calls: c.calls, errors: c.errors, lastAt: c.lastAt, lastError: c.lastError,
+      callers: [...c.callers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([caller, count]) => ({ caller, count })) })).sort((a, b) => b.calls - a.calls),
+    fallbacks: [...fb.entries()].map(([k, c]) => { const [failedTool, thenRaw] = k.split('|'); return { failedTool: failedTool!, thenRaw: thenRaw!, count: c.count, lastAt: c.lastAt, lastError: c.lastError }; }).sort((a, b) => b.count - a.count),
+  };
+}
+
+// ── tenant traffic NOT through this MCP ────────────────────────────────────
+// Autotask's ThresholdInformation counts the whole database's requests in its
+// current window (all integrations); this MCP counts its own upstream calls.
+// The difference estimates traffic that never went through the MCP (e.g. n8n
+// nodes with their own Autotask credentials). Sampled whenever usage is read
+// (the shadow does so every run), kept for 24 h.
+interface UsageSample { at: number; tenantUsed: number; limit: number | null; windowMinutes: number | null; mcp: number }
+const usageSamples: UsageSample[] = [];
+
+export function noteTenantUsage(s: { tenantUsed: number | null; limit: number | null; windowMinutes: number | null; mcpLastHour: number }): void {
+  if (s.tenantUsed == null) return;
+  usageSamples.push({ at: Date.now(), tenantUsed: s.tenantUsed, limit: s.limit, windowMinutes: s.windowMinutes, mcp: s.mcpLastHour });
+  const cutoff = Date.now() - 24 * 3_600_000;
+  while (usageSamples.length && usageSamples[0]!.at < cutoff) usageSamples.shift();
+}
+
+export interface OutsideTraffic { at: string; tenantCalls: number; mcpCalls: number; otherCalls: number; otherPct: number; windowMinutes: number | null; samples24h: number; otherMax24h: number; otherAvg24h: number }
+
+/** Latest estimate of calls on the tenant that did not come from this MCP, or null before the first sample. */
+export function outsideTraffic(): OutsideTraffic | null {
+  const last = usageSamples[usageSamples.length - 1];
+  if (!last) return null;
+  const other = (s: UsageSample) => Math.max(0, s.tenantUsed - s.mcp);
+  const others = usageSamples.map(other);
+  return {
+    at: new Date(last.at).toISOString(), tenantCalls: last.tenantUsed, mcpCalls: last.mcp, otherCalls: other(last),
+    otherPct: last.tenantUsed ? Math.round((other(last) / last.tenantUsed) * 1000) / 10 : 0,
+    windowMinutes: last.windowMinutes, samples24h: usageSamples.length,
+    otherMax24h: Math.max(...others), otherAvg24h: Math.round(others.reduce((a, b) => a + b, 0) / others.length),
+  };
 }
 
 /** Run background work (e.g. the shadow sync) so its Autotask calls are labelled. */
@@ -282,4 +418,4 @@ export function callerSummary(minutes = 60): { callers: CallerSummary[]; backgro
 }
 
 /** Tests only. */
-export function _resetCallLog(): void { tools.length = 0; api.length = 0; nextTool = 1; nextApi = 1; buckets.clear(); }
+export function _resetCallLog(): void { tools.length = 0; api.length = 0; nextTool = 1; nextApi = 1; buckets.clear(); gapBuckets.clear(); fallbackBuckets.clear(); usageSamples.length = 0; }

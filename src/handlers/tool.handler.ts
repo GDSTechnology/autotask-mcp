@@ -84,7 +84,7 @@ import {
 } from '../utils/request-context.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
 import { toolAllowed, toolBlockReason } from '../admin/tool-gate.js';
-import { runToolCall, noteToolAudit } from '../services/call-log.js';
+import { runToolCall, noteToolAudit, noteRawRequest } from '../services/call-log.js';
 import { buildTicketCard } from './card.builder.js';
 
 // Default concurrency for company/resource name enrichment. Autotask allows
@@ -2508,6 +2508,7 @@ export class AutotaskToolHandler {
 
       // Raw REST passthrough (escape hatch)
       ['autotask_raw_request', async (a) => {
+        noteRawRequest(a.method, a.path); // admin console "Tool gaps"
         const r = await s.rawRequest(a.method, a.path, a.body, a.queryParams);
         return { result: r, message: `Autotask ${a.method} ${a.path} completed` };
       }],

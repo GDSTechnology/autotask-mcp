@@ -306,6 +306,29 @@ An entity is marked **Candidate to mirror** when it meets all three:
 Those are the ones worth adding to the shadow next. The table can also be
 downloaded as a CSV and is part of the diagnostics bundle.
 
+**Tool gaps (what to build next).** Shows where work goes around the MCP's tools.
+
+- **raw_request use.** `autotask_raw_request` is the escape hatch for sending
+  any request straight to Autotask. Each kind of request is listed (for example
+  `POST /Tickets/query`, `PATCH /TicketNotes`) with how often it was used, how
+  often it failed, and who used it. Each row is marked one of two ways:
+  - **Covered by** an existing tool (matched by name): switch that caller to the
+    tool so it gets the cache, the shadow and the safety checks.
+  - **No tool covers this**: a tool to build.
+- **Fallbacks.** A tool failed, and the same caller used `raw_request` within
+  10 minutes. That points to the tool missing something; the tool's error is
+  shown.
+- **Not through this MCP.** Autotask's usage counter covers the whole database
+  (every integration). The tenant's calls in Autotask's current window, minus
+  this MCP's own calls, estimates the traffic that never went through the MCP:
+  other integrations, or workflows calling Autotask with their own credentials.
+  It is also shown on the Dashboard, with a 24-hour average and peak. The MCP
+  can't see these calls, so it can't say whose they are; Autotask's API usage
+  report lists calls per integration.
+
+Kept for 24 hours in memory. Also available as a CSV and in the diagnostics
+bundle.
+
 **Autotask API calls.** Every request sent to Autotask, with its status code and
 the tool call or job that caused it.
 

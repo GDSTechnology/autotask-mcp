@@ -235,6 +235,11 @@ deletes the volumes, and with them the console's users and the shadow.
 
 ## Day-to-day
 
+**After a deploy, an open console tab shows a banner:** *"Version X was
+deployed — Reload"*. The page's script URLs carry the release version, so a
+reload always gets the new code. Neither the browser nor Cloudflare can keep
+serving the old copy.
+
 Sign in and change the temporary password. Then open **Users → Add a user**: each
 new user gets a generated password shown once, and they choose their own at
 first sign-in.
@@ -250,6 +255,7 @@ first sign-in.
 | Max mirror age (seconds) | How stale the shadow may be and still answer | `MCP_PG_SHADOW_MAX_AGE_SECONDS` |
 | Pause sync at API usage % | Skip sync runs while tenant usage is high | `MCP_PG_SHADOW_PAUSE_AT_PCT` |
 | Read cache | The short-lived Autotask read cache | `AUTOTASK_CACHE` |
+| Caller names | Names for clients that don't declare a `source`, one `pattern=name` rule per line. The pattern matches the IP address exactly, or appears in the user agent. Example: `172.19.0.3=n8n`, `Python-urllib=cron`, `Go-http-client=ChatGPT`. Applies to calls logged from then on. | `MCP_CALLER_LABELS` (comma-separated) |
 
 Changes apply at once and are kept in Postgres, so they survive restarts.
 **Reset to default** returns a setting to the env file's value. A server without

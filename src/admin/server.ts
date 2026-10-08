@@ -98,8 +98,9 @@ const SECURITY_HEADERS: Record<string, string> = {
 
 class HttpError extends Error { constructor(public status: number, message: string, public code?: string) { super(message); } }
 
+let serverVersion = '';
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string | string[]> = {}): void {
-  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'X-Atmcp-Version': serverVersion, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
 }
 
@@ -256,6 +257,19 @@ export function adminHandler(deps: AdminDeps) {
   const trustProxy = env.MCP_ADMIN_TRUST_PROXY == null ? true : boolEnv(env.MCP_ADMIN_TRUST_PROXY);
   const cookieMode = (env.MCP_ADMIN_COOKIE_SECURE ?? 'auto').toLowerCase();
   const statics = loadStatic(env.MCP_ADMIN_UI_DIR || uiDir());
+  serverVersion = opts.version;
+  // Tie the page's scripts to this release: a deploy changes the URLs, so a
+  // browser (or proxy) can never keep running the previous release's code.
+  for (const route of ['/', '/index.html']) {
+    const page = statics.get(route);
+    if (page) {
+      const v = encodeURIComponent(opts.version);
+      const html = page.body.toString('utf8')
+        .replace('src="/app.js"', `src="/app.js?v=${v}"`).replace('href="/app.css"', `href="/app.css?v=${v}"`)
+        .replace('<head>', `<head>\n  <meta name="atmcp-version" content="${opts.version.replace(/[^\w.+-]/g, '')}">`);
+      statics.set(route, { ...page, body: Buffer.from(html, 'utf8') });
+    }
+  }
   const log = (ctx: Ctx, action: string, details: Record<string, unknown> = {}) =>
     store.logEvent(ctx.user?.username ?? null, action, details, ctx.ip).catch((e) => opts.logger.warn('admin: change log write failed', e));
 

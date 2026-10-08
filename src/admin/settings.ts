@@ -7,11 +7,11 @@
 // cache) can read settings cheaply. admin/apply.ts pushes values into the
 // shadow runtime.
 
-export type SettingType = 'boolean' | 'integer' | 'string[]';
+export type SettingType = 'boolean' | 'integer' | 'string[]' | 'lines';
 
 export interface SettingDef {
   key: string;
-  group: 'Tools' | 'Postgres shadow' | 'Autotask API';
+  group: 'Tools' | 'Postgres shadow' | 'Autotask API' | 'Diagnostics';
   label: string;
   description: string;
   type: SettingType;
@@ -59,6 +59,11 @@ export const SETTINGS: SettingDef[] = [
     envDefault: (env) => intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50),
   },
   {
+    key: 'callers.labels', group: 'Diagnostics', type: 'lines', label: 'Caller names',
+    description: 'Names for clients that do not say who they are (shown as "unknown"). One rule per line, pattern=name. The pattern matches the IP address exactly, or appears in the client name (user agent). First match wins. Example: 172.19.0.3=n8n, Python-urllib=cron, Go-http-client=ChatGPT.',
+    envDefault: (env) => (env.MCP_CALLER_LABELS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  },
+  {
     key: 'cache.enabled', group: 'Autotask API', type: 'boolean', label: 'Read cache',
     description: 'Short-lived cache of Autotask reads (writes always clear it). Off sends every read to Autotask.',
     envDefault: (env) => !/^(off|false|0|no)$/i.test(env.AUTOTASK_CACHE ?? ''),
@@ -94,6 +99,18 @@ export function coerceSetting(key: string, value: unknown): unknown {
       if (def.min != null && n < def.min) throw new Error(`${def.label} must be at least ${def.min}.`);
       if (def.max != null && n > def.max) throw new Error(`${def.label} must be at most ${def.max}.`);
       return n;
+    }
+    case 'lines': {
+      const list = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/\r?\n|,/) : null;
+      if (!list || list.some((v) => typeof v !== 'string')) throw new Error(`${def.label} must be a list of lines.`);
+      const lines = list.map((v) => v.trim()).filter(Boolean);
+      if (lines.length > 50) throw new Error(`${def.label}: at most 50 rules.`);
+      for (const l of lines) {
+        const i = l.indexOf('=');
+        if (i < 1 || i === l.length - 1) throw new Error(`${def.label}: "${l}" must look like pattern=name.`);
+        if (l.length - i - 1 > 40) throw new Error(`${def.label}: the name in "${l}" is longer than 40 characters.`);
+      }
+      return lines;
     }
     case 'string[]': {
       if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) throw new Error(`${def.label} must be a list.`);

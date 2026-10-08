@@ -699,6 +699,29 @@ export class AutotaskHttpClient {
       }
     }
 
+    // Plain reads (POST /Entity/query, GET /Entity/{id}) are offered to the
+    // Postgres shadow like any other read. A query is answered only when the
+    // shadow holds the WHOLE result within the page size (asked for one extra
+    // row), so callers that page by nextPageUrl still get Autotask's real link.
+    if (readInterceptor && finalPath === path && getImpersonationResourceId() === undefined) {
+      const tenant = this.username.toLowerCase();
+      const q = /^\/([A-Za-z]+)\/query$/.exec(path);
+      const b = body as { filter?: unknown; MaxRecords?: unknown; maxRecords?: unknown; IncludeFields?: unknown; includeFields?: unknown } | undefined;
+      if (upperMethod === 'POST' && q && Array.isArray(b?.filter)) {
+        const limit = Math.min(Math.max(Number(b!.MaxRecords ?? b!.maxRecords) || AUTOTASK_MAX_PAGE_SIZE, 1), AUTOTASK_MAX_PAGE_SIZE);
+        const rows = await readInterceptor.query(tenant, q[1]!, b!.filter as QueryFilter[], limit + 1).catch(() => null);
+        if (rows && rows.length <= limit) {
+          const fields = (b!.IncludeFields ?? b!.includeFields) as string[] | undefined;
+          return { items: project(rows, Array.isArray(fields) ? fields : undefined), pageDetails: { count: rows.length, requestCount: limit, prevPageUrl: null, nextPageUrl: null } } as T;
+        }
+      }
+      const g = /^\/([A-Za-z]+)\/(\d+)$/.exec(path);
+      if (upperMethod === 'GET' && g) {
+        const hit = await readInterceptor.get(tenant, g[1]!, Number(g[2])).catch(() => undefined);
+        if (hit != null) return { item: hit } as T;
+      }
+    }
+
     const base = await this.baseUrl();
     const absoluteUrl = `${base}${finalPath}`;
     if (new URL(absoluteUrl).host !== new URL(base).host) {

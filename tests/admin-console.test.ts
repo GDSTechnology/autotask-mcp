@@ -185,7 +185,7 @@ describe('admin HTTP API', () => {
     const r = await fetch(base + '/');
     expect(r.status).toBe(200);
     expect(r.headers.get('content-security-policy')).toMatch(/script-src 'self'/);
-    expect(await r.text()).toMatch(/<script src="\/app.js"/);
+    expect(await r.text()).toMatch(/<script src="\/app.js\?v=t"/); // versioned per release (opts.version 't')
   });
 
   test('CSRF: state changes need the custom header and a same-host Origin', async () => {

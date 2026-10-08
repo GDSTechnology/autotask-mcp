@@ -91,6 +91,11 @@ a.button-link:hover { background: var(--chip); }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .error { color: var(--bad); margin: 8px 0 0; }
 
+textarea { width: 100%; min-width: 260px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); font: 13px/1.4 var(--mono); resize: vertical; }
+.setting .control:has(textarea) { flex-direction: column; align-items: stretch; }
+.reload-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 60; background: var(--accent); color: var(--accent-text); padding: 8px 16px; text-align: center; font-weight: 600; }
+.reload-bar button { margin-left: 10px; background: var(--accent-text); color: var(--accent); border-color: var(--accent-text); }
+
 /* settings */
 .setting { display: grid; grid-template-columns: 1fr auto; gap: 6px 18px; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .setting:last-child { border-bottom: 0; }

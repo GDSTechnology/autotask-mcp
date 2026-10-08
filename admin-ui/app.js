@@ -199,7 +199,10 @@ async function dashboard(body) {
           h('dt', null, 'Node'), h('dd', null, s.node))),
       h('section', { class: 'panel' }, h('h2', null, 'Autotask API (whole tenant)'),
         at ? [h('div', { class: 'stat' }, `${at.usedPct ?? '—'}%`, h('small', null, ` of ${fmt(at.limit)} / h`)), usageBar(at.usedPct),
-          h('div', { class: 'muted' }, `${fmt(at.used)} calls this hour · checked ${ago(s.api.autotaskCheckedAt)}`)]
+          h('div', { class: 'muted' }, `${fmt(at.used)} calls this hour · checked ${ago(s.api.autotaskCheckedAt)}`),
+          s.outsideTraffic ? h('dl', { class: 'kv', style: 'margin-top:8px' },
+            h('dt', null, 'Through this MCP'), h('dd', null, fmt(s.outsideTraffic.mcpCalls)),
+            h('dt', { title: 'Tenant total minus this MCP: other integrations, or workflows calling Autotask directly' }, 'Not through this MCP'), h('dd', null, h('span', { class: `badge ${s.outsideTraffic.otherPct >= 25 ? 'warn' : ''}` }, `~${fmt(s.outsideTraffic.otherCalls)} (${s.outsideTraffic.otherPct}%)`))) : null]
           : h('p', { class: 'muted' }, s.autotaskAuth ? 'Paused: Autotask rejected the credentials (see above).' : s.api && s.api.autotask && s.api.autotask.error ? `Unavailable: ${s.api.autotask.error}` : noApi)),
       h('section', { class: 'panel' }, h('h2', null, 'This MCP’s calls'),
         srv ? [h('div', { class: 'stat' }, fmt(srv.upstreamLastHour), h('small', null, ' last hour')),
@@ -314,7 +317,8 @@ async function calls(body) {
   async function draw() {
     const [sum, list] = await Promise.all([
       api('GET', '/api/calls/summary?minutes=60'),
-      state.tab === 'entities' ? api('GET', `/api/calls/entities?hours=${state.hours}`).then((r) => ({ ...r, calls: r.entities.filter((e) => !state.tool || e.entity.toLowerCase().includes(state.tool.toLowerCase())) }))
+      state.tab === 'gaps' ? api('GET', `/api/calls/gaps?hours=${state.hours}`).then((r) => ({ ...r, calls: r.raw.filter((x) => !state.tool || x.shape.toLowerCase().includes(state.tool.toLowerCase())) }))
+      : state.tab === 'entities' ? api('GET', `/api/calls/entities?hours=${state.hours}`).then((r) => ({ ...r, calls: r.entities.filter((e) => !state.tool || e.entity.toLowerCase().includes(state.tool.toLowerCase())) }))
       : state.tab === 'logs' ? api('GET', '/api/logs?limit=300').then((r) => ({ calls: r.logs.filter((l) => (!state.errors || l.level === 'error') && (!state.tool || (l.message + (l.meta || '')).toLowerCase().includes(state.tool.toLowerCase()))) }))
         : api('GET', `/api/calls/${state.tab === 'tools' ? 'tools' : 'api'}?${qs()}`),
     ]);
@@ -338,7 +342,31 @@ async function calls(body) {
         : h('p', { class: 'muted' }, 'No calls in the last hour.'));
 
     let table;
-    if (state.tab === 'entities') {
+    if (state.tab === 'gaps') {
+      const o = list.outside;
+      table = h('div', null,
+        o ? h('div', { class: `banner ${o.otherPct >= 25 ? 'warn' : ''}` },
+          h('strong', null, `Not through this MCP: ~${fmt(o.otherCalls)} of ${fmt(o.tenantCalls)} Autotask calls (${o.otherPct}%) in Autotask's current ${o.windowMinutes || 60}-minute window. `),
+          `24 h: average ~${fmt(o.otherAvg24h)}, peak ~${fmt(o.otherMax24h)}. These are other integrations, or workflows calling Autotask with their own credentials — invisible to the MCP. Autotask's own API usage report lists calls per integration, which tells you whose they are.`)
+          : h('div', { class: 'banner' }, 'The "not through this MCP" estimate appears after the first Autotask usage check (within 5 minutes when the shadow runs).'),
+        h('h3', null, 'raw_request use (the escape hatch)'),
+        list.calls.length ? h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Request'), h('th', { class: 'num' }, 'Calls'), h('th', { class: 'num' }, 'Failed'), h('th', null, 'Existing tool'), h('th', null, 'Who'), h('th', null, 'Last'))),
+          h('tbody', null, list.calls.map((r) => h('tr', null,
+            h('td', { class: 'mono' }, r.shape, r.lastError ? h('div', { class: 'error', style: 'margin:2px 0 0;font-size:12px' }, r.lastError) : null),
+            h('td', { class: 'num' }, fmt(r.calls)), h('td', { class: 'num' }, r.errors ? h('span', { class: 'badge bad' }, fmt(r.errors)) : '0'),
+            h('td', null, r.coveredBy ? [h('span', { class: 'badge ok' }, 'Covered'), ' ', h('span', { class: 'mono' }, r.coveredBy.replace(/^autotask_/, '')), h('div', { class: 'muted', style: 'font-size:12px' }, 'switch the caller to this tool')] : h('span', { class: 'badge warn' }, 'No tool covers this — build one')),
+            h('td', { class: 'muted' }, r.callers.map((c) => h('div', { class: 'mono' }, `${c.caller} × ${fmt(c.count)}`))),
+            h('td', { class: 'muted' }, ago(r.lastAt))))))
+          : h('p', { class: 'muted' }, 'No raw_request calls in this period.'),
+        h('h3', null, 'Fallbacks: a tool failed, then the same caller used raw_request'),
+        list.fallbacks.length ? h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Tool that failed'), h('th', null, 'Then raw_request'), h('th', { class: 'num' }, 'Times'), h('th', null, 'Tool error'), h('th', null, 'Last'))),
+          h('tbody', null, list.fallbacks.map((f) => h('tr', null,
+            h('td', { class: 'mono' }, f.failedTool.replace(/^autotask_/, '')), h('td', { class: 'mono' }, f.thenRaw), h('td', { class: 'num' }, fmt(f.count)),
+            h('td', { class: 'muted' }, f.lastError || '—'), h('td', { class: 'muted' }, ago(f.lastAt))))))
+          : h('p', { class: 'muted' }, 'None in this period.'));
+    } else if (state.tab === 'entities') {
       const keep = (e) => {
         const out = [];
         if (e.mirrored) out.push(h('span', { class: `badge ${e.servedFromShadow ? 'ok' : ''}` }, e.servedFromShadow ? 'Mirrored · serving' : 'Mirrored · not serving'));
@@ -396,12 +424,14 @@ async function calls(body) {
     content.replaceChildren(callers,
       h('section', { class: 'panel' },
         h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:10px' },
-          h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls'), tabBtn('entities', 'Reads by entity'), tabBtn('logs', 'Server log'),
-            state.tab === 'entities' ? h('select', { style: 'max-width:150px', 'aria-label': 'Period', onchange: (e) => { state.hours = Number(e.target.value); draw(); } }, [1, 6, 24].map((n) => { const o = h('option', { value: String(n) }, `Last ${n} h`); o.selected = n === state.hours; return o; })) : null),
+          h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls'), tabBtn('entities', 'Reads by entity'), tabBtn('gaps', 'Tool gaps'), tabBtn('logs', 'Server log'),
+            state.tab === 'entities' || state.tab === 'gaps' ? h('select', { style: 'max-width:150px', 'aria-label': 'Period', onchange: (e) => { state.hours = Number(e.target.value); draw(); } }, [1, 6, 24].map((n) => { const o = h('option', { value: String(n) }, `Last ${n} h`); o.selected = n === state.hours; return o; })) : null),
           h('div', { class: 'row' }, toolBox, state.tab === 'tools' ? sourceSel : null,
             h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center;margin:0' }, errBox, 'Errors only'))),
-        list.calls.length ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, state.tab === 'logs' ? 'No warnings or errors since the server started.' : state.tab === 'entities' ? 'No Autotask reads recorded in this period yet.' : 'Nothing matches.'),
-        h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'entities'
+        list.calls.length || state.tab === 'gaps' ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, state.tab === 'logs' ? 'No warnings or errors since the server started.' : state.tab === 'entities' ? 'No Autotask reads recorded in this period yet.' : 'Nothing matches.'),
+        h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'gaps'
+          ? '"Covered": an existing tool does the same thing (matched by name), so point that caller at it to get the cache, the shadow and the safety checks. "No tool covers this": a tool to build. Fallbacks show which tool is missing something.'
+          : state.tab === 'entities'
           ? `Where each read was answered: Autotask, the short-lived read cache, or the Postgres shadow. "Candidate to mirror": ${list.candidateRule}. Counts reset on restart.`
           : state.tab === 'logs'
           ? 'Warnings and errors the server logged since it started (last 500). Credential-like fields are redacted.'
@@ -419,6 +449,7 @@ async function calls(body) {
       dl('Tool calls (CSV)', 'kind=tools&format=csv'),
       dl('Autotask calls (CSV)', 'kind=api&format=csv'),
       dl('Reads by entity (CSV)', 'kind=entities&format=csv'),
+      dl('Tool gaps (CSV)', 'kind=gaps&format=csv'),
       dl('Server log (CSV)', 'kind=logs&format=csv')),
     h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'The bundle holds the dashboard status, settings, callers for the last 24 h, every logged tool and Autotask call, the server log' + (me.role === 'admin' ? ', and the console activity log.' : '.')));
   body.replaceChildren(

@@ -9,6 +9,7 @@
 import { resolveAutotaskApiUrl, resolveAutotaskWebUrl } from '../utils/config';
 import { AutotaskHttpClient, QueryFilter } from './autotask-http';
 import { usageSnapshot, ApiUsageSnapshot } from './http-cache';
+import { noteTenantUsage } from './call-log.js';
 import {
   classifyReferenceMatches,
   ReferenceCandidate,
@@ -701,7 +702,9 @@ export class AutotaskService {
       const t = await http.thresholdInformation();
       const used = t.currentTimeframeRequestCount ?? null;
       const limit = t.externalRequestThreshold ?? null;
-      return { server: snap(), autotask: { used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, usedPct: used != null && limit ? Math.round((used / limit) * 1000) / 10 : null } };
+      const server = snap();
+      noteTenantUsage({ tenantUsed: used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, mcpLastHour: server.upstreamLastHour });
+      return { server, autotask: { used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, usedPct: used != null && limit ? Math.round((used / limit) * 1000) / 10 : null } };
     } catch (error) {
       return { server: snap(), autotask: { error: error instanceof Error ? error.message : String(error) } };
     }

@@ -33,7 +33,7 @@ import { AdminStore, AdminUser, AdminRole } from './store.js';
 import { dummyPasswordHash, generatePassword, passwordProblem, validUsername, verifyPassword } from './passwords.js';
 import { SETTINGS, settingDef, settingValue, isOverridden, loadOverrides, setOverride, clearOverride, coerceSetting } from './settings.js';
 import { toolAllowed, toolCategoryNames, isWriteTool } from './tool-gate.js';
-import { callerSummary, recentToolCalls, recentApiCalls, runJob, entityReadStats, type CallQuery } from '../services/call-log.js';
+import { callerSummary, recentToolCalls, recentApiCalls, runJob, entityReadStats, toolGapStats, outsideTraffic, type CallQuery } from '../services/call-log.js';
 import { classify, ttlMs, cacheEnabled } from '../services/http-cache.js';
 import { shadowEntity } from '../db/shadow-entities.js';
 import { authBlockStatus, clearAuthBlock } from '../services/autotask-http.js';
@@ -250,6 +250,46 @@ export function readSourceReport(hours = 24): Record<string, unknown> {
   };
 }
 
+// ── tool gaps: which existing tool covers a raw request ─────────────────────
+const toolNames = new Map(TOOL_DEFINITIONS.map((t) => [t.name.replace(/_/g, '').toLowerCase(), t.name]));
+const singular = (w: string) => w.replace(/ies$/i, 'y').replace(/(ch|sh|x|ss)es$/i, '$1').replace(/s$/i, '');
+
+/**
+ * The tool that already does what a raw request does, by naming convention:
+ * POST /X/query → search_x, GET /X/{id} → get_<x>, POST /X → create_<x>,
+ * PATCH|PUT /X → update_<x>, DELETE /X/{id} → delete_<x>; child routes
+ * (/Tickets/{id}/Notes) use parent + child (search_ticket_notes,
+ * create_ticket_note). Null = no tool covers it — a candidate to build.
+ */
+export function coveringTool(shape: string): string | null {
+  const [method, path] = shape.split(' ');
+  const seg = (path ?? '').split('/').filter(Boolean);
+  if (!seg.length) return null;
+  let entity = seg[0]!, rest = seg.slice(1);
+  if (rest[0] === '{id}' && rest[1] && rest[1] !== 'query') { entity = singular(seg[0]!) + rest[1]; rest = rest.slice(2); } // child route
+  const plural = entity.toLowerCase(), one = singular(entity).toLowerCase();
+  const verbs: string[] = [];
+  if (method === 'POST' && rest[0] === 'query') verbs.push(`search${plural}`, `list${plural}`);
+  else if (method === 'GET' && rest[0] === '{id}') verbs.push(`get${one}`, `get${one}details`);
+  else if (method === 'GET' && rest[0] === 'entityInformation') verbs.push('getfieldinfo', 'getpicklists');
+  else if (method === 'POST' && !rest.length) verbs.push(`create${one}`, `add${one}`);
+  else if ((method === 'PATCH' || method === 'PUT') && (!rest.length || rest[0] === '{id}')) verbs.push(`update${one}`);
+  else if (method === 'DELETE') verbs.push(`delete${one}`, `remove${one}`);
+  for (const v of verbs) { const t = toolNames.get(`autotask${v}`); if (t) return t; }
+  return null;
+}
+
+/** raw_request use with the covering tool (or none), fallbacks, and outside-MCP traffic. */
+export function toolGapReport(hours = 24): Record<string, unknown> {
+  const g = toolGapStats(hours);
+  return {
+    since: g.since,
+    raw: g.raw.map((r) => ({ ...r, coveredBy: coveringTool(r.shape) })),
+    fallbacks: g.fallbacks,
+    outside: outsideTraffic(),
+  };
+}
+
 /** Build the request handler (exported for tests). */
 export function adminHandler(deps: AdminDeps) {
   const { store, opts } = deps;
@@ -321,6 +361,7 @@ export function adminHandler(deps: AdminDeps) {
       node: process.version,
       authMode: opts.authMode,
       autotaskAuth: tenant ? authBlockStatus(tenant) : null,
+      outsideTraffic: tenant ? outsideTraffic() : null,
       api: tenant ? { server: usageSnapshot(tenant, 15), autotask: thresholdCache?.value ?? null, autotaskCheckedAt: thresholdCache ? new Date(thresholdCache.at).toISOString() : null } : null,
       postgres: { enabled: pg.enabled, ok: pg.ok, latencyMs: pg.latencyMs ?? null, error: pg.error ?? null },
       shadow: rt ? {
@@ -415,6 +456,7 @@ export function adminHandler(deps: AdminDeps) {
       if (q.get('errors') === '1') query.errorsOnly = true;
       if (path === '/api/calls/summary') return send(res, 200, callerSummary(Math.min(num('minutes') ?? 60, 24 * 60)));
       if (path === '/api/calls/entities') return send(res, 200, readSourceReport(num('hours') ?? 24));
+      if (path === '/api/calls/gaps') return send(res, 200, toolGapReport(num('hours') ?? 24));
       if (path === '/api/calls/tools') return send(res, 200, { calls: recentToolCalls(query) });
       if (path === '/api/calls/api') return send(res, 200, { calls: recentApiCalls(query) });
     }
@@ -433,6 +475,7 @@ export function adminHandler(deps: AdminDeps) {
       if (kind === 'tools') rows = recentToolCalls({ limit: 10_000 }) as unknown as Array<Record<string, unknown>>;
       else if (kind === 'api') rows = recentApiCalls({ limit: 10_000 }) as unknown as Array<Record<string, unknown>>;
       else if (kind === 'logs') rows = recentLogs() as unknown as Array<Record<string, unknown>>;
+      else if (kind === 'gaps') rows = (toolGapReport(24).raw as Array<Record<string, unknown>>).map((r) => ({ ...r, callers: (r.callers as Array<{ caller: string; count: number }>).map((c) => `${c.caller} x${c.count}`).join('; ') }));
       else if (kind === 'entities') rows = (readSourceReport(24).entities as Array<Record<string, unknown>>).map((e) => ({ ...e, topCallers: (e.topCallers as Array<{ caller: string; count: number }>).map((c) => `${c.caller} x${c.count}`).join('; ') }));
       else if (kind === 'bundle') {
         const bundle = {
@@ -440,12 +483,13 @@ export function adminHandler(deps: AdminDeps) {
           note: 'Autotask MCP diagnostics. Contains no credentials, tool arguments or response bodies.',
           status: await status(), settings: settingsView(), callers: callerSummary(24 * 60),
           readsByEntity: readSourceReport(24),
+          toolGaps: toolGapReport(24),
           toolCalls: recentToolCalls({ limit: 10_000 }), apiCalls: recentApiCalls({ limit: 10_000 }), serverLog: recentLogs(),
           ...(u.role === 'admin' ? { consoleActivity: await store.listEvents(500) } : {}),
         };
         void log(ctx, 'export', { kind });
         return sendFile(res, `autotask-mcp-diagnostics-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(bundle, null, 2));
-      } else throw new HttpError(400, 'kind must be tools, api, entities, logs or bundle.');
+      } else throw new HttpError(400, 'kind must be tools, api, entities, gaps, logs or bundle.');
       void log(ctx, 'export', { kind, format });
       return format === 'csv'
         ? sendFile(res, `autotask-mcp-${kind}-${stamp}.csv`, 'text/csv; charset=utf-8', toCsv(rows))

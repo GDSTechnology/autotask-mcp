@@ -160,6 +160,18 @@ async function dashboard(body) {
     const banners = [];
     if (!s.tools.writesEnabled) banners.push(h('div', { class: 'banner warn' }, 'Read-only mode: write tools are switched off for every agent.'));
     if (s.tools.disabledCategories.length) banners.push(h('div', { class: 'banner warn' }, `Disabled tool groups: ${s.tools.disabledCategories.join(', ')}.`));
+    if (s.autotaskAuth) {
+      const a = s.autotaskAuth;
+      const retry = me.role === 'admin' ? h('button', { class: 'small', style: 'margin-left:10px', onclick: async (e) => {
+        e.target.disabled = true;
+        try { toast((await api('POST', '/api/actions/auth-retry', {})).message); await draw(); } catch (x) { toast(x.message); e.target.disabled = false; }
+      } }, 'Retry now') : null;
+      banners.push(a.blockedUntil
+        ? h('div', { class: 'banner bad' }, h('strong', null, 'Autotask rejected the API credentials. '),
+            `Autotask calls are paused until ${new Date(a.blockedUntil).toLocaleTimeString()} (failure ${a.failures} since ${new Date(a.since).toLocaleTimeString()}) so repeated failed logins don't lock the API user. Fix the user in Autotask (unlock it, or update the secret in the env file), then retry.`, retry,
+            h('div', { class: 'mono', style: 'margin-top:6px;font-size:12px' }, a.lastError))
+        : h('div', { class: 'banner warn' }, 'Autotask rejected the credentials earlier; the next Autotask call will test them again.', retry));
+    }
     if (s.postgres.enabled && !s.postgres.ok) banners.push(h('div', { class: 'banner bad' }, `Postgres is unreachable: ${s.postgres.error || 'unknown error'}`));
     if (at && at.usedPct >= 75) banners.push(h('div', { class: 'banner bad' }, `Autotask API usage is at ${at.usedPct}% — Autotask is adding a 1 s delay to every call.`));
     else if (at && at.usedPct >= 50) banners.push(h('div', { class: 'banner warn' }, `Autotask API usage is at ${at.usedPct}% — Autotask is adding a 0.5 s delay to every call.`));
@@ -175,7 +187,7 @@ async function dashboard(body) {
       h('section', { class: 'panel' }, h('h2', null, 'Autotask API (whole tenant)'),
         at ? [h('div', { class: 'stat' }, `${at.usedPct ?? '—'}%`, h('small', null, ` of ${fmt(at.limit)} / h`)), usageBar(at.usedPct),
           h('div', { class: 'muted' }, `${fmt(at.used)} calls this hour · checked ${ago(s.api.autotaskCheckedAt)}`)]
-          : h('p', { class: 'muted' }, s.api && s.api.autotask && s.api.autotask.error ? `Unavailable: ${s.api.autotask.error}` : noApi)),
+          : h('p', { class: 'muted' }, s.autotaskAuth ? 'Paused: Autotask rejected the credentials (see above).' : s.api && s.api.autotask && s.api.autotask.error ? `Unavailable: ${s.api.autotask.error}` : noApi)),
       h('section', { class: 'panel' }, h('h2', null, 'This MCP’s calls'),
         srv ? [h('div', { class: 'stat' }, fmt(srv.upstreamLastHour), h('small', null, ' last hour')),
           h('dl', { class: 'kv' },
@@ -289,7 +301,8 @@ async function calls(body) {
   async function draw() {
     const [sum, list] = await Promise.all([
       api('GET', '/api/calls/summary?minutes=60'),
-      api('GET', `/api/calls/${state.tab === 'tools' ? 'tools' : 'api'}?${qs()}`),
+      state.tab === 'logs' ? api('GET', '/api/logs?limit=300').then((r) => ({ calls: r.logs.filter((l) => (!state.errors || l.level === 'error') && (!state.tool || (l.message + (l.meta || '')).toLowerCase().includes(state.tool.toLowerCase()))) }))
+        : api('GET', `/api/calls/${state.tab === 'tools' ? 'tools' : 'api'}?${qs()}`),
     ]);
     const sources = [...new Set(sum.callers.map((c) => c.source))].sort();
     if (sourceSel.options.length - 1 !== sources.length) {
@@ -311,7 +324,14 @@ async function calls(body) {
         : h('p', { class: 'muted' }, 'No calls in the last hour.'));
 
     let table;
-    if (state.tab === 'tools') {
+    if (state.tab === 'logs') {
+      table = h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Level'), h('th', null, 'Message'))),
+        h('tbody', null, list.calls.map((l) => h('tr', null,
+          h('td', { class: 'muted', style: 'white-space:nowrap' }, `${new Date(l.at).toLocaleDateString()} ${timeOf(l.at)}`),
+          h('td', null, h('span', { class: `badge ${l.level === 'error' ? 'bad' : 'warn'}` }, l.level)),
+          h('td', null, l.message, l.meta ? h('div', { class: 'mono muted', style: 'word-break:break-all' }, l.meta) : null)))));
+    } else if (state.tab === 'tools') {
       const rows = [];
       for (const c of list.calls) {
         const detail = h('td', { colspan: '6' });
@@ -346,20 +366,32 @@ async function calls(body) {
     content.replaceChildren(callers,
       h('section', { class: 'panel' },
         h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:10px' },
-          h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls')),
+          h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls'), tabBtn('logs', 'Server log')),
           h('div', { class: 'row' }, toolBox, state.tab === 'tools' ? sourceSel : null,
             h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center;margin:0' }, errBox, 'Errors only'))),
-        list.calls.length ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, 'Nothing matches.'),
-        h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'tools'
+        list.calls.length ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, state.tab === 'logs' ? 'No warnings or errors since the server started.' : 'Nothing matches.'),
+        h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'logs'
+          ? 'Warnings and errors the server logged since it started (last 500). Credential-like fields are redacted.'
+          : state.tab === 'tools'
           ? 'Newest first; click a row to see the Autotask calls it made. Arguments are never recorded.'
           : 'Newest first. Calls answered from the read cache or the Postgres shadow never reach Autotask, so they are not listed here.')));
   }
 
+  const dl = (label, q) => h('a', { class: 'button-link', href: `/api/export?${q}`, download: '' }, label);
+  const exportPanel = h('section', { class: 'panel' },
+    h('h2', null, 'Export for testing and issue tracking'),
+    h('p', { class: 'muted' }, 'Downloads what is in memory right now. Never includes credentials, tool arguments or response bodies.'),
+    h('div', { class: 'row' },
+      dl('Diagnostics bundle (JSON)', 'kind=bundle'),
+      dl('Tool calls (CSV)', 'kind=tools&format=csv'),
+      dl('Autotask calls (CSV)', 'kind=api&format=csv'),
+      dl('Server log (CSV)', 'kind=logs&format=csv')),
+    h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'The bundle holds the dashboard status, settings, callers for the last 24 h, every logged tool and Autotask call, the server log' + (me.role === 'admin' ? ', and the console activity log.' : '.')));
   body.replaceChildren(
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('h1', null, 'Calls'),
       h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, autoBox, 'Refresh every 10 s')),
     h('p', { class: 'muted' }, 'Recent tool calls from n8n, ChatGPT and other clients, and every request this MCP sent to Autotask. Kept in memory: the last 500 tool calls and 2,000 Autotask calls since the server started.'),
-    content);
+    content, exportPanel);
   await draw();
   refreshTimer = setInterval(() => { if (state.auto && document.visibilityState === 'visible') draw().catch(() => undefined); }, 10_000);
 }

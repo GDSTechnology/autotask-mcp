@@ -34,6 +34,8 @@ import { dummyPasswordHash, generatePassword, passwordProblem, validUsername, ve
 import { SETTINGS, settingDef, settingValue, isOverridden, loadOverrides, setOverride, clearOverride, coerceSetting } from './settings.js';
 import { toolAllowed, toolCategoryNames, isWriteTool } from './tool-gate.js';
 import { callerSummary, recentToolCalls, recentApiCalls, runJob, type CallQuery } from '../services/call-log.js';
+import { authBlockStatus, clearAuthBlock } from '../services/autotask-http.js';
+import { recentLogs } from '../utils/logger.js';
 
 export interface AdminConsoleOptions {
   logger: Logger;
@@ -97,6 +99,23 @@ class HttpError extends Error { constructor(public status: number, message: stri
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string | string[]> = {}): void {
   res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
+}
+
+function sendFile(res: ServerResponse, filename: string, type: string, body: string): void {
+  res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': type, 'Cache-Control': 'no-store', 'Content-Disposition': `attachment; filename="${filename}"` });
+  res.end(body);
+}
+
+/** CSV with formula-injection guard (a cell starting with = + - @ is prefixed with '). */
+export function toCsv(rows: Array<Record<string, unknown>>): string {
+  if (!rows.length) return '';
+  const cols = Object.keys(rows[0]!);
+  const cell = (v: unknown): string => {
+    let s = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [cols.join(','), ...rows.map((r) => cols.map((c) => cell(r[c])).join(','))].join('\r\n') + '\r\n';
 }
 
 async function readJson(req: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
@@ -228,7 +247,9 @@ export function adminHandler(deps: AdminDeps) {
     const rt = getShadowRuntime();
     const tenant = opts.authMode === 'env' ? opts.apiUsername?.toLowerCase() : undefined;
     // Autotask's own counter costs an API call — refresh at most every 5 minutes.
-    if (tenant && (!thresholdCache || Date.now() - thresholdCache.at > 300_000)) {
+    // Errors are kept only a minute, so a fixed account shows up quickly.
+    const ttl = thresholdCache && (thresholdCache.value as { error?: unknown } | null)?.error ? 60_000 : 300_000;
+    if (tenant && (!thresholdCache || Date.now() - thresholdCache.at > ttl)) {
       const u = await runJob('admin console', () => opts.service.getApiUsage()).catch((e) => ({ autotask: { error: String(e) } }));
       thresholdCache = { at: Date.now(), value: u.autotask };
     }
@@ -252,6 +273,7 @@ export function adminHandler(deps: AdminDeps) {
       uptimeSeconds: Math.round((Date.now() - deps.startedAt) / 1000),
       node: process.version,
       authMode: opts.authMode,
+      autotaskAuth: tenant ? authBlockStatus(tenant) : null,
       api: tenant ? { server: usageSnapshot(tenant, 15), autotask: thresholdCache?.value ?? null, autotaskCheckedAt: thresholdCache ? new Date(thresholdCache.at).toISOString() : null } : null,
       postgres: { enabled: pg.enabled, ok: pg.ok, latencyMs: pg.latencyMs ?? null, error: pg.error ?? null },
       shadow: rt ? {
@@ -349,6 +371,37 @@ export function adminHandler(deps: AdminDeps) {
       if (path === '/api/calls/api') return send(res, 200, { calls: recentApiCalls(query) });
     }
 
+    if (path === '/api/logs' && method === 'GET') {
+      requireUser(ctx);
+      const n = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('limit')) || 200;
+      return send(res, 200, { logs: recentLogs(n) });
+    }
+    if (path === '/api/export' && method === 'GET') {
+      const u = requireUser(ctx);
+      const q = new URL(req.url ?? '/', 'http://x').searchParams;
+      const kind = q.get('kind') ?? 'bundle', format = q.get('format') === 'csv' && kind !== 'bundle' ? 'csv' : 'json';
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      let rows: Array<Record<string, unknown>>;
+      if (kind === 'tools') rows = recentToolCalls({ limit: 10_000 }) as unknown as Array<Record<string, unknown>>;
+      else if (kind === 'api') rows = recentApiCalls({ limit: 10_000 }) as unknown as Array<Record<string, unknown>>;
+      else if (kind === 'logs') rows = recentLogs() as unknown as Array<Record<string, unknown>>;
+      else if (kind === 'bundle') {
+        const bundle = {
+          exportedAt: new Date().toISOString(), exportedBy: u.username,
+          note: 'Autotask MCP diagnostics. Contains no credentials, tool arguments or response bodies.',
+          status: await status(), settings: settingsView(), callers: callerSummary(24 * 60),
+          toolCalls: recentToolCalls({ limit: 10_000 }), apiCalls: recentApiCalls({ limit: 10_000 }), serverLog: recentLogs(),
+          ...(u.role === 'admin' ? { consoleActivity: await store.listEvents(500) } : {}),
+        };
+        void log(ctx, 'export', { kind });
+        return sendFile(res, `autotask-mcp-diagnostics-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(bundle, null, 2));
+      } else throw new HttpError(400, 'kind must be tools, api, logs or bundle.');
+      void log(ctx, 'export', { kind, format });
+      return format === 'csv'
+        ? sendFile(res, `autotask-mcp-${kind}-${stamp}.csv`, 'text/csv; charset=utf-8', toCsv(rows))
+        : sendFile(res, `autotask-mcp-${kind}-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(rows, null, 2));
+    }
+
     // ── admin ──
     const settingMatch = /^\/api\/settings\/([A-Za-z0-9_.]+)$/.exec(path);
     if (settingMatch && method === 'PUT') {
@@ -373,6 +426,14 @@ export function adminHandler(deps: AdminDeps) {
       return send(res, 200, { settings: settingsView() });
     }
 
+    if (path === '/api/actions/auth-retry' && method === 'POST') {
+      requireUser(ctx, 'admin');
+      const tenant = opts.authMode === 'env' ? opts.apiUsername?.toLowerCase() : undefined;
+      const cleared = tenant ? clearAuthBlock(tenant) : false;
+      thresholdCache = null; // re-check usage (the probe) on the next dashboard refresh
+      void log(ctx, 'action.auth_retry', { cleared });
+      return send(res, 200, { ok: true, message: cleared ? 'Pause cleared. The next Autotask call will test the credentials. Watch the Calls page for a 200.' : 'There was no pause to clear.' });
+    }
     if (path === '/api/actions/shadow-sync' && method === 'POST') {
       requireUser(ctx, 'admin');
       const rt = getShadowRuntime();

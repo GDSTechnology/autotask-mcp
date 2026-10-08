@@ -86,6 +86,8 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 button.primary:hover { filter: brightness(1.08); }
 button.danger { color: var(--bad); }
 button.small { padding: 3px 9px; font-size: 12.5px; }
+a.button-link { display: inline-block; font-weight: 600; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel); color: var(--text); text-decoration: none; }
+a.button-link:hover { background: var(--chip); }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .error { color: var(--bad); margin: 8px 0 0; }
 

@@ -73,7 +73,9 @@ describe('AutotaskHttpClient 401 retry (stale zone cache)', () => {
       await expect(client.get('Companies', 123)).rejects.toThrow(/HTTP 401/);
       // First attempt + retry attempt, both against the same (only-configured) zone,
       // proving the retry actually fired rather than the first 401 propagating straight up.
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls.filter((c: any[]) => !String(c[0]).includes('ThresholdInformation')).length).toBe(2);
+      // …then one ThresholdInformation check confirms it's the login, not the entity (auth pause).
+      expect(fetchMock.mock.calls.filter((c: any[]) => String(c[0]).includes('ThresholdInformation')).length).toBe(1);
     } finally {
       fetchMock.mockRestore();
     }
@@ -137,7 +139,7 @@ describe('AutotaskHttpClient 401 retry (stale zone cache)', () => {
 
     try {
       await expect(client.get('Companies', 123)).rejects.toThrow(/HTTP 401/);
-      expect(fetchMock).toHaveBeenCalledTimes(2); // original + exactly one retry, then throws
+      expect(fetchMock.mock.calls.filter((c: any[]) => !String(c[0]).includes('ThresholdInformation')).length).toBe(2); // original + exactly one retry, then throws
     } finally {
       fetchMock.mockRestore();
     }
@@ -160,7 +162,7 @@ describe('AutotaskHttpClient 401 retry (stale zone cache)', () => {
       await expect(
         client.rawRequest('GET', '/Companies/query/next?paging=abc')
       ).rejects.toThrow(/HTTP 401/);
-      expect(fetchMock).toHaveBeenCalledTimes(1); // no retry
+      expect(fetchMock.mock.calls.filter((c: any[]) => !String(c[0]).includes('ThresholdInformation')).length).toBe(1); // no retry
     } finally {
       fetchMock.mockRestore();
     }

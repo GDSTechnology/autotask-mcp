@@ -298,6 +298,57 @@ What the log keeps:
 - Tool arguments and response bodies are **never** recorded. It keeps the tool
   name, caller, result, timings, and a shortened error message.
 
+### Autotask login protection
+
+Autotask **locks an API user** after repeated failed logins. Every client of this
+MCP (n8n, cron, ChatGPT) shares that one user, so a lock stops all of them.
+
+What the MCP does when Autotask rejects the credentials (HTTP 401):
+
+1. **It checks it's really the login.** The MCP makes one request that any API
+   user can make (Autotask's usage counter). If that request succeeds, the 401 was
+   only about one entity the user isn't allowed to see, and nothing is paused.
+2. **It pauses.** Every Autotask call for that API user stops at the MCP and
+   fails at once with "credentials rejected, calls paused". None of them reaches
+   Autotask, so they add no further failed logins.
+3. **It tests again later.** When the pause ends, the next call is a **single
+   test call**; every other call waits for its answer.
+   - If the test call works, normal service resumes.
+   - If it fails, the pause starts again, twice as long: 5 → 10 → 20 → 40 →
+     60 minutes.
+4. **It shows up in the console.**
+   - The **Dashboard** shows a red banner with the error, when the pause ends,
+     and a **Retry now** button (administrators).
+   - `/health` gains an `autotaskAuth` block.
+
+**After a lock:**
+
+1. Unlock the API user in Autotask, or, if the secret changed, update it in the
+   env file and recreate the MCP.
+2. Press **Retry now**.
+3. Watch the **Calls** page: new Autotask calls should show **200**.
+
+**Settings:**
+- `AUTOTASK_AUTH_PAUSE_SECONDS` sets the first pause (default `300`).
+- `0` turns the protection off; that is not recommended.
+
+### Export (testing and issue tracking)
+
+The **Calls** page has download links:
+
+| Download | Contents |
+|---|---|
+| **Diagnostics bundle (JSON)** | One file for a support ticket or a bug report: <br>- dashboard status and settings <br>- callers for the last 24 hours <br>- every logged tool call and Autotask call <br>- the server log <br>- for administrators, the console activity log |
+| **Tool calls / Autotask calls / Server log (CSV)** | For a spreadsheet |
+
+**Server log tab:** the warnings and errors the server logged since it started
+(the last 500). This is the same text `docker compose logs` shows, without
+SSH. Fields whose names look like credentials are replaced with
+`[redacted]`.
+
+**What exports never contain:** credentials, tool arguments, or response
+bodies. Every export is recorded in the activity log.
+
 ### Locked out?
 
 On the host:
@@ -349,4 +400,5 @@ commands:
 | `MCP_ADMIN_PORT` | `8090` | Console port inside the container |
 | `MCP_ADMIN_HOST` | `0.0.0.0` | Bind address |
 | `MCP_ADMIN_COOKIE_SECURE` | `auto` | `auto` = Secure cookie when the proxy says HTTPS (`X-Forwarded-Proto`); `true` / `false` to force |
+| `AUTOTASK_AUTH_PAUSE_SECONDS` | `300` | First pause after Autotask rejects the API credentials (doubles per repeat, max 60 min); `0` disables. See "Autotask login protection" |
 | `MCP_ADMIN_TRUST_PROXY` | `true` | Use `CF-Connecting-IP` / `X-Forwarded-For` for the client IP (throttling, activity log). Set `false` if the port is reachable without a proxy |

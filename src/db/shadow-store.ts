@@ -42,6 +42,32 @@ export class ShadowStore {
     return r.rows.map((x) => x.k);
   }
 
+  /** Random live mirrored rows with when each was copied (consistency check). */
+  async sample(entity: string, n: number): Promise<Array<{ data: Record<string, unknown>; syncedAt: Date }>> {
+    const r = await this.pool.query<{ data: Record<string, unknown>; synced_at: Date }>(
+      `SELECT data, synced_at FROM shadow_record WHERE entity = $1 AND deleted_at IS NULL ORDER BY random() LIMIT $2`, [entity, Math.min(Math.max(n, 1), 100)]);
+    return r.rows.map((x) => ({ data: x.data, syncedAt: new Date(x.synced_at) }));
+  }
+
+  /** Live mirrored rows matching Autotask-style filters. */
+  async countMatching(entity: string, filters: ShadowFilter[]): Promise<number> {
+    const b = new SqlBuilder();
+    const ent = b.bind(entity);
+    const where = whereClause(filters, b);
+    const r = await this.pool.query<{ n: string }>(`SELECT count(*) AS n FROM shadow_record WHERE entity = ${ent} AND deleted_at IS NULL AND ${where}`, b.params);
+    return Number(r.rows[0]?.n ?? 0);
+  }
+
+  async saveVerifyRun(trigger: string, status: string, report: unknown): Promise<void> {
+    await this.pool.query(`INSERT INTO shadow_verify_run (trigger, status, report) VALUES ($1, $2, $3::jsonb)`, [trigger, status, JSON.stringify(report)]);
+    await this.pool.query(`DELETE FROM shadow_verify_run WHERE id NOT IN (SELECT id FROM shadow_verify_run ORDER BY id DESC LIMIT 60)`);
+  }
+
+  async verifyRuns(limit = 14): Promise<Array<{ at: string; trigger: string; status: string; report: unknown }>> {
+    const r = await this.pool.query<{ at: Date; trigger: string; status: string; report: unknown }>(`SELECT at, trigger, status, report FROM shadow_verify_run ORDER BY id DESC LIMIT $1`, [Math.min(limit, 60)]);
+    return r.rows.map((x) => ({ at: new Date(x.at).toISOString(), trigger: x.trigger, status: x.status, report: x.report }));
+  }
+
   /** Highest mirrored id (live or deleted) — new rows are those above it (Autotask ids only grow). */
   async maxId(entity: string): Promise<number> {
     const r = await this.pool.query<{ m: string | null }>(`SELECT max(id) AS m FROM shadow_record WHERE entity = $1`, [entity]);

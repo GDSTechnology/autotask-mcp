@@ -365,6 +365,7 @@ export function adminHandler(deps: AdminDeps) {
       api: tenant ? { server: usageSnapshot(tenant, 15), autotask: thresholdCache?.value ?? null, autotaskCheckedAt: thresholdCache ? new Date(thresholdCache.at).toISOString() : null } : null,
       postgres: { enabled: pg.enabled, ok: pg.ok, latencyMs: pg.latencyMs ?? null, error: pg.error ?? null },
       shadow: rt ? {
+        verify: rt.lastVerify() ?? (await rt.store.verifyRuns(1).then((r) => (r[0]?.report as Record<string, unknown> | undefined) ?? null).catch(() => null)),
         enabled: true, serveReads: rt.serveReads, syncEnabled: rt.syncEnabled, maxAgeSeconds: rt.maxAgeSeconds, pauseAtPct: rt.sync.pauseAtPct, pendingRowRefreshes: rt.sync.dirtyCount(),
         lastRun: last ? { at: last.at, calls: last.report.calls, skipped: last.report.skipped ?? null, entities: last.report.entities } : null,
         entities: states.map((s) => {
@@ -461,6 +462,11 @@ export function adminHandler(deps: AdminDeps) {
       if (path === '/api/calls/api') return send(res, 200, { calls: recentApiCalls(query) });
     }
 
+    if (path === '/api/shadow/verify' && method === 'GET') {
+      requireUser(ctx);
+      const rt = getShadowRuntime();
+      return send(res, 200, { runs: rt ? await rt.store.verifyRuns(14).catch(() => []) : [] });
+    }
     if (path === '/api/logs' && method === 'GET') {
       requireUser(ctx);
       const n = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('limit')) || 200;
@@ -527,6 +533,14 @@ export function adminHandler(deps: AdminDeps) {
       thresholdCache = null; // re-check usage (the probe) on the next dashboard refresh
       void log(ctx, 'action.auth_retry', { cleared });
       return send(res, 200, { ok: true, message: cleared ? 'Pause cleared. The next Autotask call will test the credentials. Watch the Calls page for a 200.' : 'There was no pause to clear.' });
+    }
+    if (path === '/api/actions/shadow-verify' && method === 'POST') {
+      requireUser(ctx, 'admin');
+      const rt = getShadowRuntime();
+      if (!rt) throw new HttpError(409, 'The Postgres shadow is not running on this server.');
+      void log(ctx, 'action.shadow_verify');
+      void rt.verify({ trigger: `manual (${ctx.user!.username})` }).catch((e) => opts.logger.error('admin: shadow verify failed', e));
+      return send(res, 202, { ok: true, message: 'Mirror check started (about 2 Autotask calls per entity). The result appears on the dashboard in a minute.' });
     }
     if (path === '/api/actions/shadow-sync' && method === 'POST') {
       requireUser(ctx, 'admin');

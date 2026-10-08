@@ -1225,6 +1225,12 @@ export class AutotaskToolHandler {
           const n = await rt.sync.refreshIds(e.name, ids);
           return { result: { refreshed: n }, message: `Re-read ${n} of ${ids.length} ${e.name} row(s) from Autotask into the shadow.` };
         }
+        if (action === 'verify') {
+          const r = await rt.verify({ ...(a.entity ? { entities: [String(a.entity)] } : {}), ...(a.sample ? { sample: Math.min(Math.max(Number(a.sample) || 10, 1), 50) } : {}), trigger: 'tool' });
+          if (!r) return { result: null, message: 'A sync is running (here or on another instance) — try again shortly.' };
+          const bad = r.entities.filter((x) => x.differs || x.missing || x.countOk === false || x.error);
+          return { result: r, message: r.skipped ?? `Shadow check ${r.status === 'ok' ? 'OK' : 'needs attention'}: ${r.entities.reduce((n, x) => n + x.sampled, 0)} rows sampled across ${r.entities.length} entities, ${r.calls} Autotask call(s).${bad.length ? ` Mismatches: ${bad.map((x) => `${x.entity} (${x.differs} differ, ${x.missing} missing${x.countOk === false ? `, count Δ${x.countDelta}` : ''})`).join('; ')} — repaired from Autotask.` : ''}` };
+        }
         if (action === 'reconcile') {
           const e = shadowEntity(a.entity);
           if (!e) return { result: null, message: `reconcile needs entity: ${SHADOW_ENTITIES.map((x) => x.name).join(', ')}` };

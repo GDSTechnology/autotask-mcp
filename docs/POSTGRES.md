@@ -155,6 +155,32 @@ TicketCharges, ProjectCharges and ContractCharges.
   with indexes — Companies + Contacts are three quarters of it. Grows ≈ 10 MB a
   month (rows that age out of the window are kept).
 
+**Consistency check (does the mirror match Autotask?)**
+Every read asks the shadow first, so a mirror fault would quietly reach
+reports. The check runs nightly at `MCP_PG_SHADOW_VERIFY_HOUR_UTC` (8), from
+the console's **Check now**, or with `autotask_shadow_sync` `action: "verify"`.
+For each entity it does two things:
+
+1. **Sample rows.** Take `MCP_PG_SHADOW_VERIFY_SAMPLE` (10) random mirrored rows,
+   re-read them from Autotask in one `id in […]` query (always live), and
+   compare every field.
+2. **Count rows.** Compare the mirror's row count with Autotask's
+   (`/query/count`) over the same window. It may differ by 5 rows or 0.5%.
+
+Each differing row is classified:
+
+| Class | Meaning | Mismatch? |
+|---|---|---|
+| `changed` | Autotask's modified date is newer than the copy, and recent | No: the next sync picks it up |
+| `pending` | The entity has no modified date, and the copy is newer than the refresh interval | No: the next refresh picks it up |
+| `differs` | Anything else: a missed update, a field that changes without the modified date moving, a translation bug | Yes |
+| `missing` | Autotask no longer returns the row | Yes |
+
+Real mismatches are **repaired from Autotask** right away. Results are kept in
+`shadow_verify_run` (migration `0005`, last 60 runs) and shown on the dashboard.
+A run costs about 2 Autotask calls per entity and is skipped above the
+usage-pause threshold.
+
 **Using it**
 - `autotask_shadow_query` / `autotask_shadow_aggregate` — SQL over the mirror with
   the same filter format as the Autotask API; every answer reports data age.

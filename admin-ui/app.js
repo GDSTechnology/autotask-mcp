@@ -4,6 +4,18 @@
 
 const app = document.getElementById('app');
 let me = null;
+// The release this page's code came from; the server sends its own with every
+// API answer. Different = a deploy happened while this tab was open.
+const LOADED_VERSION = (document.querySelector('meta[name="atmcp-version"]') || {}).content || '';
+let reloadShown = false;
+function checkVersion(res) {
+  const v = res.headers.get('X-Atmcp-Version');
+  if (!v || !LOADED_VERSION || v === LOADED_VERSION || reloadShown) return;
+  reloadShown = true;
+  document.body.append(h('div', { class: 'reload-bar', role: 'status' },
+    `Version ${v} was deployed (this page is ${LOADED_VERSION}). `,
+    h('button', { class: 'small primary', onclick: () => location.reload() }, 'Reload')));
+}
 let refreshTimer = null;
 
 // ── tiny DOM helper ───────────────────────────────────────────────────────
@@ -49,6 +61,7 @@ async function api(method, path, body) {
     headers: { 'X-Atmcp': '1', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  checkVersion(res);
   let data = {};
   try { data = await res.json(); } catch { /* empty */ }
   if (res.status === 401 && path !== '/api/login' && path !== '/api/me/password') { me = null; render(); throw new Error(data.error || 'Signed out.'); }
@@ -266,7 +279,7 @@ const ms = (n) => (n == null ? '—' : n >= 1000 ? `${(n / 1000).toFixed(1)} s` 
 const timeOf = (iso) => new Date(iso).toLocaleTimeString();
 function callerCell(r) {
   return h('div', null,
-    h('span', { class: 'badge' }, r.source || 'unknown'),
+    h('span', { class: `badge ${r.named ? 'accent' : ''}`, title: r.named ? 'Named by a "Caller names" rule (Settings)' : null }, r.source || 'unknown'),
     r.user ? h('span', { class: 'muted' }, ` ${r.user}`) : null,
     r.ip || r.userAgent ? h('div', { class: 'muted mono' }, [r.ip, r.userAgent].filter(Boolean).join(' · ')) : null);
 }
@@ -435,6 +448,11 @@ async function settings(body) {
             if (s.key === 'tools.writesEnabled' && !e.target.checked && !confirm('Switch every agent to read-only? Creates, updates and deletes will be refused until you switch this back on.')) { e.target.checked = true; return; }
             save(s.key, { value: e.target.checked });
           } }), h('span'));
+      }
+      if (s.type === 'lines') {
+        const ta = h('textarea', { rows: '4', disabled: off, 'aria-label': s.label, placeholder: 'pattern=name, one per line' });
+        ta.value = (s.value || []).join('\n');
+        return [ta, isAdmin ? h('button', { class: 'small', disabled: off, onclick: () => save(s.key, { value: ta.value.split('\n') }) }, 'Save') : null];
       }
       if (s.type === 'integer') {
         const inp = h('input', { type: 'number', value: String(s.value), min: s.min, max: s.max, disabled: off, 'aria-label': s.label });

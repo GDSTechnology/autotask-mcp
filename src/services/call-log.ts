@@ -9,6 +9,7 @@
 // query string.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { settingValue } from '../admin/settings.js';
 
 export interface ToolCallRecord {
   id: number;
@@ -17,7 +18,10 @@ export interface ToolCallRecord {
   /** 'running' until the call finishes. */
   outcome: string;
   durationMs: number | null;
+  /** Declared source, or the console's caller name for an undeclared client (see named). */
   source: string | null;
+  /** True when source came from a "Caller names" rule rather than the client itself. */
+  named?: boolean;
   user: string | null;
   ip: string | null;
   userAgent: string | null;
@@ -87,13 +91,30 @@ export function runJob<T>(job: string, fn: () => Promise<T>): Promise<T> {
   return scope.run({ job }, fn);
 }
 
+/** "Caller names" rule for an undeclared client: IP equal to the pattern, or the pattern inside the user agent. */
+export function callerName(ip?: string, userAgent?: string): string | null {
+  let rules: string[];
+  try { rules = settingValue<string[]>('callers.labels'); } catch { return null; }
+  const ua = (userAgent ?? '').toLowerCase();
+  for (const r of rules) {
+    const i = r.indexOf('=');
+    const pattern = r.slice(0, i).trim(), name = r.slice(i + 1).trim();
+    if (!pattern || !name) continue;
+    if ((ip && ip === pattern) || (ua && ua.includes(pattern.toLowerCase()))) return name;
+  }
+  return null;
+}
+
 /** Fill the current tool call's caller + outcome (from the audit record). */
 export function noteToolAudit(info: { outcome: string; durationMs: number; source?: string; user?: string | undefined; ip?: string | undefined; userAgent?: string | undefined; error?: string | undefined }): void {
   const rec = scope.getStore()?.tool;
   if (!rec) return;
   rec.outcome = info.outcome;
   rec.durationMs = info.durationMs;
-  rec.source = info.source ?? null;
+  const declared = info.source && info.source !== 'unknown' ? info.source : null;
+  const name = declared ? null : callerName(info.ip, info.userAgent);
+  rec.source = declared ?? name ?? info.source ?? null;
+  if (name) rec.named = true;
   rec.user = info.user ?? null;
   rec.ip = info.ip ?? null;
   rec.userAgent = clip(info.userAgent, 120);

@@ -173,6 +173,14 @@ TicketCharges, ProjectCharges and ContractCharges.
   - the MCP wrote that entity in the last 90 s (a just-created row isn't mirrored
     yet);
   - it is a by-id read of a row the MCP wrote since the last sync.
+
+  `autotask_raw_request` reads are served too. n8n uses `POST /Tickets/query`
+  through it.
+  - A raw `POST /Entity/query` is answered from the shadow only when the shadow
+    holds the **whole** result within the page size; the MCP asks the mirror for
+    one extra row to find out. Otherwise the request goes to Autotask, so callers
+    that page by `nextPageUrl` still get Autotask's real paging link.
+  - A raw `GET /Entity/{id}` returns the mirrored row as `{ item }`.
 - `autotask_shadow_status` — rows, backfill progress, age, calls spent, errors.
 - `autotask_shadow_sync` — run now / re-read ids / reconcile one entity.
 - `/health` shows `shadow.lastRunAt` / `lastRunCalls` (no DB round-trip).

@@ -18,6 +18,7 @@ import { defaultWorkDate, formatChoices, localDayWindow, matchPicklist, TimeGap 
 import { getShadowRuntime } from '../db/shadow-runtime.js';
 import { collectAuditEvents, type CollectOptions } from '../db/audit-collector.js';
 import { BACKFILL_SOURCES, BackfillJobs, MAX_RANGE_DAYS, runBackfillStep, type BackfillSource } from '../db/history-backfill.js';
+import { backpressure } from '../services/backpressure.js';
 import { FEED_SOURCES, SOURCE_ENTITY, decodeCursor, encodeCursor, eventType, feedActor, ingestActivity, type FeedSource } from '../db/activity-feed.js';
 import { buildDailyAudit } from '../utils/daily-audit.js';
 import { SHADOW_ENTITIES, shadowEntity } from '../db/shadow-entities.js';
@@ -1204,6 +1205,12 @@ export class AutotaskToolHandler {
         const progress = `${j.ticketsDone}/${j.ticketsTotal ?? '?'} ticket(s), ${j.eventsIngested} event(s), ${j.apiCalls} call(s) so far`;
         const next = j.status === 'done' ? 'Done.' : step.stoppedBy === 'error' ? `Stopped on an Autotask error: ${step.error} — fix, then call again with this jobId.` : `Call again with jobId ${j.id} to continue.`;
         return { result: step, message: `Backfill ${j.id} (${j.rangeFrom.slice(0, 10)} → ${j.rangeTo.slice(0, 10)}): ${step.paused ? `PAUSED — ${step.paused}. ` : `this step ${step.ticketsProcessed} ticket(s), ${step.eventsIngested} event(s), ${step.apiCallsUsed} call(s). `}${progress}. ${next}` };
+      }],
+      // Backpressure (MCP-008): ok / slow / stop for dispatchers, from in-process state (0 calls unless refresh).
+      ['autotask_get_backpressure', async (a) => {
+        if (a.refresh === true) await s.getApiUsage().catch(() => null);
+        const b = backpressure(s.apiUsername());
+        return { result: b, message: `${b.level.toUpperCase()}${b.retryAfterSeconds != null ? ` — wait ${b.retryAfterSeconds}s` : ''}: ${b.reasons.length ? b.reasons.join('; ') : 'no pressure'}. ${b.advice}` };
       }],
       // Operation log lookup (MCP-007): what a correlation / decision / key / ticket led this MCP to write.
       ['autotask_get_operations', async (a) => {

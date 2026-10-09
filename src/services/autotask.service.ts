@@ -698,6 +698,11 @@ export class AutotaskService {
    * for the integration (ThresholdInformation — counts every caller sharing
    * the API user, not just this server). Read-only; one upstream call.
    */
+  /** The Autotask API username (the tenant key of the per-tenant gates), lowercased; '' when unset. */
+  apiUsername(): string {
+    return (this.config.autotask.username ?? '').toLowerCase();
+  }
+
   async getApiUsage(): Promise<{ server: ApiUsageSnapshot; autotask: { used: number | null; limit: number | null; windowMinutes: number | null; usedPct: number | null } | { error: string } }> {
     // Snapshot AFTER the live probe so the server view includes it.
     const snap = () => usageSnapshot(this.config.autotask.username?.toLowerCase() ?? '');

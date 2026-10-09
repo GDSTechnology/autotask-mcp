@@ -1543,7 +1543,7 @@ export class AutotaskService {
     updates.contactID = opts.contactID != null ? opts.contactID : null;
 
     // A contract belongs to one company: keep it only if it is the target company's.
-    const t = ticket as Record<string, any>;
+    const t = ticket as unknown as Record<string, unknown>;
     let contractCleared: Record<string, unknown> | null = null;
     if (t.contractID != null) {
       let contractCompany: number | null = null;

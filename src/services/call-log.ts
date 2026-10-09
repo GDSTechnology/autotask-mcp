@@ -196,17 +196,19 @@ export function toolGapStats(hours = 24): ToolGapStats {
 // The difference estimates traffic that never went through the MCP (e.g. n8n
 // nodes with their own Autotask credentials). Sampled whenever usage is read
 // (the shadow does so every run), kept for 24 h.
-interface UsageSample { at: number; tenantUsed: number; limit: number | null; windowMinutes: number | null; mcp: number }
+interface UsageSample { at: number; tenantUsed: number; limit: number | null; windowMinutes: number | null; mcp: number; mcpSince?: number }
 const usageSamples: UsageSample[] = [];
 
-export function noteTenantUsage(s: { tenantUsed: number | null; limit: number | null; windowMinutes: number | null; mcpLastHour: number }): void {
+export function noteTenantUsage(s: { tenantUsed: number | null; limit: number | null; windowMinutes: number | null; mcpLastHour: number; mcpCountingSince?: number }): void {
   if (s.tenantUsed == null) return;
-  usageSamples.push({ at: Date.now(), tenantUsed: s.tenantUsed, limit: s.limit, windowMinutes: s.windowMinutes, mcp: s.mcpLastHour });
+  usageSamples.push({ at: Date.now(), tenantUsed: s.tenantUsed, limit: s.limit, windowMinutes: s.windowMinutes, mcp: s.mcpLastHour, ...(s.mcpCountingSince ? { mcpSince: s.mcpCountingSince } : {}) });
   const cutoff = Date.now() - 24 * 3_600_000;
   while (usageSamples.length && usageSamples[0]!.at < cutoff) usageSamples.shift();
 }
 
-export interface OutsideTraffic { at: string; tenantCalls: number; mcpCalls: number; otherCalls: number; otherPct: number; windowMinutes: number | null; samples24h: number; otherMax24h: number; otherAvg24h: number }
+export interface OutsideTraffic { at: string; tenantCalls: number; mcpCalls: number; otherCalls: number; otherPct: number; windowMinutes: number | null; samples24h: number; otherMax24h: number; otherAvg24h: number;
+  /** The MCP started counting less than one window ago (restart): its count is incomplete, the estimate reads high. */
+  partial: boolean }
 
 /** Latest estimate of calls on the tenant that did not come from this MCP, or null before the first sample. */
 export function outsideTraffic(): OutsideTraffic | null {
@@ -219,6 +221,7 @@ export function outsideTraffic(): OutsideTraffic | null {
     otherPct: last.tenantUsed ? Math.round((other(last) / last.tenantUsed) * 1000) / 10 : 0,
     windowMinutes: last.windowMinutes, samples24h: usageSamples.length,
     otherMax24h: Math.max(...others), otherAvg24h: Math.round(others.reduce((a, b) => a + b, 0) / others.length),
+    partial: last.mcpSince != null && last.at - last.mcpSince < (last.windowMinutes ?? 60) * 60_000,
   };
 }
 

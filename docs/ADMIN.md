@@ -356,34 +356,49 @@ What the log keeps:
 Autotask **locks an API user** after repeated failed logins. Every client of this
 MCP (n8n, cron, ChatGPT) shares that one user, so a lock stops all of them.
 
-What the MCP does when Autotask rejects the credentials (HTTP 401):
+When Autotask rejects a request with HTTP 401, the MCP does the following:
 
-1. **It checks it's really the login.** The MCP makes one request that any API
-   user can make (Autotask's usage counter). If that request succeeds, the 401 was
-   only about one entity the user isn't allowed to see, and nothing is paused.
-2. **It pauses.** Every Autotask call for that API user stops at the MCP and
-   fails at once with "credentials rejected, calls paused". None of them reaches
-   Autotask, so they add no further failed logins.
-3. **It tests again later.** When the pause ends, the next call is a **single
-   test call**; every other call waits for its answer.
-   - If the test call works, normal service resumes.
-   - If it fails, the pause starts again, twice as long: 5 → 10 → 20 → 40 →
-     60 minutes.
-4. **It shows up in the console.**
-   - The **Dashboard** shows a red banner with the error, when the pause ends,
-     and a **Retry now** button (administrators).
+1. **It stops everything else at once.** While the MCP checks this one 401,
+   every other Autotask request is held back. Requests that were already in
+   flight and also come back 401 don't trigger checks of their own.
+2. **It looks up the Autotask address again.** This lookup needs no login. If
+   the tenant moved to another data centre, the request is retried once at the
+   new address; otherwise it is **not** retried.
+3. **It checks it's really the login.** The MCP makes one request that every API
+   user is allowed to make (Autotask's usage counter). If that works, the 401
+   was about one entity only, and nothing is paused.
+4. **It pauses.** Every call for that API user fails at once inside the MCP and
+   never reaches Autotask.
+5. **It tests again, twice at most.** After 5 minutes, then 10, the MCP sends
+   **one** test call, and every other call waits for its answer.
+   - If a test works, normal service resumes.
+   - If both fail, Autotask calls are **HELD**. The MCP sends **no more logins
+     on its own**, however long it takes, until an administrator presses
+     **Retry now**.
+
+   A lockout costs at most about 4 failed logins, plus any requests that were
+   already in flight at the first 401.
+6. **It survives restarts.** The pause is saved in Postgres (migration
+   `0006`), so a restart or deploy during a lockout doesn't start sending
+   logins again. A saved pause is tied to the credentials: **changing the
+   secret in the env file clears it automatically.**
+7. **It shows up in the console.**
+   - The Dashboard shows a red banner: *paused until …*, or *HELD*. It includes
+     the error and a **Retry now** button (administrators).
    - `/health` gains an `autotaskAuth` block.
 
 **After a lock:**
 
-1. Unlock the API user in Autotask, or, if the secret changed, update it in the
-   env file and recreate the MCP.
+1. Unlock the API user in Autotask. If the secret changed, update the env file
+   and recreate the MCP; the pause then clears by itself.
 2. Press **Retry now**.
 3. Watch the **Calls** page: new Autotask calls should show **200**.
 
 **Settings:**
-- `AUTOTASK_AUTH_PAUSE_SECONDS` sets the first pause (default `300`).
-- `0` turns the protection off; that is not recommended.
+- `AUTOTASK_AUTH_PAUSE_SECONDS` (default `300`) sets the first pause. `0`
+  turns the protection off; that is not recommended.
+- `AUTOTASK_AUTH_MAX_PROBES` (default `2`) sets how many test calls are made
+  before holding.
 
 ### Export (testing and issue tracking)
 

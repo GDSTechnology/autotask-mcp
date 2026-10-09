@@ -110,8 +110,17 @@ function sendFile(res: ServerResponse, filename: string, type: string, body: str
 }
 
 /** CSV with formula-injection guard (a cell starting with = + - @ is prefixed with '). */
-export function toCsv(rows: Array<Record<string, unknown>>): string {
-  if (!rows.length) return '';
+const CSV_COLUMNS: Record<string, string[]> = {
+  tools: ['id', 'at', 'tool', 'outcome', 'durationMs', 'source', 'named', 'user', 'ip', 'userAgent', 'error', 'apiCalls', 'cacheHits', 'shadowReads', 'raw'],
+  api: ['id', 'at', 'method', 'path', 'status', 'durationMs', 'toolCallId', 'tool', 'job', 'error'],
+  logs: ['at', 'level', 'message', 'meta'],
+  gaps: ['shape', 'calls', 'errors', 'lastAt', 'lastError', 'callers', 'coveredBy'],
+  entities: ['entity', 'upstream', 'cache', 'shadow', 'writes', 'localPct', 'topCallers', 'mirrored', 'servedFromShadow', 'cacheClass', 'cacheTtlSeconds', 'candidate'],
+};
+
+export function toCsv(rows: Array<Record<string, unknown>>, emptyColumns: string[] = []): string {
+  // An empty export still gets its header row, so it reads as "no rows" rather than a broken file.
+  if (!rows.length) return emptyColumns.length ? `${emptyColumns.join(',')}\r\n` : '';
   const cols = Object.keys(rows[0]!);
   const cell = (v: unknown): string => {
     let s = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
@@ -498,7 +507,7 @@ export function adminHandler(deps: AdminDeps) {
       } else throw new HttpError(400, 'kind must be tools, api, entities, gaps, logs or bundle.');
       void log(ctx, 'export', { kind, format });
       return format === 'csv'
-        ? sendFile(res, `autotask-mcp-${kind}-${stamp}.csv`, 'text/csv; charset=utf-8', toCsv(rows))
+        ? sendFile(res, `autotask-mcp-${kind}-${stamp}.csv`, 'text/csv; charset=utf-8', toCsv(rows, CSV_COLUMNS[kind] ?? []))
         : sendFile(res, `autotask-mcp-${kind}-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(rows, null, 2));
     }
 

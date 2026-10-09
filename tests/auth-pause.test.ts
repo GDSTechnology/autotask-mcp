@@ -30,16 +30,16 @@ beforeEach(() => {
 afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
 
 describe('auth pause', () => {
-  test('a 401 (after the one zone-retry) pauses the tenant: further calls never leave the MCP', async () => {
+  test('a 401 pauses the tenant after one check (zone unchanged: no retry): further calls never leave the MCP', async () => {
     const c = client();
     await expect(c.get('Tickets', 1)).rejects.toThrow(/\(HTTP 401\): Unauthorized\. Autotask calls are now paused for 300s/);
-    expect(apiCalls()).toBe(3); // the call + its zone-retry + the ThresholdInformation confirmation
+    expect(apiCalls()).toBe(2); // the call + the ThresholdInformation confirmation (zone unchanged → no retry)
     for (let i = 0; i < 5; i++) await expect(c.get('Tickets', i + 2)).rejects.toThrow(/paused .* NOT sent/);
-    expect(apiCalls()).toBe(3);
+    expect(apiCalls()).toBe(2);
     const st = authBlockStatus(USER)!;
     expect(st).toMatchObject({ failures: 1, probing: false });
     expect(Date.parse(st.blockedUntil!) - Date.now()).toBeGreaterThan(290_000);
-    expect(recentLogs().some((l) => l.level === 'error' && /pausing Autotask calls/.test(l.message))).toBe(true);
+    expect(recentLogs().some((l) => l.level === 'error' && /Autotask calls paused for 300s/.test(l.message))).toBe(true);
   });
 
   test('after the pause: one probe without zone-retry; a 401 doubles the pause; success clears it', async () => {
@@ -48,7 +48,7 @@ describe('auth pause', () => {
     await expect(c.get('Tickets', 1)).rejects.toBeInstanceOf(AutotaskAuthError);
     jest.setSystemTime(Date.now() + 301_000);
     await expect(c.get('Tickets', 2)).rejects.toBeInstanceOf(AutotaskAuthError);
-    expect(apiCalls()).toBe(4); // probe = a single call (no zone-retry, no confirmation)
+    expect(apiCalls()).toBe(3); // probe = a single call (no zone-retry, no confirmation)
     const st = authBlockStatus(USER)!;
     expect(st.failures).toBe(2);
     expect(Date.parse(st.blockedUntil!) - Date.now()).toBeGreaterThan(590_000); // 10 min

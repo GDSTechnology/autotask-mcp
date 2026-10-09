@@ -53,7 +53,7 @@ describe('invalidateZoneUrlCache', () => {
 });
 
 describe('AutotaskHttpClient 401 retry (stale zone cache)', () => {
-  it('invalidates the cached base URL and retries once against a fresh zone on 401', async () => {
+  it('re-looks-up the zone on 401 but does NOT retry when the zone is unchanged (no extra failed login)', async () => {
     const client = makeClient();
     const fetchMock = jest.spyOn(global, 'fetch' as any).mockImplementation((urlArg: any) => {
       const url = String(urlArg);
@@ -71,9 +71,8 @@ describe('AutotaskHttpClient 401 retry (stale zone cache)', () => {
 
     try {
       await expect(client.get('Companies', 123)).rejects.toThrow(/HTTP 401/);
-      // First attempt + retry attempt, both against the same (only-configured) zone,
-      // proving the retry actually fired rather than the first 401 propagating straight up.
-      expect(fetchMock.mock.calls.filter((c: any[]) => !String(c[0]).includes('ThresholdInformation')).length).toBe(2);
+      // Same (only-configured) zone after the re-lookup → no blind retry: one failed login, not two.
+      expect(fetchMock.mock.calls.filter((c: any[]) => !String(c[0]).includes('ThresholdInformation')).length).toBe(1);
       // …then one ThresholdInformation check confirms it's the login, not the entity (auth pause).
       expect(fetchMock.mock.calls.filter((c: any[]) => String(c[0]).includes('ThresholdInformation')).length).toBe(1);
     } finally {
@@ -139,7 +138,7 @@ describe('AutotaskHttpClient 401 retry (stale zone cache)', () => {
 
     try {
       await expect(client.get('Companies', 123)).rejects.toThrow(/HTTP 401/);
-      expect(fetchMock.mock.calls.filter((c: any[]) => !String(c[0]).includes('ThresholdInformation')).length).toBe(2); // original + exactly one retry, then throws
+      expect(fetchMock.mock.calls.filter((c: any[]) => !String(c[0]).includes('ThresholdInformation')).length).toBe(1); // zone unchanged → no retry
     } finally {
       fetchMock.mockRestore();
     }

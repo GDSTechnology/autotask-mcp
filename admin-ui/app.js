@@ -179,7 +179,11 @@ async function dashboard(body) {
         e.target.disabled = true;
         try { toast((await api('POST', '/api/actions/auth-retry', {})).message); await draw(); } catch (x) { toast(x.message); e.target.disabled = false; }
       } }, 'Retry now') : null;
-      banners.push(a.blockedUntil
+      banners.push(a.held
+        ? h('div', { class: 'banner bad' }, h('strong', null, 'Autotask calls are HELD: Autotask rejected the API login. '),
+            `${a.failures} rejected logins since ${new Date(a.since).toLocaleString()}. The MCP sends no more test logins on its own, so the account can't be locked further. Fix the API user in Autotask (unlock it, or update the secret in the env file — a changed secret clears this by itself), then press Retry now.`, retry,
+            h('div', { class: 'mono', style: 'margin-top:6px;font-size:12px' }, a.lastError))
+        : a.blockedUntil
         ? h('div', { class: 'banner bad' }, h('strong', null, 'Autotask rejected the API credentials. '),
             `Autotask calls are paused until ${new Date(a.blockedUntil).toLocaleTimeString()} (failure ${a.failures} since ${new Date(a.since).toLocaleTimeString()}) so repeated failed logins don't lock the API user. Fix the user in Autotask (unlock it, or update the secret in the env file), then retry.`, retry,
             h('div', { class: 'mono', style: 'margin-top:6px;font-size:12px' }, a.lastError))
@@ -202,7 +206,8 @@ async function dashboard(body) {
           h('div', { class: 'muted' }, `${fmt(at.used)} calls this hour · checked ${ago(s.api.autotaskCheckedAt)}`),
           s.outsideTraffic ? h('dl', { class: 'kv', style: 'margin-top:8px' },
             h('dt', null, 'Through this MCP'), h('dd', null, fmt(s.outsideTraffic.mcpCalls)),
-            h('dt', { title: 'Tenant total minus this MCP: other integrations, or workflows calling Autotask directly' }, 'Not through this MCP'), h('dd', null, h('span', { class: `badge ${s.outsideTraffic.otherPct >= 25 ? 'warn' : ''}` }, `~${fmt(s.outsideTraffic.otherCalls)} (${s.outsideTraffic.otherPct}%)`))) : null]
+            h('dt', { title: 'Tenant total minus this MCP: other integrations, or workflows calling Autotask directly' }, 'Not through this MCP'), h('dd', null, h('span', { class: `badge ${s.outsideTraffic.otherPct >= 25 && !s.outsideTraffic.partial ? 'warn' : ''}` }, `~${fmt(s.outsideTraffic.otherCalls)} (${s.outsideTraffic.otherPct}%)`)),
+            s.outsideTraffic.partial ? h('dd', { class: 'muted', style: 'grid-column:1/-1;text-align:left;font-size:12px' }, 'The MCP restarted within the last hour, so its own count is incomplete and this estimate reads high until an hour has passed.') : null) : null]
           : h('p', { class: 'muted' }, s.autotaskAuth ? 'Paused: Autotask rejected the credentials (see above).' : s.api && s.api.autotask && s.api.autotask.error ? `Unavailable: ${s.api.autotask.error}` : noApi)),
       h('section', { class: 'panel' }, h('h2', null, 'This MCP’s calls'),
         srv ? [h('div', { class: 'stat' }, fmt(srv.upstreamLastHour), h('small', null, ' last hour')),
@@ -372,6 +377,7 @@ async function calls(body) {
       table = h('div', null,
         o ? h('div', { class: `banner ${o.otherPct >= 25 ? 'warn' : ''}` },
           h('strong', null, `Not through this MCP: ~${fmt(o.otherCalls)} of ${fmt(o.tenantCalls)} Autotask calls (${o.otherPct}%) in Autotask's current ${o.windowMinutes || 60}-minute window. `),
+          o.partial ? 'The MCP restarted within the last hour, so this reads high until an hour has passed. ' : '',
           `24 h: average ~${fmt(o.otherAvg24h)}, peak ~${fmt(o.otherMax24h)}. These are other integrations, or workflows calling Autotask with their own credentials — invisible to the MCP. Autotask's own API usage report lists calls per integration, which tells you whose they are.`)
           : h('div', { class: 'banner' }, 'The "not through this MCP" estimate appears after the first Autotask usage check (within 5 minutes when the shadow runs).'),
         h('h3', null, 'raw_request use (the escape hatch)'),

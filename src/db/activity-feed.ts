@@ -135,10 +135,11 @@ export async function ingestActivity(deps: FeedDeps, o: { since: Date; sources: 
       const missing = [...new Set(ids)].filter((id) => !tickets.has(id));
       for (let i = 0; i < missing.length; i += 500) {
         const f: ShadowFilter[] = [{ op: 'in', field: 'id', value: missing.slice(i, i + 500) }];
-        let rows: Row[] | null = null;
-        if (await shadowFresh('Tickets')) rows = (await deps.store!.query('Tickets', f, { fields: ['ticketNumber', 'companyID'], limit: 5000 })).rows as Row[];
-        else { try { rows = await live<Row>('Tickets', f, 500, ['id', 'ticketNumber', 'companyID']); } catch { rows = null; } }
-        for (const t of rows ?? []) tickets.set(Number(t.id), { id: Number(t.id), ticketNumber: (t.ticketNumber as string) ?? null, companyID: num(t.companyID) });
+        // Live lookup failing (budget) only leaves the ticket number off; the event is still stored.
+        const rows: Row[] = (await shadowFresh('Tickets'))
+          ? (await deps.store!.query('Tickets', f, { fields: ['ticketNumber', 'companyID'], limit: 5000 })).rows as Row[]
+          : await live<Row>('Tickets', f, 500, ['id', 'ticketNumber', 'companyID']).catch(() => [] as Row[]);
+        for (const t of rows) tickets.set(Number(t.id), { id: Number(t.id), ticketNumber: (t.ticketNumber as string) ?? null, companyID: num(t.companyID) });
       }
     };
     const guard = async (s: FeedSource, fn: () => Promise<void>) => {

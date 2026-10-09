@@ -1203,6 +1203,29 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_activity_feed',
+    description: 'READ-ONLY. Incremental, cursor-paged feed of ticket activity across the whole tenant — ticket field changes (status/queue/priority/assignee/contract/… with before → after, from TicketHistory), ticket notes and time entries (created and edited) — each event with a classified actor (human / service_account / integration / system / contact / unknown, the classification rule, and the reference-technician flag). For learning and n8n dispatchers: poll with the returned nextCursor; replaying a cursor returns the same eventIds. ORDER: by ingestion (feedId), not occurredAt — a late-arriving event (e.g. a ticket whose history was read later) still appears after your cursor, never skipped, but its occurredAt can be older than events you already saw; dedupe on eventId. Each call first brings the store up to date from per-source checkpoints within maxApiCalls (time entries from the shadow: 0 calls; notes: 1 call per 500; ticket history: 1 call per changed ticket, cached) and reports anything the budget left as pending (hasMore=true). Reports watermark (everything before it is stored), sourceLagSeconds and coverage: events before coverage.coveredFrom were never ingested — pass backfill:true (bounded, max 90 days) to fill them. Needs the Postgres store (migrations 0003 + 0007).',
+    annotations: { title: 'Activity feed (incremental)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: { type: 'string', description: 'First call: events occurring at/after this ISO instant (default 24 hours ago, max 90 days). Ignored when cursor is given (the cursor carries it).' },
+        cursor: { type: 'string', description: 'nextCursor from the previous call' },
+        limit: { type: 'number', description: 'Events per page (default 250, max 1000). A page can be shorter when actorTypes filters events out — keep following nextCursor while hasMore.' },
+        entityTypes: { type: 'array', items: { type: 'string', enum: ['ticket', 'ticketNote', 'timeEntry', 'company', 'contact', 'configurationItem', 'serviceCall', 'todo'] }, description: 'Default ticket, ticketNote, timeEntry. company/contact/configurationItem/serviceCall/todo come from webhooks and mirror row-diffs when those are set up.' },
+        actorTypes: { type: 'array', items: { type: 'string', enum: ['human', 'service_account', 'integration', 'system', 'contact', 'unknown'] }, description: 'Only events by these actor types (e.g. ["human"] for learning data). Default all.' },
+        referenceOnly: { type: 'boolean', description: 'Only events by reference technicians (console → Actors).' },
+        ticketIds: { type: 'array', items: { type: 'number' }, description: 'Only these tickets (their field changes, notes and time).' },
+        includeBeforeAfter: { type: 'boolean', description: 'Include before/after values (default true).' },
+        includeDetails: { type: 'boolean', description: 'Include source details — note body, time-entry hours/summary (default true).' },
+        ingest: { type: 'boolean', description: 'Bring the store up to date before reading (default true). false = read only what is stored (0 Autotask calls).' },
+        backfill: { type: 'boolean', description: 'Extend coverage back to since when it starts later (bounded by maxApiCalls per call; repeat until coverage.complete).' },
+        maxApiCalls: { type: 'number', description: 'Autotask call budget for the ingest step (default 40, max 500).' }
+      },
+      required: []
+    }
+  },
+  {
     name: 'autotask_report_resource_activity',
     description: 'READ-ONLY. Everything each resource did in Autotask in a window (date + timeZone, or start/end): per resource, the event stream from autotask_search_audit_activity plus counts by entity type and action. Bulk resourceIds share one pass (a 15-person team costs about the same as one). Meta reports Autotask calls used.',
     annotations: { title: 'Report resource activity', readOnlyHint: true },
@@ -6121,7 +6144,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_activity_without_time', 'autotask_search_audit_activity', 'autotask_report_resource_activity', 'autotask_report_resource_daily_audit', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_activity_without_time', 'autotask_search_audit_activity', 'autotask_get_activity_feed', 'autotask_report_resource_activity', 'autotask_report_resource_daily_audit', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

@@ -4,6 +4,20 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-09
+
+- **`PUT` replaces the whole record; fields left out are BLANKED** (confirmed
+  from TicketHistory). The n8n routers' partial `PUT /Tickets` blanked 729
+  fields on 446 tickets (location, estimated hours, contract, PO, resource +
+  role). `PUT /Contacts` does the same to contacts. Typed tools PATCH only the
+  fields given. `move_ticket_to_company` now carries queue / status / resource /
+  UDF routing in the same write (#180).
+- The activity feed (`autotask_get_activity_feed`, migration 0007) pages
+  `audit_event` by **id = ingestion order**, not occurred_at. That is the only
+  ordering under which late-arriving history is never skipped. Watermarks are
+  re-scanned with a 15-min overlap; ingest is behind a pg advisory lock.
+- Contact `note` is capped at 50 characters in this tenant (`CONTACT_NOTE_MAX_LENGTH`).
+
 ## Learnings - 2026-10-07
 
 - **TicketHistory is NOT queryable by resource** ("ResourceID is not queryable") —

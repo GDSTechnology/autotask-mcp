@@ -17,6 +17,7 @@ import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
 import { defaultWorkDate, formatChoices, localDayWindow, matchPicklist, TimeGap } from '../utils/staff-tools.js';
 import { getShadowRuntime } from '../db/shadow-runtime.js';
 import { collectAuditEvents, type CollectOptions } from '../db/audit-collector.js';
+import { FEED_SOURCES, SOURCE_ENTITY, decodeCursor, encodeCursor, eventType, feedActor, ingestActivity, type FeedSource } from '../db/activity-feed.js';
 import { buildDailyAudit } from '../utils/daily-audit.js';
 import { SHADOW_ENTITIES, shadowEntity } from '../db/shadow-entities.js';
 
@@ -1147,6 +1148,60 @@ export class AutotaskToolHandler {
         return {
           result: { window: w.window, events: page, nextCursor: next, meta: { ...r.meta, recordsReturned: page.length, totalEvents: r.events.length } },
           message: `${r.events.length} event(s) for ${w.resourceIds.length || 'all'} resource(s) ${w.window.label}${next ? ` (page of ${page.length}; pass nextCursor for more)` : ''}. ${r.meta.apiCallsUsed} Autotask call(s)${r.meta.incomplete.length ? ` — INCOMPLETE: ${r.meta.incomplete.join('; ')}` : ''}.`,
+        };
+      }],
+      // Incremental activity feed (MCP-002/003): checkpointed ingest into audit_event, cursor = ingestion order.
+      ['autotask_get_activity_feed', async (a) => {
+        const rt = getShadowRuntime();
+        if (!rt) return { result: { status: 'unavailable' }, message: 'The activity feed needs the Postgres store (MCP_PG_ENABLED=true and migrations 0003 + 0007). Single-ticket history is still available via autotask_get_ticket_change_history.' };
+        const now = new Date();
+        const cur = a.cursor != null && a.cursor !== '' ? decodeCursor(a.cursor) : null;
+        if (a.cursor != null && a.cursor !== '' && !cur) return { result: { status: 'invalid_cursor' }, message: 'cursor is not a nextCursor from this tool — start again with since.' };
+        const since = cur?.since ?? (a.since != null && a.since !== '' ? normalizeTimestamp(String(a.since)) : new Date(now.getTime() - 86_400_000).toISOString());
+        if (!since || Number.isNaN(Date.parse(since))) return { result: { status: 'invalid_value', field: 'since' }, message: `since "${String(a.since)}" is not an ISO date/time.` };
+        const entityTypes: string[] = Array.isArray(a.entityTypes) && a.entityTypes.length ? a.entityTypes.map(String) : ['ticket', 'ticketNote', 'timeEntry'];
+        const sources = FEED_SOURCES.filter((src: FeedSource) => entityTypes.includes(SOURCE_ENTITY[src]));
+        const ingest = a.ingest === false ? null : await ingestActivity({ ledger: rt.ledger, store: rt.store, http: await s.httpClient(), service: s }, {
+          since: new Date(since), sources, backfill: a.backfill === true, timeZone: defaultTimeZone(),
+          maxApiCalls: a.maxApiCalls != null ? Number(a.maxApiCalls) : 40,
+        });
+        const limit = Math.min(Math.max(Number(a.limit) || 250, 1), 1000);
+        const ticketIds = Array.isArray(a.ticketIds) ? a.ticketIds.map(Number).filter(Number.isFinite) : [];
+        const rows = await rt.ledger.feedPage({ afterId: cur?.id ?? 0, since, limit, entityTypes, ticketIds });
+        const page = rows.slice(0, limit);
+        let ctx: Awaited<ReturnType<typeof s.getActorContext>> | null = null;
+        try { ctx = await s.getActorContext(); } catch { /* actors reported as unknown */ }
+        const actorTypes: string[] = Array.isArray(a.actorTypes) ? a.actorTypes.map(String) : [];
+        const withBA = a.includeBeforeAfter !== false, withDetails = a.includeDetails !== false;
+        const events = page.map((e) => {
+          const actor = feedActor(e, ctx);
+          const ticketId = e.entityType === 'ticket' ? e.entityId : e.parentEntityType === 'ticket' ? e.parentEntityId ?? null : null;
+          return {
+            eventId: e.eventId, feedId: e.feedId, eventType: eventType(e), occurredAt: e.timestamp, ingestedAt: e.ingestedAt,
+            ticketId, ticketNumber: e.entityType === 'ticket' ? e.entityReference ?? null : null,
+            entityType: e.entityType, entityId: e.entityId, companyId: e.companyId ?? null, actor,
+            field: e.field ?? null, ...(withBA ? { before: e.oldValue ?? null, after: e.newValue ?? null } : {}),
+            source: e.source, systemGenerated: e.systemGenerated, ...(withDetails && e.details ? { details: e.details } : {}),
+          };
+        }).filter((e) => (!actorTypes.length || actorTypes.includes(e.actor.actorType)) && (a.referenceOnly !== true || e.actor.reference));
+        const lastId = page.length ? page[page.length - 1]!.feedId : cur?.id ?? 0;
+        const cps = await rt.ledger.feedCheckpoints();
+        const marks = sources.map((src) => cps.get(src)).filter((c): c is NonNullable<typeof c> => !!c);
+        const watermark = marks.length === sources.length && marks.length ? new Date(Math.min(...marks.map((c) => c.watermark.getTime()))) : null;
+        const coveredFrom = marks.length === sources.length && marks.length ? new Date(Math.max(...marks.map((c) => c.coveredFrom.getTime()))) : null;
+        const coverageComplete = !!coveredFrom && coveredFrom.getTime() <= Date.parse(since);
+        const pending = ingest ? ingest.incomplete.length > 0 : false;
+        const hasMore = rows.length > limit || pending;
+        return {
+          result: {
+            events, nextCursor: encodeCursor({ id: lastId, since }), hasMore,
+            watermark: watermark?.toISOString() ?? null,
+            sourceLagSeconds: watermark ? Math.max(0, Math.round((now.getTime() - watermark.getTime()) / 1000)) : null,
+            coverage: { since, coveredFrom: coveredFrom?.toISOString() ?? null, complete: coverageComplete },
+            ingest: ingest ?? { ran: false, skipped: 'ingest:false' },
+            scanned: page.length,
+          },
+          message: `${events.length} event(s)${page.length !== events.length ? ` (${page.length} scanned, filtered by actor)` : ''}${hasMore ? ' — more available: call again with nextCursor' : ''}. ${ingest ? `${ingest.apiCallsUsed} Autotask call(s) to ingest` : 'No ingest'}${ingest?.incomplete.length ? ` — PENDING: ${ingest.incomplete.join('; ')}` : ''}.${coverageComplete ? '' : ` Coverage starts ${coveredFrom?.toISOString() ?? 'at the first ingest'} — earlier events were never ingested (pass backfill:true).`}`,
         };
       }],
       ['autotask_report_resource_activity', async (a) => {

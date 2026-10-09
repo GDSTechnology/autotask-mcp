@@ -299,7 +299,7 @@ async function dashboard(body) {
 }
 
 // ── calls (diagnostics) ───────────────────────────────────────────────────
-const OUTCOME_LABEL = { ok: 'OK', error: 'Error', 'not-found': 'Not found', 'confirmation-required': 'Needs confirm', 'identification-required': 'Needs identity', 'idempotent-replay': 'Replayed', 'permission-denied': 'Denied', running: 'Running' };
+const OUTCOME_LABEL = { ok: 'OK', error: 'Error', 'not-found': 'Not found', 'confirmation-required': 'Needs confirm', 'identification-required': 'Needs identity', 'idempotent-replay': 'Replayed', 'idempotency-refused': 'Key refused', 'permission-denied': 'Denied', running: 'Running' };
 function outcomeBadge(o) {
   const cls = o === 'ok' || o === 'idempotent-replay' ? 'ok' : o === 'running' ? '' : o === 'error' || o === 'permission-denied' ? 'bad' : 'warn';
   return h('span', { class: `badge ${cls}` }, OUTCOME_LABEL[o] || o);

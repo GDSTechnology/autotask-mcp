@@ -23,6 +23,13 @@ Workflow defaults (commits, changelog, memory) come from the global `~/.claude/C
   `audit_event` and served from there while the ticket's
   lastTrackedModificationDateTime ≤ indexedAt (`getTicketHistoryEvents` →
   `source`).
+- MCP-007: writes are captured per tool call via AsyncLocalStorage
+  (`noteOperationWrite` in `AutotaskHttpClient.request`), so any tool,
+  raw_request included, gets an `_operation` with no per-tool code. Durable
+  idempotency claims the key BEFORE running; "failed after writing" (partial)
+  is never auto-retried.
+- Shell heredoc → `node -e`/`replace()` edits silently drop backslashes and
+  escaped-quote (backslash + ') sequences; use the Edit tool, or build backslashes with String.fromCharCode(92).
 
 ## Learnings - 2026-10-07
 

@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 //
 // Zero new runtime deps — Node 18+ built-in `fetch` only.
 
+import { noteOperationWrite } from '../utils/operation-context.js';
 import { resolveAutotaskApiUrl, invalidateZoneUrlCache } from '../utils/config';
 import { mapWithConcurrency } from '../utils/concurrency';
 import { getImpersonationResourceId } from '../utils/request-context';
@@ -501,6 +502,7 @@ export class AutotaskHttpClient {
     }
     const { value } = await this.send<T>(method, path, body, isZoneRetry, opts);
     invalidateAfterWrite(tenant, path);
+    noteOperationWrite(method, path, body, value);
     if (writeListener) {
       try { writeListener(method.toUpperCase(), path, body, value); } catch { /* a listener must never fail a write */ }
     }

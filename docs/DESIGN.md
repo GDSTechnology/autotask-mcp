@@ -33,6 +33,35 @@ correlationId, idempotencyKey, intent, timestamp }`. Extracted from the MCP
 request `_meta` or a reserved `_context` argument (`_meta` wins); the reserved key
 is stripped before tool logic. Threaded into every dispatch handler.
 
+### Operation log + durable idempotency (MCP-007) — **implemented**
+`db/operation-store.ts` (migration 0008) with `utils/operation-context.ts`. Every
+tool call runs inside an operation scope. The HTTP client reports each Autotask
+write into it (method, path, entity, id), so a call that wrote is recorded in
+`mcp_operation` / `mcp_operation_write` together with:
+- `correlationId`;
+- `decisionId` (`_meta.decisionId`, e.g. a Hermes recommendation);
+- the caller's `refs` (`_meta.workflow` / `node` / `executionId` / `eventId`).
+
+The write result returns these as `_operation`.
+
+**Idempotency.** An explicit `_meta.idempotencyKey` on a call that can write is
+claimed in Postgres before the call runs:
+
+| What happens next | Result |
+|---|---|
+| Same key again, same tool and payload | the stored result is replayed (`_operation.replayed`) |
+| Same key, different payload | refused (`idempotency_conflict`) |
+| Same key while the first call is still running | refused (`in_progress`) |
+| The first call failed after writing | refused (`previous_attempt_partial`); nothing is written twice |
+| The first call failed before writing | the key can be retried |
+
+Derived (conversation) keys keep the in-memory store.
+
+**Tracing back.** Activity-feed and ticket-history events made by this MCP's
+API user carry the `operation` whose write is nearest in time.
+`autotask_get_operations` looks operations up by operationId, correlationId,
+decisionId, idempotencyKey or ticket. Rows are kept for 90 days.
+
 ### Audit — **implemented (log-only)**
 `utils/audit.ts` emits one structured record per invocation (tool, outcome,
 duration, caller identity, correlation, idempotency, intent, result id). No

@@ -312,3 +312,36 @@ that decided it, and the reference-technician flag from the console's Actors pag
 - Autotask 401 or 429 responses are not retried by the feed. The client's login
   protection and the concurrency gate apply, and the source is reported as
   incomplete.
+
+## Operation log — correlation + durable idempotency (`autotask_get_operations`)
+
+Migration `0008_operations.sql` adds `mcp_operation` (one row per tool call that
+wrote to Autotask, or that carried an explicit idempotency key) and
+`mcp_operation_write` (each Autotask write made by that call: method, path,
+entity, id, time). Rows are purged after 90 days.
+
+**What callers send in the MCP request `_meta`** (all optional):
+
+| Field | Meaning |
+|---|---|
+| `correlationId` | ties calls together (generated when absent) |
+| `decisionId` | the upstream decision being executed, e.g. a Hermes recommendation id |
+| `idempotencyKey` | one key per logical action, e.g. `<eventId>:<action>` |
+| `workflow`, `node`, `executionId`, `eventId` | where the call came from; recorded, never used for authorisation |
+
+**What a write returns:** `_operation`, containing `{ operationId, correlationId,
+decisionId, idempotencyKey, refs, writes[] }`.
+
+**Idempotency** is enforced in Postgres, so it holds across retries,
+concurrent duplicates and restarts. The rules are in [DESIGN.md](DESIGN.md).
+In short: a repeat replays the stored result, while a different payload or an
+unknown outcome is refused and never re-run.
+
+**Tracing an Autotask change back to its decision:**
+- In the activity feed and ticket change history, events by this MCP's API user
+  carry `operation`, from the recorded write nearest in time.
+- `autotask_get_operations` looks up by operationId, correlationId, decisionId,
+  idempotencyKey or ticketId.
+
+If the migration hasn't been run, the MCP logs a warning and idempotency falls
+back to memory. Calls are not blocked.

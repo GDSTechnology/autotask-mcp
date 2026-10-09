@@ -1203,6 +1203,24 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_operations',
+    description: 'READ-ONLY. The operation log (correlation, MCP-007): which tool calls through this MCP wrote to Autotask, what each wrote (method, entity, id, time), and the ids that tie them to the caller — correlationId, decisionId (e.g. a Hermes recommendation), idempotencyKey, n8n workflow / node / executionId / eventId (pass these in the MCP request _meta). Look up by operationId (from a write result\'s _operation), correlationId, decisionId, idempotencyKey, or ticketId (operations that wrote that ticket or something under it, e.g. a note). Status: ok / error (nothing written) / partial (failed after writing) / running. Needs the Postgres store (migration 0008).',
+    annotations: { title: 'Operation log (correlation)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operationId: { type: 'string', description: 'UUID from a write result (_operation.operationId)' },
+        correlationId: { type: 'string', description: 'The caller-supplied (or generated) correlationId' },
+        decisionId: { type: 'string', description: 'Upstream decision id passed as _meta.decisionId' },
+        idempotencyKey: { type: 'string', description: 'The _meta.idempotencyKey of the call' },
+        ticketId: { type: 'number', description: 'Operations that wrote this ticket or something under it' },
+        since: { type: 'string', description: 'Only operations started at/after this ISO time' },
+        limit: { type: 'number', description: 'Max operations (default 50, max 500), newest first' }
+      },
+      required: []
+    }
+  },
+  {
     name: 'autotask_get_activity_feed',
     description: 'READ-ONLY. Incremental, cursor-paged feed of ticket activity across the whole tenant — ticket field changes (status/queue/priority/assignee/contract/… with before → after, from TicketHistory), ticket notes and time entries (created and edited) — each event with a classified actor (human / service_account / integration / system / contact / unknown, the classification rule, and the reference-technician flag). For learning and n8n dispatchers: poll with the returned nextCursor; replaying a cursor returns the same eventIds. ORDER: by ingestion (feedId), not occurredAt — a late-arriving event (e.g. a ticket whose history was read later) still appears after your cursor, never skipped, but its occurredAt can be older than events you already saw; dedupe on eventId. Each call first brings the store up to date from per-source checkpoints within maxApiCalls (time entries from the shadow: 0 calls; notes: 1 call per 500; ticket history: 1 call per changed ticket, cached) and reports anything the budget left as pending (hasMore=true). Reports watermark (everything before it is stored), sourceLagSeconds and coverage: events before coverage.coveredFrom were never ingested — pass backfill:true (bounded, max 90 days) to fill them. Needs the Postgres store (migrations 0003 + 0007).',
     annotations: { title: 'Activity feed (incremental)', readOnlyHint: true },
@@ -6125,7 +6143,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_get_actor_roster', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
+    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_get_actor_roster', 'autotask_get_operations', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

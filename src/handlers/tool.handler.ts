@@ -55,6 +55,11 @@ import {
   buildConfirmationRequired,
 } from '../utils/risk.js';
 import { InMemoryIdempotencyStore, deriveIdempotencyKey, isMutatingTool } from '../utils/idempotency.js';
+import { randomUUID } from 'node:crypto';
+import { runInOperation, type OperationScope } from '../utils/operation-context.js';
+import { argsDigest, mayWrite, operationClaimResult, operationSummary, withOperation } from '../utils/operations.js';
+import { OperationStore, type ClaimResult, type OperationInput } from '../db/operation-store.js';
+import { getPool } from '../db/pool.js';
 import {
   FunctionalRole,
   parseRoleMap,
@@ -207,6 +212,8 @@ export class AutotaskToolHandler {
   // Null when disabled — the structured log is always emitted regardless.
   // Assigned in the constructor (needs this.logger).
   private auditSink: AuditSink | null = null;
+  // Operation log (MCP-007); null without Postgres, or once its table is found missing.
+  private operations: OperationStore | null = null;
   // Caller → functional role (§4.2), for the permission gate. Config-driven for
   // now; disabled unless MCP_PERMISSIONS_ENABLED=true.
   private roleMap = parseRoleMap(process.env.AUTOTASK_ROLE_MAP);
@@ -216,6 +223,14 @@ export class AutotaskToolHandler {
     this.logger = logger;
     this.lazyLoading = lazyLoading;
     this.auditSink = createAuditSink(logger);
+    // Operation log + durable idempotency (MCP-007) whenever Postgres is configured.
+    const opPool = getPool(logger);
+    if (opPool) {
+      this.operations = new OperationStore(opPool);
+      const purge = () => { this.operations?.purge(90).catch(() => undefined); };
+      setTimeout(purge, 60_000).unref?.();
+      setInterval(purge, 24 * 3_600_000).unref?.();
+    }
     this.enhanceConcurrency = resolveEnhanceConcurrency(process.env.AUTOTASK_ENHANCE_CONCURRENCY);
     this.picklistCache = new PicklistCache(
       logger,
@@ -1150,6 +1165,19 @@ export class AutotaskToolHandler {
           message: `${r.events.length} event(s) for ${w.resourceIds.length || 'all'} resource(s) ${w.window.label}${next ? ` (page of ${page.length}; pass nextCursor for more)` : ''}. ${r.meta.apiCallsUsed} Autotask call(s)${r.meta.incomplete.length ? ` — INCOMPLETE: ${r.meta.incomplete.join('; ')}` : ''}.`,
         };
       }],
+      // Operation log lookup (MCP-007): what a correlation / decision / key / ticket led this MCP to write.
+      ['autotask_get_operations', async (a) => {
+        if (!this.operations) return { result: { status: 'unavailable' }, message: 'The operation log needs the Postgres store (MCP_PG_ENABLED=true and migration 0008).' };
+        const q = {
+          ...(a.operationId ? { operationId: String(a.operationId) } : {}), ...(a.correlationId ? { correlationId: String(a.correlationId) } : {}),
+          ...(a.decisionId ? { decisionId: String(a.decisionId) } : {}), ...(a.idempotencyKey ? { idempotencyKey: String(a.idempotencyKey) } : {}),
+          ...(a.ticketId != null ? { ticketId: Number(a.ticketId) } : {}), ...(a.since ? { since: String(a.since) } : {}), ...(a.limit ? { limit: Number(a.limit) } : {}),
+        };
+        if (q.operationId && !/^[0-9a-f-]{36}$/i.test(q.operationId)) return { result: { status: 'invalid_value', field: 'operationId' }, message: 'operationId is the UUID in a write result (_operation.operationId).' };
+        if (!q.operationId && !q.correlationId && !q.decisionId && !q.idempotencyKey && q.ticketId == null) return { result: null, message: 'Give operationId, correlationId, decisionId, idempotencyKey or ticketId.' };
+        const ops = await this.operations.find(q);
+        return { result: { operations: ops }, message: `${ops.length} operation(s)${ops.length ? `: ${ops.slice(0, 5).map((o) => `${o.tool} ${o.status} (${o.writes.length} write(s))`).join('; ')}${ops.length > 5 ? '; …' : ''}` : ''}.` };
+      }],
       // Incremental activity feed (MCP-002/003): checkpointed ingest into audit_event, cursor = ingestion order.
       ['autotask_get_activity_feed', async (a) => {
         const rt = getShadowRuntime();
@@ -1173,7 +1201,7 @@ export class AutotaskToolHandler {
         try { ctx = await s.getActorContext(); } catch { /* actors reported as unknown */ }
         const actorTypes: string[] = Array.isArray(a.actorTypes) ? a.actorTypes.map(String) : [];
         const withBA = a.includeBeforeAfter !== false, withDetails = a.includeDetails !== false;
-        const events = page.map((e) => {
+        let events = page.map((e) => {
           const actor = feedActor(e, ctx);
           const ticketId = e.entityType === 'ticket' ? e.entityId : e.parentEntityType === 'ticket' ? e.parentEntityId ?? null : null;
           return {
@@ -1184,6 +1212,8 @@ export class AutotaskToolHandler {
             source: e.source, systemGenerated: e.systemGenerated, ...(withDetails && e.details ? { details: e.details } : {}),
           };
         }).filter((e) => (!actorTypes.length || actorTypes.includes(e.actor.actorType)) && (a.referenceOnly !== true || e.actor.reference));
+        // MCP-007: changes made through this MCP carry the operation (correlation / decision) that made them.
+        events = await this.linkOperations(events, (e) => (e.actor.actorType === 'service_account' ? { type: e.entityType, id: e.entityId, at: e.occurredAt } : null), (e, operation) => ({ ...e, operation }));
         const lastId = page.length ? page[page.length - 1]!.feedId : cur?.id ?? 0;
         const cps = await rt.ledger.feedCheckpoints();
         const marks = sources.map((src) => cps.get(src)).filter((c): c is NonNullable<typeof c> => !!c);
@@ -1631,6 +1661,10 @@ export class AutotaskToolHandler {
         const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId, ticketNumber: a.ticketNumber });
         if ('error' in ref) return { result: null, message: ref.error };
         const r = await s.getTicketHistoryEvents(ref.id, { includeNoise: a.includeTimestampOnly === true, live: a.live === true });
+        type HistEv = { date?: string; actor?: { actorType?: string } } & Record<string, unknown>;
+        if (Array.isArray(r.events)) {
+          r.events = await this.linkOperations(r.events as HistEv[], (e) => (e.actor?.actorType === 'service_account' && e.date ? { type: 'ticket', id: ref.id, at: new Date(e.date.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(e.date) ? e.date : `${e.date}Z`).toISOString() } : null), (e, operation) => ({ ...e, operation }));
+        }
         const c = r.counts as { events: number; hiddenTimestampOnly: number; byActorKind: Record<string, number> };
         const kinds = Object.entries(c.byActorKind).map(([k, v]) => `${v} by ${k}`).join(', ');
         return { result: r, message: `${c.events} history event(s) on ticket ${ref.ticketNumber ?? ref.id}${kinds ? ` (${kinds})` : ''}${c.hiddenTimestampOnly ? `; ${c.hiddenTimestampOnly} timestamp-only event(s) hidden (includeTimestampOnly:true to show)` : ''}.` };
@@ -3597,6 +3631,42 @@ export class AutotaskToolHandler {
     }
   }
 
+  /** Claim an idempotency key; null (unguarded, in-memory fallback) when the operation table isn't migrated. Other errors fail the call. */
+  private async claimOperation(op: OperationInput & { idempotencyKey: string }): Promise<ClaimResult | null> {
+    try { return await this.operations!.claim(op); } catch (err) {
+      if (/mcp_operation/.test(String((err as Error)?.message)) && /does not exist/.test(String((err as Error)?.message))) {
+        this.logger.warn('Operation log: table missing — run the migrations (0008); idempotency falls back to memory');
+        this.operations = null;
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Tie audit events made by this MCP's API user to the operation (and so the
+   * caller's correlation / decision ids) whose recorded write is nearest in time.
+   * Best effort: without the operation log, events come back unchanged.
+   */
+  private async linkOperations<T>(events: T[], target: (e: T) => { type: string; id: number; at: string } | null, attach: (e: T, op: Record<string, unknown>) => T): Promise<T[]> {
+    if (!this.operations || !events.length) return events;
+    const keyed = events.map((e) => ({ e, t: target(e) }));
+    const targets = keyed.map((k) => k.t).filter((t): t is NonNullable<typeof t> => !!t && Number.isFinite(Date.parse(t.at)));
+    if (!targets.length) return events;
+    let links: Map<string, Awaited<ReturnType<OperationStore['find']>>[number]>;
+    try { links = await this.operations.linkEvents(targets); } catch { return events; }
+    return keyed.map(({ e, t }) => {
+      const op = t ? links.get(`${t.type}:${t.id}:${t.at}`) : undefined;
+      return op ? attach(e, { operationId: op.operationId, correlationId: op.correlationId, decisionId: op.decisionId, tool: op.tool, source: op.source, refs: op.refs, startedAt: op.startedAt }) : e;
+    });
+  }
+
+  /** Record an operation's outcome — best effort, never fails the call. */
+  private async finishOperation(op: OperationInput, out: Parameters<OperationStore['finish']>[1]): Promise<void> {
+    if (!this.operations) return;
+    try { await this.operations.finish(op, out); } catch (err) { this.logger.warn(`Operation log: could not record ${op.tool} (${op.operationId})`, err); }
+  }
+
   /**
    * Emit one audit record: always to the structured log, and additionally to the
    * PG audit_log table when the sink is enabled (§23). The PG write is
@@ -3635,6 +3705,11 @@ export class AutotaskToolHandler {
     if (origin) ctx.origin = origin;
     args = stripCallerContext(args);
     const startedAt = Date.now();
+    // Operation scope (MCP-007): every Autotask write this call makes is captured
+    // and recorded with the caller's correlation / decision ids.
+    const opScope: OperationScope = { operationId: randomUUID(), writes: [] };
+    let opInput: OperationInput | null = null;
+    let opClaimed = false;
     this.logger.debug(`Calling tool: ${name}`, args);
 
     try {
@@ -3741,7 +3816,24 @@ export class AutotaskToolHandler {
       // repeated logical action instead of mutating twice. Keyed by a
       // caller-supplied idempotencyKey, or derived from caller + conversation +
       // tool + payload. No key (e.g. a context-free CLI call) → no dedup.
-      const idempotencyKey = isMutatingTool(name) ? deriveIdempotencyKey(ctx, name, args) : undefined;
+      // Durable claim first (MCP-007): an explicit idempotencyKey on a call that can
+      // write is claimed in Postgres BEFORE running, so a retry, a concurrent
+      // duplicate or a restart can't write twice. The in-memory store remains for
+      // derived (conversation) keys and when Postgres is off.
+      opInput = {
+        operationId: opScope.operationId, correlationId: ctx.correlationId, decisionId: ctx.decisionId, idempotencyKey: ctx.idempotencyKey,
+        tool: name, argsDigest: argsDigest(args), source: ctx.source, refs: ctx.refs,
+        caller: { user: ctx.trustedActingUserEmail ?? ctx.requestingUserEmail ?? null, resourceId: ctx.trustedActingResourceId ?? ctx.autotaskResourceId ?? null, conversationId: ctx.conversationId ?? null, userAgent: ctx.origin?.userAgent ?? null },
+      };
+      if (this.operations && ctx.idempotencyKey && mayWrite(name, args)) {
+        const claim = await this.claimOperation({ ...opInput, idempotencyKey: ctx.idempotencyKey });
+        if (claim && claim.status !== 'claimed') {
+          this.recordAudit(ctx, { tool: name, outcome: claim.status === 'replay' ? 'idempotent-replay' : 'idempotency-refused', durationMs: Date.now() - startedAt });
+          return operationClaimResult(claim, ctx.idempotencyKey);
+        }
+        opClaimed = claim?.status === 'claimed';
+      }
+      const idempotencyKey = !opClaimed && isMutatingTool(name) ? deriveIdempotencyKey(ctx, name, args) : undefined;
       if (idempotencyKey) {
         const cached = this.idempotencyStore.get(idempotencyKey);
         if (cached) {
@@ -3782,7 +3874,7 @@ export class AutotaskToolHandler {
           // context so audit inside the dispatch still sees the calling container.
           ...(ctx.origin ? { origin: ctx.origin } : {}),
         },
-        () => handler(args, ctx)
+        () => runInOperation(opScope, () => handler(args, ctx))
       );
 
       // Check for empty/not-found results and return explicit error to prevent hallucination
@@ -3790,6 +3882,7 @@ export class AutotaskToolHandler {
       if (notFoundMsg) {
         this.logger.debug(`Not-found result for ${name}: ${notFoundMsg}`);
         this.recordAudit(ctx, { tool: name, outcome: 'not-found', durationMs: Date.now() - startedAt });
+        if (opInput && (opClaimed || opScope.writes.length)) await this.finishOperation(opInput, { status: opScope.writes.length ? 'partial' : 'error', writes: opScope.writes, error: notFoundMsg });
         return errorToolResult({ error: notFoundMsg, tool: name });
       }
 
@@ -3846,6 +3939,12 @@ export class AutotaskToolHandler {
         responseText = JSON.stringify({ message, data: result });
       }
 
+      // MCP-007: a call that wrote (or claimed a key) returns and records its operation.
+      if (opInput && (opClaimed || opScope.writes.length)) {
+        responseText = withOperation(responseText, operationSummary(opInput, opScope.writes));
+        await this.finishOperation(opInput, { status: 'ok', writes: opScope.writes, resultText: responseText });
+      }
+
       this.logger.debug(`Successfully executed tool: ${name}`);
       const resultId =
         result && typeof result === 'object' && typeof (result as { id?: unknown }).id === 'number'
@@ -3865,6 +3964,10 @@ export class AutotaskToolHandler {
 
     } catch (error) {
       this.logger.error(`Tool execution failed for ${name}:`, error);
+      // Failed after writing = partial (never auto-retried under the same key); before = error (retryable).
+      if (opInput && (opClaimed || opScope.writes.length)) {
+        await this.finishOperation(opInput, { status: opScope.writes.length ? 'partial' : 'error', writes: opScope.writes, error: error instanceof Error ? error.message : String(error) });
+      }
       this.recordAudit(ctx, {
         tool: name,
         outcome: 'error',

@@ -15,6 +15,7 @@ export type AuditOutcome =
   | 'confirmation-required'
   | 'identification-required'
   | 'idempotent-replay'
+  | 'idempotency-refused'
   | 'permission-denied';
 
 export interface AuditEntry {

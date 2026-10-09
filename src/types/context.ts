@@ -25,6 +25,10 @@ export interface CallerContext {
   correlationId: string;
   idempotencyKey?: string;
   intent?: string;
+  /** Upstream decision this call executes (e.g. a Hermes recommendation id) — MCP-007 correlation. */
+  decisionId?: string;
+  /** Caller-declared references (n8n workflow / node / executionId / eventId) — recorded, never trusted for auth. */
+  refs?: Record<string, string>;
   timestamp: string;
   /**
    * Acting identity injected by a TRUSTED gateway header (behind S2S), used for
@@ -100,6 +104,16 @@ export function extractCallerContext(
 
   const intent = firstString(m.intent, c.intent);
   if (intent) ctx.intent = intent;
+
+  const decisionId = firstString(m.decisionId, c.decisionId, m.recommendationId, c.recommendationId);
+  if (decisionId) ctx.decisionId = decisionId.slice(0, 200);
+
+  const refs: Record<string, string> = {};
+  for (const k of ['workflow', 'node', 'executionId', 'eventId']) {
+    const v = firstString(m[k], c[k], typeof m[k] === 'number' ? String(m[k]) : undefined);
+    if (v) refs[k] = v.slice(0, 200);
+  }
+  if (Object.keys(refs).length) ctx.refs = refs;
 
   const resourceId = firstNumber(m.autotaskResourceId, c.autotaskResourceId);
   if (resourceId !== undefined) ctx.autotaskResourceId = resourceId;

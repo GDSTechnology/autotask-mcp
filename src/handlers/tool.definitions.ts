@@ -930,7 +930,9 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       'companyID alone leaves an incompatible location). Refuses to move a ticket ' +
       'linked to a configuration item unless force is set (that can break the ' +
       'RMM-to-Autotask device link), and clears the contact unless a target ' +
-      'contact is supplied. Reads back to verify. Confirm with the user first.',
+      'contact is supplied. companyLocationID picks a specific location of the target company (e.g. the matched contact\'s site) instead of the primary one. ' +
+      'A contract belongs to one company: when the ticket\'s contract is not the target company\'s, contract + service + bundle are cleared as part of the move and reported as contractCleared. ' +
+      'Reads back to verify. Confirm with the user first.',
     annotations: { title: 'Move ticket to another company', readOnlyHint: false, idempotentHint: false },
     inputSchema: {
       type: 'object',
@@ -938,6 +940,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         ticketId: { type: 'number', description: 'The ticket to move' },
         companyID: { type: 'number', description: 'Target company ID' },
         contactID: { type: 'number', description: 'Optional target-company contact; the contact is cleared if omitted' },
+        companyLocationID: { type: 'number', description: 'Optional: a location of the TARGET company to use instead of its primary location (refused if it belongs to another company)' },
         force: { type: 'boolean', description: 'Override the configuration-item safety block (not recommended)' }
       },
       required: ['ticketId', 'companyID']

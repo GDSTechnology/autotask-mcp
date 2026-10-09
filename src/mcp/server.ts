@@ -8,6 +8,7 @@
 // fallback) and serveStdio (stdio, same factory, era pinned per connection).
 
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
+import { startNotifyWatch } from '../services/notify-watch.js';
 import { ingestAutotaskWebhook } from '../db/webhook-ingest.js';
 import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
 import { initAuthBlockStore } from '../db/auth-block-store.js';
@@ -314,6 +315,11 @@ export class AutotaskMcpServer {
           apiUsername: this.envConfig?.autotask?.username,
         });
       } catch (err) { this.logger.error('Admin console failed to start (continuing without it)', err); }
+      // Notifications (console → Notifications): watch for trips and post them to the configured channels.
+      const tenant = this.envConfig?.auth?.mode === 'gateway' ? undefined : this.envConfig?.autotask?.username;
+      if (tenant) {
+        startNotifyWatch({ tenant, lastRun: () => getShadowRuntime()?.lastRun() ?? null, lastVerify: () => getShadowRuntime()?.lastVerify() ?? null });
+      }
     } else {
       await this.startStdioTransport();
     }

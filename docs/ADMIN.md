@@ -298,6 +298,69 @@ ground truth. The same classification (`actorType`, `classificationSource`,
 `reference`) appears on every event from
 `autotask_get_ticket_change_history`, and in `autotask_get_actor_roster`.
 
+### Notifications (Discord, Teams, Slack, any webhook)
+
+The **Notifications** page posts an alert to a chat channel when something
+trips. Each channel picks its own events:
+
+| Event | Severity |
+|---|---|
+| Autotask login **held** (needs *Retry now*) | critical |
+| Autotask login paused after a failed login; working again | warning / info |
+| Backpressure **stop** (usage ≥ 90%, a 429, the login); back to ok | warning / info |
+| Autotask 429 (threshold exceeded) | warning |
+| Mirror sync error on an entity; mirror consistency check needs attention | warning |
+| A write **failed after writing** (half-applied: n8n / Hermes change) | critical |
+| A burst of tool errors (5+ in 5 minutes) | warning |
+
+**How often you hear about it**
+- The server checks every 20 seconds.
+- A condition that continues is reported **once**, and its recovery once.
+- The same event goes to a channel at most once every 15 minutes.
+- Delivery never slows down or fails the MCP itself. A failed send shows under
+  the channel ("last failure …").
+
+**Add a Discord channel**
+1. In Discord, open the server → **Server Settings → Integrations → Webhooks →
+   New Webhook**.
+2. Pick the channel, name it (e.g. *Autotask MCP*), then **Copy Webhook URL**.
+3. In the console, go to **Notifications → Add a channel**:
+   - **Type:** Discord;
+   - **Webhook URL:** paste it;
+   - tick the events, then **Add channel**.
+4. Press **Send test**. A test message should appear in the channel.
+
+**Add a Microsoft Teams channel** (Teams Workflows; the old "Incoming Webhook"
+connectors are being retired)
+1. In the Teams channel, open **••• → Workflows**.
+2. Choose **"Post to a channel when a webhook request is received"**.
+3. Name the workflow, confirm the team and channel, then **Add workflow**.
+4. Copy the URL it shows. It contains `logic.azure.com` or `powerplatform.com`.
+5. In the console, add a channel with **Type:** Microsoft Teams and paste the
+   URL. Then press **Send test**.
+   - The message arrives as an Adaptive Card, posted by the Workflows app.
+
+**Slack:** create an app at api.slack.com/apps, turn on **Incoming Webhooks**,
+then **Add New Webhook to Workspace**. The URL looks like
+`https://hooks.slack.com/services/…`.
+
+**Other (JSON webhook):** use this for anything that takes an https POST, such
+as an n8n Webhook node, PagerDuty or Opsgenie.
+- The body is `{ event, severity, title, detail, fields, at, server }`.
+- With a **signing secret** (16+ characters), each request carries
+  `X-Atmcp-Signature: sha256=<HMAC-SHA256 of the body>`, so the receiver can
+  verify it.
+
+**Security**
+- The webhook URL is stored on the server (Postgres). It is never shown again
+  in full, not in the export, and not in the activity log.
+- To replace a URL, use **Change URL**.
+- Only https and public hosts are accepted. Each type checks its service's
+  host (`discord.com`, `hooks.slack.com`, the Teams Workflows hosts).
+- Read-only users can see the channels, but can't add, change or test them.
+- The server name in each message comes from `MCP_NOTIFY_SERVER_NAME`
+  (default *Autotask MCP*). Set it to tell prod from dev.
+
 ### Mirror check
 
 The Dashboard's **Mirror check** panel shows whether the Postgres shadow matches Autotask. Every night, random rows of every mirrored entity are re-read from Autotask and compared field by field, and the row counts are compared too. The panel shows *Matches Autotask* or *Needs attention*, with the entities, counts and example ids involved. Rows that were simply edited since the last sync are not counted as problems. Real differences are fixed from Autotask automatically. Administrators can press **Check now**; a run costs about 2 Autotask calls per entity.
@@ -499,3 +562,4 @@ commands:
 | `MCP_ADMIN_COOKIE_SECURE` | `auto` | `auto` = Secure cookie when the proxy says HTTPS (`X-Forwarded-Proto`); `true` / `false` to force |
 | `AUTOTASK_AUTH_PAUSE_SECONDS` | `300` | First pause after Autotask rejects the API credentials (doubles per repeat, max 60 min); `0` disables. See "Autotask login protection" |
 | `MCP_ADMIN_TRUST_PROXY` | `true` | Use `CF-Connecting-IP` / `X-Forwarded-For` for the client IP (throttling, activity log). Set `false` if the port is reachable without a proxy |
+| `MCP_NOTIFY_SERVER_NAME` | `Autotask MCP` | Server name shown in notifications (tell prod from dev) |

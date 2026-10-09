@@ -38,6 +38,8 @@ import { classify, ttlMs, cacheEnabled } from '../services/http-cache.js';
 import { shadowEntity } from '../db/shadow-entities.js';
 import { authBlockStatus, clearAuthBlock } from '../services/autotask-http.js';
 import { recentLogs } from '../utils/logger.js';
+import { getNotifier, NOTIFY_EVENTS, type NotifyChannel } from '../services/notifier.js';
+import { CHANNEL_KINDS, ChannelInputError, NOTIFY_SETTING_KEY, channelFromInput, channelLogDetails, channelView, parseStoredChannels } from './notifications.js';
 
 export interface AdminConsoleOptions {
   logger: Logger;
@@ -567,6 +569,57 @@ export function adminHandler(deps: AdminDeps) {
       return send(res, 202, { ok: true, message: 'Sync started. Refresh the status in a minute to see the result.' });
     }
 
+    // ── notifications (Discord / Teams / Slack / JSON webhooks) ──
+    if (path === '/api/notifications' && method === 'GET') {
+      requireUser(ctx);
+      const n = getNotifier();
+      return send(res, 200, {
+        channels: n.getChannels().map((c) => channelView(c, n.channelStatus(c.id))),
+        events: NOTIFY_EVENTS, kinds: CHANNEL_KINDS,
+      });
+    }
+    const saveChannels = async (list: NotifyChannel[]) => {
+      await store.saveSetting(NOTIFY_SETTING_KEY, list, ctx.user!.username);
+      getNotifier().setChannels(list);
+    };
+    if (path === '/api/notifications' && method === 'POST') {
+      requireUser(ctx, 'admin');
+      const list = getNotifier().getChannels();
+      let c: NotifyChannel;
+      try { c = channelFromInput(await readJson(req), null, list.length); } catch (e) { if (e instanceof ChannelInputError) throw new HttpError(400, e.message, 'invalid'); throw e; }
+      await saveChannels([...list, c]);
+      void log(ctx, 'notify.channel_added', channelLogDetails(c));
+      return send(res, 200, { ok: true, id: c.id });
+    }
+    const chMatch = /^\/api\/notifications\/([0-9a-f-]{36})(\/test)?$/.exec(path);
+    if (chMatch) {
+      requireUser(ctx, 'admin');
+      const list = getNotifier().getChannels();
+      const existing = list.find((c) => c.id === chMatch[1]);
+      if (!existing) throw new HttpError(404, 'No such channel.');
+      if (chMatch[2] && method === 'POST') {
+        const r = await getNotifier().send(existing, {
+          type: 'test', severity: 'info', title: 'Test notification from the Autotask MCP',
+          detail: `Sent from the admin console by ${ctx.user!.username}. If you can read this, "${existing.name}" is set up correctly.`,
+          fields: { events: existing.events.length ? existing.events.join(', ') : 'none selected yet' },
+        });
+        void log(ctx, 'notify.channel_tested', { id: existing.id, name: existing.name, ok: r.ok, ...(r.error ? { error: r.error } : {}) });
+        return send(res, 200, r.ok ? { ok: true, message: `Test sent to "${existing.name}".` } : { ok: false, message: `The test did not go through: ${r.error}` });
+      }
+      if (!chMatch[2] && method === 'PUT') {
+        let c: NotifyChannel;
+        try { c = channelFromInput(await readJson(req), existing, list.length); } catch (e) { if (e instanceof ChannelInputError) throw new HttpError(400, e.message, 'invalid'); throw e; }
+        await saveChannels(list.map((x) => (x.id === c.id ? c : x)));
+        void log(ctx, 'notify.channel_changed', channelLogDetails(c));
+        return send(res, 200, { ok: true });
+      }
+      if (!chMatch[2] && method === 'DELETE') {
+        await saveChannels(list.filter((x) => x.id !== existing.id));
+        void log(ctx, 'notify.channel_removed', channelLogDetails(existing));
+        return send(res, 200, { ok: true });
+      }
+    }
+
     if (path === '/api/users' && method === 'GET') { requireUser(ctx, 'admin'); return send(res, 200, { users: (await store.listUsers()).map(publicUser) }); }
     if (path === '/api/users' && method === 'POST') {
       requireUser(ctx, 'admin');
@@ -689,7 +742,11 @@ export async function startAdminConsole(opts: AdminConsoleOptions): Promise<Admi
 
   const reload = async () => {
     try {
-      const dropped = loadOverrides(await store.loadSettings());
+      const saved = await store.loadSettings();
+      // Notification channels live beside the settings but aren't one (their URLs are secrets).
+      getNotifier().setChannels(parseStoredChannels(saved[NOTIFY_SETTING_KEY]));
+      delete saved[NOTIFY_SETTING_KEY];
+      const dropped = loadOverrides(saved);
       if (dropped.length) opts.logger.warn(`admin: ignored invalid saved setting(s): ${dropped.join(', ')}`);
       applySettings();
       if (state) { state.schemaReady = true; state.lastLoadError = null; }

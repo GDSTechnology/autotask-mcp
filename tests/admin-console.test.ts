@@ -21,6 +21,7 @@ import { AutotaskService } from '../src/services/autotask.service';
 import { AutotaskToolHandler } from '../src/handlers/tool.handler';
 import { Logger } from '../src/utils/logger';
 import type { McpServerConfig } from '../src/types/mcp';
+import { Notifier, _setNotifier } from '../src/services/notifier';
 
 const logger = new Logger('error');
 afterEach(() => { _resetSettings(); _resetThrottle(); _setShadowRuntime(null); });
@@ -229,6 +230,43 @@ describe('admin HTTP API', () => {
     const vs = await login('v2', v.body.password);
     expect((await call('PATCH', `/api/users/${v.body.user.id}`, { disabled: true }, a.jar)).status).toBe(200);
     expect((await call('GET', '/api/me', undefined, vs.jar)).status).toBe(401);
+  });
+
+  test('notifications: admins add / test / change / delete channels; the URL never reaches the browser or the logs', async () => {
+    const sent: Array<{ url: string; body: string }> = [];
+    _setNotifier(new Notifier({ fetch: (async (url: string, init: { body: string }) => { sent.push({ url, body: init.body }); return { ok: true, status: 204, headers: { get: () => null }, text: async () => '' }; }) as never }));
+    try {
+      const a = await login('admin', 'initial-temp-password');
+      await call('POST', '/api/me/password', { currentPassword: 'initial-temp-password', newPassword: 'a-much-better-passphrase' }, a.jar);
+      const URL_ = 'https://discord.com/api/webhooks/123456789/very-secret-token';
+      expect((await call('POST', '/api/notifications', { name: 'Ops', kind: 'discord', url: 'https://evil.example/x', events: ['auth.held'] }, a.jar)).body.code).toBe('invalid');
+      const add = await call('POST', '/api/notifications', { name: 'Ops', kind: 'discord', url: URL_, events: ['auth.held', 'operation.partial'] }, a.jar);
+      expect(add.status).toBe(200);
+      expect(store.settings['notify.channels']).toEqual([expect.objectContaining({ name: 'Ops', url: URL_ })]);
+
+      const list = await call('GET', '/api/notifications', undefined, a.jar);
+      expect(JSON.stringify(list.body)).not.toContain('very-secret-token');
+      expect(list.body.channels[0]).toMatchObject({ name: 'Ops', kind: 'discord', events: ['auth.held', 'operation.partial'], enabled: true });
+      expect(list.body.events.length).toBeGreaterThan(5);
+      expect(JSON.stringify((await call('GET', '/api/settings', undefined, a.jar)).body)).not.toContain('very-secret-token');
+
+      const test = await call('POST', `/api/notifications/${add.body.id}/test`, {}, a.jar);
+      expect(test.body).toMatchObject({ ok: true });
+      expect(sent[0]!.url).toBe(URL_);
+      expect(JSON.parse(sent[0]!.body).embeds[0].title).toMatch(/Test notification/);
+
+      expect((await call('PUT', `/api/notifications/${add.body.id}`, { events: ['tool.errors'], enabled: false }, a.jar)).status).toBe(200);
+      expect((store.settings['notify.channels'] as unknown[])[0]).toMatchObject({ url: URL_, events: ['tool.errors'], enabled: false }); // URL kept when not resent
+      expect((await call('DELETE', `/api/notifications/${add.body.id}`, undefined, a.jar)).status).toBe(200);
+      expect(store.settings['notify.channels']).toEqual([]);
+      expect(store.events.map((e) => e.action)).toEqual(expect.arrayContaining(['notify.channel_added', 'notify.channel_tested', 'notify.channel_changed', 'notify.channel_removed']));
+
+      const v = await call('POST', '/api/users', { username: 'v3', role: 'viewer' }, a.jar);
+      const vs = await login('v3', v.body.password);
+      await call('POST', '/api/me/password', { currentPassword: v.body.password, newPassword: 'viewer-passphrase-ok' }, vs.jar);
+      expect((await call('GET', '/api/notifications', undefined, vs.jar)).status).toBe(200);
+      expect((await call('POST', '/api/notifications', { name: 'x', kind: 'discord', url: URL_, events: [] }, vs.jar)).status).toBe(403);
+    } finally { _setNotifier(null); }
   });
 
   test('failed sign-ins are throttled per username', async () => {

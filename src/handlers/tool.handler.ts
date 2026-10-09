@@ -17,6 +17,7 @@ import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
 import { defaultWorkDate, formatChoices, localDayWindow, matchPicklist, TimeGap } from '../utils/staff-tools.js';
 import { getShadowRuntime } from '../db/shadow-runtime.js';
 import { collectAuditEvents, type CollectOptions } from '../db/audit-collector.js';
+import { BACKFILL_SOURCES, BackfillJobs, MAX_RANGE_DAYS, runBackfillStep, type BackfillSource } from '../db/history-backfill.js';
 import { FEED_SOURCES, SOURCE_ENTITY, decodeCursor, encodeCursor, eventType, feedActor, ingestActivity, type FeedSource } from '../db/activity-feed.js';
 import { buildDailyAudit } from '../utils/daily-audit.js';
 import { SHADOW_ENTITIES, shadowEntity } from '../db/shadow-entities.js';
@@ -1164,6 +1165,45 @@ export class AutotaskToolHandler {
           result: { window: w.window, events: page, nextCursor: next, meta: { ...r.meta, recordsReturned: page.length, totalEvents: r.events.length } },
           message: `${r.events.length} event(s) for ${w.resourceIds.length || 'all'} resource(s) ${w.window.label}${next ? ` (page of ${page.length}; pass nextCursor for more)` : ''}. ${r.meta.apiCallsUsed} Autotask call(s)${r.meta.incomplete.length ? ` — INCOMPLETE: ${r.meta.incomplete.join('; ')}` : ''}.`,
         };
+      }],
+      // Bounded historical backfill (MCP-006): completed tickets in a range → the ledger, one budgeted step per call.
+      ['autotask_backfill_history', async (a) => {
+        const rt = getShadowRuntime();
+        const pool = getPool(this.logger);
+        if (!rt || !pool) return { result: { status: 'unavailable' }, message: 'The history backfill needs the Postgres store (MCP_PG_ENABLED, MCP_PG_SHADOW_ENABLED and migration 0009).' };
+        const jobs = new BackfillJobs(pool);
+        if (!a.jobId && !a.from) {
+          const list = await jobs.list();
+          return { result: { jobs: list }, message: list.length ? `${list.length} backfill job(s): ${list.slice(0, 5).map((j) => `${j.id} ${j.rangeFrom.slice(0, 10)}→${j.rangeTo.slice(0, 10)} ${j.status} ${j.ticketsDone}/${j.ticketsTotal ?? '?'}`).join('; ')}` : 'No backfill jobs yet — start one with from/to (dryRun:true first).' };
+        }
+        const http = await s.httpClient();
+        let job = a.jobId ? await jobs.get(String(a.jobId)) : null;
+        if (a.jobId && !job) return { result: { status: 'not_found' }, message: `No backfill job ${String(a.jobId)}.` };
+        if (!job) {
+          const from = new Date(String(a.from)), to = a.to ? new Date(String(a.to)) : new Date();
+          if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) return { result: { status: 'invalid_value' }, message: 'from/to must be ISO dates with from before to.' };
+          if (to.getTime() - from.getTime() > MAX_RANGE_DAYS * 86_400_000) return { result: { status: 'invalid_value' }, message: `A job covers at most ${MAX_RANGE_DAYS} days — split the range.` };
+          const sources = (Array.isArray(a.sources) && a.sources.length ? a.sources.map(String) : BACKFILL_SOURCES).filter((x: string): x is BackfillSource => (BACKFILL_SOURCES as string[]).includes(x));
+          const total = await http.count('Tickets', [{ op: 'gte', field: 'completedDate', value: from.toISOString() }, { op: 'lt', field: 'completedDate', value: to.toISOString() }]);
+          const batch = Math.min(Math.max(Number(a.batchSize) || 50, 1), 200);
+          const pages = total != null ? Math.ceil(total / batch) : null;
+          const estimate = total != null && pages != null ? (sources.includes('tickets') ? total : 0) + pages * (2 + (sources.includes('ticketNotes') ? 1 : 0) + (sources.includes('timeEntries') ? 1 : 0)) : null;
+          if (a.dryRun === true) {
+            return { result: { dryRun: true, ticketsCompleted: total, sources, estimatedApiCalls: estimate }, message: `${total ?? 'Unknown number of'} ticket(s) completed ${from.toISOString().slice(0, 10)} → ${to.toISOString().slice(0, 10)}; about ${estimate ?? '?'} Autotask call(s) in total (notes / time entries above 500 per page add a few). Nothing created — run without dryRun to start.` };
+          }
+          job = await jobs.create({ rangeFrom: from, rangeTo: to, sources, ticketsTotal: total });
+        }
+        const step = await runBackfillStep({
+          ledger: rt.ledger, jobs, http, service: s,
+          usagePct: async () => { const u = await s.getApiUsage(); return 'usedPct' in u.autotask ? u.autotask.usedPct : null; },
+        }, job, {
+          maxApiCalls: Number(a.maxApiCalls) || 100, batchSize: Number(a.batchSize) || 50,
+          pauseAtPct: a.pauseAtUsagePct != null ? Number(a.pauseAtUsagePct) : 50, timeZone: defaultTimeZone(),
+        });
+        const j = step.job;
+        const progress = `${j.ticketsDone}/${j.ticketsTotal ?? '?'} ticket(s), ${j.eventsIngested} event(s), ${j.apiCalls} call(s) so far`;
+        const next = j.status === 'done' ? 'Done.' : step.stoppedBy === 'error' ? `Stopped on an Autotask error: ${step.error} — fix, then call again with this jobId.` : `Call again with jobId ${j.id} to continue.`;
+        return { result: step, message: `Backfill ${j.id} (${j.rangeFrom.slice(0, 10)} → ${j.rangeTo.slice(0, 10)}): ${step.paused ? `PAUSED — ${step.paused}. ` : `this step ${step.ticketsProcessed} ticket(s), ${step.eventsIngested} event(s), ${step.apiCallsUsed} call(s). `}${progress}. ${next}` };
       }],
       // Operation log lookup (MCP-007): what a correlation / decision / key / ticket led this MCP to write.
       ['autotask_get_operations', async (a) => {

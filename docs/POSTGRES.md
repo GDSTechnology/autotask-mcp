@@ -345,3 +345,33 @@ unknown outcome is refused and never re-run.
 
 If the migration hasn't been run, the MCP logs a warning and idempotency falls
 back to memory. Calls are not blocked.
+
+## Historical backfill — bounded, resumable (`autotask_backfill_history`)
+
+Migration `0009_history_backfill.sql` adds `history_backfill_job`. Learning
+data from before the shadow window (or past the feed's 90-day reach) comes from
+here. A job takes the tickets **completed** in a date range (at most 366 days)
+and stores their field-change history, notes and time entries in
+`audit_event`. Readers then get it from the activity feed (`ingest: false`,
+`since` = range start) or the audit tools, at no API cost.
+
+- **Plan first.** `dryRun: true` counts the tickets (1 call) and estimates the
+  total Autotask calls. It creates nothing.
+- **One step per call.** Each call advances the job by at most `maxApiCalls`
+  (default 100). A step checks tenant usage, reads one page of tickets above
+  the cursor, reads their notes and time entries in bulk (`ticketID in [...]`),
+  then reads each ticket's history. History already indexed after the ticket's
+  last change is skipped.
+- **Resumable and idempotent.** The cursor only moves past tickets whose
+  history is stored. A budget cut resumes exactly there, and every insert is
+  deduplicated on `event_key`.
+- **Safeguards:**
+  - A step does nothing while tenant usage is at or above `pauseAtUsagePct`
+    (default 50%).
+  - An Autotask error stops the step without retrying and is recorded on the
+    job (`lastError`).
+  - Nothing runs in the background: n8n or a person drives the job, for example
+    one step every 10 minutes.
+- **Cost.** About 1 call per ticket for history, plus 2–4 calls per page of 50
+  tickets. A month of roughly 1,500 completed tickets costs about 1,600 calls,
+  spread over as many steps as you like.

@@ -62,6 +62,7 @@ import { runInOperation, type OperationScope } from '../utils/operation-context.
 import { argsDigest, mayWrite, operationClaimResult, operationSummary, withOperation } from '../utils/operations.js';
 import { OperationStore, type ClaimResult, type OperationInput } from '../db/operation-store.js';
 import { getPool } from '../db/pool.js';
+import { notify } from '../services/notifier.js';
 import {
   FunctionalRole,
   parseRoleMap,
@@ -3710,6 +3711,19 @@ export class AutotaskToolHandler {
 
   /** Record an operation's outcome — best effort, never fails the call. */
   private async finishOperation(op: OperationInput, out: Parameters<OperationStore['finish']>[1]): Promise<void> {
+    // A write that failed after writing needs a person: notify (console → Notifications).
+    if (out.status === 'partial') {
+      notify({
+        type: 'operation.partial', severity: 'critical', title: `${op.tool} failed after writing to Autotask`,
+        detail: `${out.error ?? 'error'}\nThe change is half-applied — check the records below. A retry with the same idempotency key is refused, so nothing is written twice.`,
+        fields: {
+          writes: out.writes.map((w) => `${w.method} ${w.entityType ?? w.path}${w.entityId != null ? ` ${w.entityId}` : ''}`).join(', ').slice(0, 900) || 'none',
+          source: op.source, ...(op.refs?.workflow ? { workflow: op.refs.workflow } : {}), ...(op.refs?.node ? { node: op.refs.node } : {}),
+          correlationId: op.correlationId, operationId: op.operationId,
+        },
+        dedupeKey: `operation.partial:${op.operationId}`,
+      });
+    }
     if (!this.operations) return;
     try { await this.operations.finish(op, out); } catch (err) { this.logger.warn(`Operation log: could not record ${op.tool} (${op.operationId})`, err); }
   }

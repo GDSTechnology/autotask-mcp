@@ -75,6 +75,7 @@ const ROUTES = [
   { hash: '#/', label: 'Dashboard', view: dashboard },
   { hash: '#/calls', label: 'Calls', view: calls },
   { hash: '#/actors', label: 'Actors', view: actors },
+  { hash: '#/notifications', label: 'Notifications', view: notifications },
   { hash: '#/settings', label: 'Settings', view: settings },
   { hash: '#/users', label: 'Users', view: users, admin: true },
   { hash: '#/activity', label: 'Activity', view: activity, admin: true },
@@ -627,6 +628,82 @@ function showPassword(title, username, password) {
   dlg.showModal();
 }
 
+// ── notifications (Discord / Teams / Slack / JSON webhooks) ─────────────────
+const SEVERITY_BADGE = { critical: 'bad', warning: 'warn', info: 'ok' };
+async function notifications(body) {
+  const isAdmin = me.role === 'admin';
+  const act = async (fn, ok) => { try { const r = await fn(); toast((r && r.message) || ok); await draw(); } catch (x) { toast(x.message); } };
+  async function draw() {
+    const r = await api('GET', '/api/notifications');
+    const kindLabel = Object.fromEntries(r.kinds.map((k) => [k.kind, k.label]));
+    const eventBoxes = (selected, onchange, idPrefix) => h('div', { class: 'checks' }, r.events.map((ev) => {
+      const id = `${idPrefix}-${ev.type}`;
+      return h('label', { for: id, style: 'display:flex;gap:8px;align-items:center;font-weight:400;margin:2px 0' },
+        h('input', { type: 'checkbox', id, value: ev.type, checked: selected.includes(ev.type), disabled: !isAdmin, onchange }),
+        h('span', { class: `badge ${SEVERITY_BADGE[ev.severity] || ''}` }, ev.severity), ev.label);
+    }));
+    const picked = (box) => [...box.querySelectorAll('input[type=checkbox]:checked')].map((i) => i.value);
+
+    // Add form (admins)
+    let add = null;
+    if (isAdmin) {
+      const name = h('input', { type: 'text', id: 'nn', placeholder: 'e.g. #ops-alerts', maxlength: 60, required: true });
+      const kind = h('select', { id: 'nk' }, r.kinds.map((k) => h('option', { value: k.kind }, k.label)));
+      const help = h('p', { class: 'muted', style: 'margin:6px 0 0' });
+      const url = h('input', { type: 'text', inputmode: 'url', id: 'nw', placeholder: 'https://…', autocomplete: 'off', spellcheck: 'false', required: true });
+      const secret = h('input', { type: 'password', id: 'ns', placeholder: 'optional, 16+ characters', autocomplete: 'new-password' });
+      const secretRow = h('div', { style: 'min-width:220px' }, h('label', { for: 'ns' }, 'Signing secret'), secret);
+      const syncKind = () => { const k = r.kinds.find((x) => x.kind === kind.value); help.textContent = k ? `Where to get the URL: ${k.help}` : ''; secretRow.style.display = kind.value === 'generic' ? '' : 'none'; };
+      kind.addEventListener('change', syncKind); syncKind();
+      const evs = eventBoxes(['auth.held', 'auth.paused', 'backpressure.stop', 'operation.partial', 'shadow.verify_failed'], null, 'new');
+      const err = h('p', { class: 'error', role: 'alert' });
+      add = h('form', { class: 'panel', onsubmit: async (e) => {
+        e.preventDefault(); err.textContent = '';
+        try {
+          await api('POST', '/api/notifications', { name: name.value.trim(), kind: kind.value, url: url.value.trim(), events: picked(evs), ...(kind.value === 'generic' && secret.value ? { secret: secret.value } : {}) });
+          toast('Channel added — use "Send test" to check it.'); await draw();
+        } catch (x) { err.textContent = x.message; }
+      } },
+        h('h2', null, 'Add a channel'),
+        h('div', { class: 'row', style: 'align-items:flex-end' },
+          h('div', { style: 'flex:1;min-width:180px' }, h('label', { for: 'nn' }, 'Name'), name),
+          h('div', { style: 'min-width:200px' }, h('label', { for: 'nk' }, 'Type'), kind)),
+        h('div', { style: 'margin-top:8px' }, h('label', { for: 'nw' }, 'Webhook URL'), url, help),
+        h('div', { class: 'row', style: 'margin-top:8px' }, secretRow),
+        h('h3', null, 'Send these events'), evs,
+        h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', type: 'submit' }, 'Add channel')),
+        h('p', { class: 'muted', style: 'margin-top:8px' }, 'The URL is stored on the server and never shown again in full. Each event is sent at most once per 15 minutes per channel.'), err);
+    }
+
+    const list = r.channels.map((c) => {
+      const evs = eventBoxes(c.events, isAdmin ? () => act(() => api('PUT', `/api/notifications/${c.id}`, { events: picked(evs) }), 'Saved.') : null, `c${c.id.slice(0, 8)}`);
+      const st = c.status || {};
+      return h('section', { class: 'panel' },
+        h('div', { class: 'row', style: 'justify-content:space-between;align-items:center' },
+          h('div', null, h('h2', { style: 'margin:0' }, c.name, ' ', h('span', { class: 'badge' }, kindLabel[c.kind] || c.kind), ' ', c.enabled ? h('span', { class: 'badge ok' }, 'On') : h('span', { class: 'badge' }, 'Off')),
+            h('div', { class: 'muted mono', style: 'margin-top:4px' }, c.url, c.hasSecret ? ' · signed' : '')),
+          isAdmin ? h('div', { class: 'row' },
+            h('button', { class: 'small primary', onclick: () => act(() => api('POST', `/api/notifications/${c.id}/test`, {})) }, 'Send test'),
+            h('button', { class: 'small', onclick: () => act(() => api('PUT', `/api/notifications/${c.id}`, { enabled: !c.enabled }), c.enabled ? 'Turned off.' : 'Turned on.') }, c.enabled ? 'Turn off' : 'Turn on'),
+            h('button', { class: 'small', onclick: () => { const u = prompt(`New webhook URL for "${c.name}"`); if (u) act(() => api('PUT', `/api/notifications/${c.id}`, { url: u.trim() }), 'URL changed.'); } }, 'Change URL'),
+            h('button', { class: 'small danger', onclick: () => confirm(`Delete the channel "${c.name}"?`) && act(() => api('DELETE', `/api/notifications/${c.id}`), 'Deleted.') }, 'Delete')) : null),
+        h('p', { class: 'muted', style: 'margin:8px 0' },
+          `Sent ${st.sent || 0}${st.lastSentAt ? ` · last ${ago(st.lastSentAt)} (${st.lastEvent})` : ''}`,
+          st.lastError ? h('span', { class: 'error' }, ` · last failure ${ago(st.lastErrorAt)}: ${st.lastError}`) : null),
+        evs);
+    });
+    // replaceChildren doesn't skip null or flatten arrays (h() does) — filter first.
+    body.replaceChildren(...[
+      h('h1', null, 'Notifications'),
+      h('p', { class: 'muted' }, 'Post an alert to Discord, Microsoft Teams, Slack or any JSON webhook when something trips: the Autotask login is paused or held, Autotask says stop (usage ≥ 90%, 429), the mirror fails a sync or its consistency check, an n8n write fails half-way, or tools start failing. Checked every 20 seconds; a condition that persists is reported once.'),
+      isAdmin ? null : h('div', { class: 'banner' }, 'Read-only: an administrator manages the channels.'),
+      add,
+      ...(list.length ? list : [h('section', { class: 'panel' }, h('p', { class: 'muted' }, 'No channels yet.'))]),
+    ].filter(Boolean));
+  }
+  await draw();
+}
+
 async function users(body) {
   const draw = async () => {
     const list = (await api('GET', '/api/users')).users;
@@ -677,6 +754,7 @@ const ACTIONS = {
   'setting.changed': 'Changed setting', 'setting.reset': 'Reset setting', 'action.shadow_sync': 'Started shadow sync',
   'user.created': 'Created user', 'user.updated': 'Updated user', 'user.deleted': 'Deleted user',
   'user.password_reset': 'Reset password', 'user.signed_out': 'Signed user out', 'action.shadow_verify': 'Started mirror check',
+  'notify.channel_added': 'Added notification channel', 'notify.channel_changed': 'Changed notification channel', 'notify.channel_removed': 'Deleted notification channel', 'notify.channel_tested': 'Sent test notification',
 };
 function describe(ev) {
   const d = ev.details || {};
@@ -687,6 +765,7 @@ function describe(ev) {
   if (d.role) parts.push(`role ${d.role}`);
   if (d.disabled !== undefined) parts.push(d.disabled ? 'disabled' : 'enabled');
   if (d.via) parts.push(`via ${d.via}`);
+  if (ev.action.startsWith('notify.')) { if (d.name) parts.push(`${d.name}${d.kind ? ` (${d.kind})` : ''}`); if (d.ok === false) parts.push(`failed: ${d.error || ''}`); }
   return parts.join(' · ');
 }
 async function activity(body) {

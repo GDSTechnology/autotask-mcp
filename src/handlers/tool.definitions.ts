@@ -127,25 +127,38 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_create_company',
-    description: 'Create new company record',
+    description: 'Create new company record. Returns the new id; read it with autotask_get_company.',
     inputSchema: {
       type: 'object',
       properties: {
         companyName: {
           type: 'string',
-          
+
         },
         companyType: {
           type: 'number',
-          
+
         },
         phone: {
           type: 'string',
-          
+
         },
         address1: {
           type: 'string',
-          
+
+        },
+        address2: { type: 'string' },
+        countryID: { type: 'number', description: 'Country ID (Autotask Countries entity)' },
+        webAddress: { type: 'string', description: 'Website, e.g. https://example.com' },
+        billToAddressToUse: { type: 'number', description: '1 = use the company address for billing' },
+        userDefinedFields: {
+          type: 'array',
+          description: 'Company UDFs as [{ name, value }] (e.g. [{ "name": "DBA / AKA", "value": "..." }])',
+          items: {
+            type: 'object',
+            properties: { name: { type: 'string' }, value: { type: 'string' } },
+            required: ['name', 'value']
+          }
         },
         city: {
           type: 'string',
@@ -426,15 +439,21 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         title: {
           type: 'string',
-          
-        }
+
+        },
+        mobilePhone: { type: 'string' },
+        note: { type: 'string', description: 'Contact note (max 50 characters in this tenant; longer is refused unless truncateNote)' },
+        truncateNote: { type: 'boolean', description: 'Truncate a note over the limit instead of refusing' },
+        primaryContact: { type: 'boolean' },
+        billingContact: { type: 'boolean' },
+        receivesEmailNotifications: { type: 'boolean' }
       },
       required: ['companyID', 'firstName', 'lastName']
     }
   },
   {
     name: 'autotask_find_or_create_contact',
-    description: 'Find a contact in a company by email address, or create it if none exists. Idempotent — returns the same contact on a repeat instead of creating a duplicate, and avoids the create-then-read race. Returns the contact id and whether it was newly created. Prefer this over create_contact when a contact may already exist (e.g. inbound email automation).',
+    description: 'Find a contact in a company, or create it if none exists. Matches by email first (inactive contacts included — an inactive match is reactivated unless reactivate:false); with no email, by exact first + last name among the company\'s contacts. Two or more matches → status "ambiguous" with the candidate ids and NOTHING is created. Idempotent — a repeat returns the same contact instead of a duplicate. Returns { id, created, matchedBy, reactivated }. Prefer this over create_contact in automation.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -443,7 +462,14 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         firstName: { type: 'string' },
         lastName: { type: 'string' },
         phone: { type: 'string' },
-        title: { type: 'string' }
+        mobilePhone: { type: 'string' },
+        title: { type: 'string' },
+        note: { type: 'string', description: 'Set on create only (max 50 characters unless truncateNote)' },
+        truncateNote: { type: 'boolean' },
+        primaryContact: { type: 'boolean', description: 'Set on create only' },
+        billingContact: { type: 'boolean', description: 'Set on create only' },
+        receivesEmailNotifications: { type: 'boolean', description: 'Set on create only' },
+        reactivate: { type: 'boolean', description: 'Reactivate an inactive matched contact (default true)' }
       },
       required: ['companyID']
     }
@@ -514,6 +540,10 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'boolean',
           description: 'Whether this contact is the primary contact for their company'
         },
+        billingContact: { type: 'boolean' },
+        receivesEmailNotifications: { type: 'boolean' },
+        note: { type: 'string', description: 'Contact note (max 50 characters in this tenant; longer is refused unless truncateNote)' },
+        truncateNote: { type: 'boolean', description: 'Truncate a note over the limit instead of refusing' },
         userDefinedFields: {
           type: 'array',
           description: 'User-defined (custom) fields for the contact, as an array of { name, value } objects matching the Autotask REST API shape. Contacts support UDFs (hasUserDefinedFields: true).',
@@ -917,7 +947,16 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         purchaseOrderNumber: { type: 'string', description: 'Purchase order number.' },
         opportunityID: { type: 'number', description: 'Linked opportunity id.' },
         problemTicketId: { type: 'number', description: 'Parent problem ticket id (group this ticket as an incident of a problem).' },
-        externalID: { type: 'string', description: 'External id (integration / idempotency key).' }
+        externalID: { type: 'string', description: 'External id (integration / idempotency key).' },
+        userDefinedFields: {
+          type: 'array',
+          description: 'Ticket UDFs to set, as [{ name, value }] (e.g. [{ "name": "Nexus-Status", "value": "4" }]). Only the UDFs listed change; each is read back and reported as udf:<name> in changes.',
+          items: {
+            type: 'object',
+            properties: { name: { type: 'string', description: 'UDF name' }, value: { type: 'string', description: 'UDF value (stringified)' } },
+            required: ['name', 'value']
+          }
+        }
       },
       required: ['ticketId']
     }
@@ -932,6 +971,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       'RMM-to-Autotask device link), and clears the contact unless a target ' +
       'contact is supplied. companyLocationID picks a specific location of the target company (e.g. the matched contact\'s site) instead of the primary one. ' +
       'A contract belongs to one company: when the ticket\'s contract is not the target company\'s, contract + service + bundle are cleared as part of the move and reported as contractCleared. ' +
+      'Routing in the same write: queueID, status, assignedResourceID + assignedResourceRoleID and userDefinedFields are sent in the SAME update as the company (one write, one workflow-rule firing) and verified too. Only these fields change — nothing else on the ticket is touched. ' +
       'Reads back to verify. Confirm with the user first.',
     annotations: { title: 'Move ticket to another company', readOnlyHint: false, idempotentHint: false },
     inputSchema: {
@@ -941,7 +981,20 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         companyID: { type: 'number', description: 'Target company ID' },
         contactID: { type: 'number', description: 'Optional target-company contact; the contact is cleared if omitted' },
         companyLocationID: { type: 'number', description: 'Optional: a location of the TARGET company to use instead of its primary location (refused if it belongs to another company)' },
-        force: { type: 'boolean', description: 'Override the configuration-item safety block (not recommended)' }
+        force: { type: 'boolean', description: 'Override the configuration-item safety block (not recommended)' },
+        queueID: { type: 'number', description: 'Optional: queue to route to in the same write' },
+        status: { type: 'number', description: 'Optional: status to set in the same write' },
+        assignedResourceID: { type: 'number', description: 'Optional: primary resource (requires assignedResourceRoleID)' },
+        assignedResourceRoleID: { type: 'number', description: 'Optional: role for assignedResourceID' },
+        userDefinedFields: {
+          type: 'array',
+          description: 'Optional ticket UDFs to set in the same write, as [{ name, value }]',
+          items: {
+            type: 'object',
+            properties: { name: { type: 'string' }, value: { type: 'string' } },
+            required: ['name', 'value']
+          }
+        }
       },
       required: ['ticketId', 'companyID']
     }

@@ -1351,7 +1351,8 @@ export class AutotaskToolHandler {
       ['autotask_find_or_create_contact', async (a) => {
         const { companyID, ...rest } = a;
         const r = await s.findOrCreateContact(companyID, rest);
-        return { result: r, message: r.created ? `Created contact ${r.id}` : `Found existing contact ${r.id}` };
+        if (r.status === 'ambiguous') return { result: r, message: `Nothing created: ${r.candidates?.length} contacts in company ${companyID} match by ${r.matchedBy} (ids ${r.candidates?.join(', ')}) — pick one.` };
+        return { result: r, message: r.created ? `Created contact ${r.id}` : `Found existing contact ${r.id} (by ${r.matchedBy})${r.reactivated ? ' — it was inactive and has been reactivated' : ''}` };
       }],
       ['autotask_update_contact', async (a) => {
         await s.updateContact(a.id, a); return { result: undefined, message: `Successfully updated contact ID: ${a.id}` };
@@ -1464,7 +1465,10 @@ export class AutotaskToolHandler {
         };
       }],
       ['autotask_move_ticket_to_company', async (a) => {
-        const r = await s.moveTicketToCompany(a.ticketId, a.companyID, { contactID: a.contactID, force: a.force, companyLocationID: a.companyLocationID });
+        const r = await s.moveTicketToCompany(a.ticketId, a.companyID, {
+          contactID: a.contactID, force: a.force, companyLocationID: a.companyLocationID,
+          also: { queueID: a.queueID, status: a.status, assignedResourceID: a.assignedResourceID, assignedResourceRoleID: a.assignedResourceRoleID, userDefinedFields: a.userDefinedFields },
+        });
         return { result: r, message: (r.message as string) ?? `Ticket ${a.ticketId} move result: ${r.status}` };
       }],
       ['autotask_find_ticket_by_external_id', async (a) => {

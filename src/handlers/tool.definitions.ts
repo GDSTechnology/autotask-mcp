@@ -1244,6 +1244,21 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_actor_roster',
+    description: 'READ-ONLY. Who is a person and who is automation: every Autotask resource classified as human, service_account, integration, system or unknown, with the reason (registry, system-resource, mcp-api-user = this MCP\'s own n8n/Nexus/ChatGPT writes, license-api-user, name-suggests-automation, licensed-user, not-found) and the reference flag (reference technicians = the trusted standard to learn from, set in the admin console). Use before learning from ticket history: only "human" is a person, "unknown" is never assumed human, and automated changes are never ground truth. Ticket history events carry the same actorType / classificationSource / reference.',
+    annotations: { title: 'Actor roster (human vs automation)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceIds: { type: 'array', items: { type: 'number' }, description: 'Classify just these resources' },
+        actorTypes: { type: 'array', items: { type: 'string', enum: ['human', 'service_account', 'integration', 'system', 'unknown'] }, description: 'Only these types' },
+        referenceOnly: { type: 'boolean', description: 'Only reference technicians' },
+        includeInactive: { type: 'boolean', description: 'Include inactive resources (default false)' }
+      },
+      required: []
+    }
+  },
+  {
     name: 'autotask_get_ticket_by_number',
     description: 'READ-ONLY. The complete ticket by number (T20261005.0123 — the T is optional) or ID, fully resolved: every picklist labelled (status, priority, queue, source, ticket type, issue/sub-issue type, SLA, category, creator type) and every reference named — company, contact and created-by contact (name, email, active), assigned/creator/completed-by/last-activity resources, role, contract, opportunity, configuration item, work type, location, project, problem ticket — plus UDFs (list values labelled), the full description, and a direct Autotask link. For audits: pair with autotask_get_ticket_change_history and autotask_get_ticket_email_context.',
     annotations: { title: 'Get ticket (full, resolved)', readOnlyHint: true },
@@ -6033,7 +6048,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
+    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_get_actor_roster', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

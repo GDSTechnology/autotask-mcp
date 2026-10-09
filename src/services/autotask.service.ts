@@ -9,6 +9,8 @@
 import { resolveAutotaskApiUrl, resolveAutotaskWebUrl } from '../utils/config';
 import { AutotaskHttpClient, QueryFilter } from './autotask-http';
 import { usageSnapshot, ApiUsageSnapshot } from './http-cache';
+import { classifyActor, parseRegistry, parseReference, type ActorRecord, type ClassifyContext } from '../utils/actor-classify.js';
+import { settingValue } from '../admin/settings.js';
 import { noteTenantUsage } from './call-log.js';
 import {
   classifyReferenceMatches,
@@ -1181,20 +1183,26 @@ export class AutotaskService {
     const actorIds = [...new Set(kept.map((r) => Number(r.resourceID)).filter((x) => Number.isFinite(x) && x > 0))];
     try { if (actorIds.length) actorNames = await this.getResourceNames(actorIds); } catch { /* ids only */ }
 
+    let actorCtx: ClassifyContext | null = null;
+    try { actorCtx = await this.getActorContext(); } catch { /* classification is best-effort */ }
     const events = kept.map((r) => {
       const change = r.detail ? parseHistoryChange(String(r.detail), labelsFor(String(r.detail).split(/ changed from /i)[0] ?? '')) : null;
       const rid = r.resourceID != null ? Number(r.resourceID) : null;
       const kind = actorKind(rid, self);
+      const cls = actorCtx ? classifyActor(rid, actorCtx) : null;
       return {
         id: r.id, date: r.date, action: r.action,
         ...(change ? { field: change.field, from: change.from, to: change.to, ...(change.ambiguous ? { parseAmbiguous: true } : {}) } : {}),
         detail: r.detail ?? null,
-        actor: { resourceID: rid, kind, name: rid != null ? (actorNames.get(rid) ?? (kind === 'system' ? 'Autotask Administrator (system)' : null)) : null },
+        actor: { resourceID: rid, kind, name: rid != null ? (actorNames.get(rid) ?? cls?.displayName ?? (kind === 'system' ? 'Autotask Administrator (system)' : null)) : null,
+          ...(cls ? { actorType: cls.actorType, classificationSource: cls.classificationSource, reference: cls.reference } : { actorType: 'unknown', classificationSource: 'unclassified', reference: false }) },
       };
     });
     const byActor: Record<string, number> = {};
     for (const e of events) byActor[e.actor.kind] = (byActor[e.actor.kind] ?? 0) + 1;
-    return { ticketID: id, events, counts: { events: events.length, hiddenTimestampOnly: opts.includeNoise ? 0 : noise.length, byActorKind: byActor }, mcpApiUserResourceID: self, truncated: rows.length >= 500 };
+    const byActorType: Record<string, number> = {};
+    for (const e of events) byActorType[e.actor.actorType] = (byActorType[e.actor.actorType] ?? 0) + 1;
+    return { ticketID: id, events, counts: { events: events.length, hiddenTimestampOnly: opts.includeNoise ? 0 : noise.length, byActorKind: byActor, byActorType }, mcpApiUserResourceID: self, truncated: rows.length >= 500 };
   }
 
   /**
@@ -7832,6 +7840,52 @@ export class AutotaskService {
    * null when it can't be resolved.
    */
   private apiUserResourceId: number | null | undefined;
+  /**
+   * Everything needed to classify an actor (MCP-001): all resources (from the
+   * Postgres shadow when it mirrors them — 0 calls), the licenseType value that
+   * means "API User", this MCP's own API user, and the console's registry and
+   * reference-technician settings. Resources are cached 10 minutes.
+   */
+  async getActorContext(): Promise<ClassifyContext> {
+    const now = Date.now();
+    if (!this.actorResourceCache || now - this.actorResourceCache.at > 600_000) {
+      const http = await this.ensureClient();
+      const rows = await http.query<ActorRecord>('Resources', [{ op: 'gte', field: 'id', value: 0 }], { maxRecords: 2000, includeFields: ['id', 'firstName', 'lastName', 'email', 'isActive', 'licenseType'] });
+      let apiLicenseValue: number | null = 7; // 7 = API User on standard tenants
+      try {
+        const lic = (await this.getFieldInfo('Resources')).find((f) => f.name === 'licenseType')?.picklistValues ?? [];
+        const api = lic.find((v) => /api user/i.test(String(v.label)));
+        if (api) apiLicenseValue = Number(api.value);
+      } catch { /* keep the standard value */ }
+      this.actorResourceCache = { at: now, resources: new Map(rows.map((r) => [Number(r.id), r])), apiLicenseValue };
+    }
+    let mcpApiUserId: number | null = null;
+    try { mcpApiUserId = await this.resolveApiUserResourceId(); } catch { /* unknown */ }
+    return {
+      resources: this.actorResourceCache.resources,
+      apiLicenseValue: this.actorResourceCache.apiLicenseValue,
+      mcpApiUserId,
+      registry: parseRegistry(settingValue<string[]>('actors.registry')),
+      reference: parseReference(settingValue<string[]>('actors.reference')),
+    };
+  }
+  private actorResourceCache: { at: number; resources: Map<number, ActorRecord>; apiLicenseValue: number | null } | null = null;
+
+  /** The classified roster: every resource (or the given ids), with type, provenance and the reference flag. */
+  async getActorRoster(opts: { resourceIds?: number[]; actorTypes?: string[]; referenceOnly?: boolean; includeInactive?: boolean } = {}): Promise<Record<string, unknown>> {
+    const ctx = await this.getActorContext();
+    const ids = opts.resourceIds?.length ? opts.resourceIds.map(Number) : [...new Set([...ctx.resources.keys(), ...ctx.registry.keys(), ...ctx.reference.keys()])];
+    let actors = ids.map((id) => classifyActor(id, ctx));
+    if (!opts.resourceIds?.length && !opts.includeInactive) actors = actors.filter((a) => a.isActive !== false || a.reference || ctx.registry.has(Number(a.resourceId)));
+    if (opts.actorTypes?.length) actors = actors.filter((a) => opts.actorTypes!.includes(a.actorType));
+    if (opts.referenceOnly) actors = actors.filter((a) => a.reference);
+    actors.sort((a, b) => a.actorType.localeCompare(b.actorType) || String(a.displayName ?? '').localeCompare(String(b.displayName ?? '')));
+    const counts: Record<string, number> = {};
+    for (const a of actors) counts[a.actorType] = (counts[a.actorType] ?? 0) + 1;
+    return { actors, counts, referenceCount: actors.filter((a) => a.reference).length, mcpApiUserResourceID: ctx.mcpApiUserId,
+      note: 'Only actorType "human" is a person; "unknown" must be confirmed in the actor registry before being treated as one. Automated changes (this MCP\'s n8n/Nexus writes = service_account) are never ground truth.' };
+  }
+
   async resolveApiUserResourceId(): Promise<number | null> {
     if (this.apiUserResourceId !== undefined) return this.apiUserResourceId;
     const username = this.config.autotask.username ?? '';

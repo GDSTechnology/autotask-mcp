@@ -476,6 +476,13 @@ export function adminHandler(deps: AdminDeps) {
       const rt = getShadowRuntime();
       return send(res, 200, { runs: rt ? await rt.store.verifyRuns(14).catch(() => []) : [] });
     }
+    if (path === '/api/actors' && method === 'GET') {
+      requireUser(ctx);
+      const q = new URL(req.url ?? '/', 'http://x').searchParams;
+      try {
+        return send(res, 200, await opts.service.getActorRoster({ includeInactive: q.get('inactive') === '1' }));
+      } catch (e) { throw new HttpError(502, `Could not load the resource roster: ${e instanceof Error ? e.message : String(e)}`); }
+    }
     if (path === '/api/logs' && method === 'GET') {
       requireUser(ctx);
       const n = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('limit')) || 200;

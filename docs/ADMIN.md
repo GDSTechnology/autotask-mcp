@@ -269,6 +269,35 @@ How tool switches reach agents:
 - Discovery tools (`list_categories`, `execute_tool`, `router`, `whoami`,
   `test_connection`) are never switched off.
 
+### Actors (who is a person, who is automation)
+
+The **Actors** page classifies every Autotask resource, because a resource is
+not always a person. Ticket history and anything that learns from technicians
+(such as Hermes) use this classification.
+
+| Type | Meaning | How it is decided |
+|---|---|---|
+| **Person** | A technician or staff member | A licensed user with no signs of automation, or set in the registry |
+| **Integration** | An integration account (RMM, security tools, sync apps) | License type **API User** |
+| **Service account** | This MCP's own API user: the changes n8n, Nexus and ChatGPT make through it | Matches the MCP's credentials |
+| **System** | Autotask's built-in system account (resource 4) | Fixed |
+| **Unknown** | Can't tell yet | No resource record, or a name or email that looks like automation. **Never treated as a person** until you confirm it |
+
+The **Why** column shows which rule applied.
+
+Administrators can make two kinds of change on the page. Both are stored as
+settings, so no names are kept in code:
+
+- **Set type:** override the automatic type, for example to confirm an
+  *Unknown* account. This is the *Actor registry* setting.
+- **★ Reference:** mark the technicians whose ticket work is the trusted
+  standard to learn from. This is the *Reference technicians* setting.
+
+Automated changes, including this MCP's own n8n and Nexus writes, are never
+ground truth. The same classification (`actorType`, `classificationSource`,
+`reference`) appears on every event from
+`autotask_get_ticket_change_history`, and in `autotask_get_actor_roster`.
+
 ### Mirror check
 
 The Dashboard's **Mirror check** panel shows whether the Postgres shadow matches Autotask. Every night, random rows of every mirrored entity are re-read from Autotask and compared field by field, and the row counts are compared too. The panel shows *Matches Autotask* or *Needs attention*, with the entities, counts and example ids involved. Rows that were simply edited since the last sync are not counted as problems. Real differences are fixed from Autotask automatically. Administrators can press **Check now**; a run costs about 2 Autotask calls per entity.

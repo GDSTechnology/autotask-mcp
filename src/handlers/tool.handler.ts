@@ -1520,6 +1520,11 @@ export class AutotaskToolHandler {
       }],
 
       // Ticket audit (read-only): full resolved ticket, parsed history, original email, picklists.
+      ['autotask_get_actor_roster', async (a) => {
+        const r = await s.getActorRoster({ resourceIds: Array.isArray(a.resourceIds) ? a.resourceIds : undefined, actorTypes: Array.isArray(a.actorTypes) ? a.actorTypes : undefined, referenceOnly: a.referenceOnly === true, includeInactive: a.includeInactive === true });
+        const c = r.counts as Record<string, number>;
+        return { result: r, message: `${(r.actors as unknown[]).length} actor(s): ${Object.entries(c).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'}; ${r.referenceCount as number} reference technician(s).` };
+      }],
       ['autotask_get_ticket_by_number', async (a) => {
         const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId ?? a.id, ticketNumber: a.ticketNumber }, { withRow: true });
         if ('error' in ref) return { result: null, message: ref.error };

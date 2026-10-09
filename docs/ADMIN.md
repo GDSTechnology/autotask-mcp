@@ -269,6 +269,10 @@ How tool switches reach agents:
 - Discovery tools (`list_categories`, `execute_tool`, `router`, `whoami`,
   `test_connection`) are never switched off.
 
+### Mirror check
+
+The Dashboard's **Mirror check** panel shows whether the Postgres shadow matches Autotask. Every night, random rows of every mirrored entity are re-read from Autotask and compared field by field, and the row counts are compared too. The panel shows *Matches Autotask* or *Needs attention*, with the entities, counts and example ids involved. Rows that were simply edited since the last sync are not counted as problems. Real differences are fixed from Autotask automatically. Administrators can press **Check now**; a run costs about 2 Autotask calls per entity.
+
 ### Calls (diagnostics)
 
 The **Calls** page shows whether the MCP is working and who is using it.

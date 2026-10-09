@@ -970,6 +970,13 @@ export class AutotaskHttpClient {
   /**
    * GET /{Entity}/entityInformation/fields — returns the raw { fields: [...] } shape.
    */
+  /** POST /{Entity}/query/count — how many records match (never cached, never answered by the shadow). */
+  async count(entity: string, filter: QueryFilter[]): Promise<number | null> {
+    const res = await this.request<{ queryCount?: number; count?: number }>('POST', `/${entity}/query/count`, { filter }, false, { noCache: true });
+    const n = res?.queryCount ?? res?.count;
+    return typeof n === 'number' ? n : null;
+  }
+
   async fieldInfo(entity: string): Promise<{ fields: any[] }> {
     const res = await this.request<{ fields?: any[]; items?: any[] }>(
       'GET',

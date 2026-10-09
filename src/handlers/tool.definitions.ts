@@ -1226,12 +1226,13 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_shadow_sync',
-    description: 'Run the Postgres shadow sync now (spends Autotask API calls within its per-run budget; skipped automatically above 50% hourly usage). action "run" (default): one incremental/backfill pass; "refresh": re-read specific ids of an entity; "reconcile": id-only sweep of one entity to catch deletions (big tables: ~one call per 500 rows). Never writes to Autotask.',
+    description: 'Run the Postgres shadow sync now (spends Autotask API calls within its per-run budget; skipped automatically above 50% hourly usage). action "run" (default): one incremental/backfill pass; "refresh": re-read specific ids of an entity; "reconcile": id-only sweep of one entity to catch deletions (big tables: ~one call per 500 rows); "verify": consistency check — random mirrored rows re-read from Autotask and compared field by field, plus mirror vs Autotask row counts, repairing differences (≈2 calls per entity; optional entity, sample). Never writes to Autotask.',
     annotations: { title: 'Run shadow sync' },
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['run', 'refresh', 'reconcile'], description: 'Default run' },
+        action: { type: 'string', enum: ['run', 'refresh', 'reconcile', 'verify'], description: 'Default run' },
+        sample: { type: 'number', description: 'For verify: rows per entity (default 10, max 50)' },
         entity: { type: 'string', description: 'For refresh / reconcile' },
         ids: { type: 'array', items: { type: 'number' }, description: 'For refresh' },
         maxCalls: { type: 'number', description: 'For reconcile: call budget (default 600, max 1000)' }

@@ -29,6 +29,7 @@ import type { ShadowFilter } from './shadow-sql.js';
 import { setWriteListener, setReadInterceptor } from '../services/autotask-http.js';
 import type { AutotaskService } from '../services/autotask.service.js';
 import { runJob, noteShadowRead } from '../services/call-log.js';
+import { verifyEntity, overallStatus, type VerifyReport, type VerifyDeps } from './shadow-verify.js';
 
 const ADVISORY_KEY = 727_210_455; // "shadow sync" — distinct from the migration lock
 
@@ -43,6 +44,9 @@ export interface ShadowRuntime {
   maxAgeSeconds: number;
   /** False pauses the scheduled sync (admin console). runNow still works. */
   syncEnabled: boolean;
+  /** Consistency check (under the lock): sampled rows + counts vs Autotask; repairs the mirror. Null if the lock is busy. */
+  verify(opts?: { entities?: string[]; sample?: number; repair?: boolean; trigger?: string }): Promise<VerifyReport | null>;
+  lastVerify(): VerifyReport | null;
   /** Run one sync now (under the lock). Returns null if another instance holds it. */
   runNow(): Promise<RunReport | null>;
   lastRun(): { at: string; report: RunReport } | null;
@@ -85,6 +89,9 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
     usagePct: async () => { const u = await service.getApiUsage(); return 'usedPct' in u.autotask ? (u.autotask.usedPct ?? null) : null; },
   });
   const reconcileHour = intEnv(env.MCP_PG_SHADOW_RECONCILE_HOUR_UTC, 7);
+  const verifyHour = intEnv(env.MCP_PG_SHADOW_VERIFY_HOUR_UTC, 8);
+  const verifySample = Math.min(Math.max(intEnv(env.MCP_PG_SHADOW_VERIFY_SAMPLE, 10), 1), 50);
+  let lastVerify: VerifyReport | null = null;
   let last: { at: string; report: RunReport } | null = null;
   let running = false;
 
@@ -95,6 +102,37 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
       if (!got.rows[0]?.ok) return null;
       try { return await fn(); } finally { await client.query('SELECT pg_advisory_unlock($1)', [ADVISORY_KEY]); }
     } finally { client.release(); }
+  };
+
+  const runVerify = async (o: { entities?: string[]; sample?: number; repair?: boolean; trigger?: string }, now = new Date()): Promise<VerifyReport> => {
+    const http = await service.httpClient();
+    const deps: VerifyDeps = {
+      query: (entity, filter, q) => http.query<Record<string, unknown>>(entity, filter as never, q),
+      count: (entity, filter) => http.count(entity, filter as never),
+      sample: (entity, n) => store.sample(entity, n),
+      countMatching: (entity, filter) => store.countMatching(entity, filter),
+      upsert: (e, rows) => store.upsert(e, rows),
+      markDeleted: (entity, ids) => store.markDeleted(entity, ids),
+      effective: (e) => sync.effective(e),
+      state: (entity) => store.getState(entity),
+    };
+    const report: VerifyReport = { at: now.toISOString(), trigger: o.trigger ?? 'manual', status: 'ok', calls: 0, sample: o.sample ?? verifySample, entities: [] };
+    const pct = await service.getApiUsage().then((u) => ('usedPct' in u.autotask ? u.autotask.usedPct : null)).catch(() => null);
+    if (pct != null && pct >= sync.pauseAtPct) { report.status = 'skipped'; report.skipped = `Autotask API usage ${pct}% ≥ ${sync.pauseAtPct}% — check skipped`; }
+    else {
+      const wanted = o.entities?.length ? SHADOW_ENTITIES.filter((e) => o.entities!.some((n) => n.toLowerCase() === e.name.toLowerCase())) : SHADOW_ENTITIES;
+      for (const e of wanted) {
+        const r = await runJob('shadow verify', () => verifyEntity(e, deps, { sample: report.sample, repair: o.repair !== false, now }));
+        report.calls += r.calls;
+        report.entities.push(r);
+      }
+      report.status = overallStatus(report.entities);
+    }
+    lastVerify = report;
+    try { await store.saveVerifyRun(report.trigger, report.status, report); } catch (err) { logger.warn('shadow verify: could not save the result (run migration 0005?)', err); }
+    const bad = report.entities.filter((x) => x.differs || x.missing || x.countOk === false || x.error);
+    logger[report.status === 'attention' ? 'warn' : 'info'](`shadow verify (${report.trigger}): ${report.skipped ?? `${report.status}, ${report.calls} call(s)${bad.length ? ` — attention: ${bad.map((x) => `${x.entity} ${x.differs} differ / ${x.missing} missing${x.countOk === false ? ` / count Δ${x.countDelta}` : ''}${x.error ? ` / error` : ''}`).join(', ')}` : ''}`}`);
+    return report;
   };
 
   const tick = async (): Promise<RunReport | null> => {
@@ -114,6 +152,9 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
           }
         }
         last = { at: now.toISOString(), report };
+        if (!report.skipped && now.getUTCHours() === verifyHour && (!lastVerify || now.getTime() - Date.parse(lastVerify.at) > 20 * 3600_000)) {
+          await runVerify({ trigger: 'nightly' }, now).catch((err) => logger.warn('shadow verify failed (continuing)', err));
+        }
         logger.info(`shadow sync: ${report.skipped ?? `${report.calls} Autotask call(s); ${report.entities.filter((x) => x.rows).map((x) => `${x.entity} ${x.mode} ${x.rows}`).join(', ') || 'no changes'}`}`);
         return report;
       });
@@ -140,6 +181,8 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
     maxAgeSeconds: intEnv(env.MCP_PG_SHADOW_MAX_AGE_SECONDS, 900),
     syncEnabled: true,
     runNow: tick,
+    verify: (o = {}) => underLock(() => runVerify(o)),
+    lastVerify: () => lastVerify,
     lastRun: () => last,
     stop: () => { clearTimeout(first); clearInterval(timer); setWriteListener(null); setReadInterceptor(null); runtime = null; },
   };

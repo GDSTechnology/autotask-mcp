@@ -245,6 +245,31 @@ async function dashboard(body) {
               h('td', { class: e.lastError ? '' : 'muted' }, e.lastError ? `${e.lastError} (${ago(e.lastErrorAt)})` : '—')))))))
       : h('section', { class: 'panel' }, h('h2', null, 'Postgres shadow'), h('p', { class: 'muted' }, 'Not running on this server (MCP_PG_SHADOW_ENABLED is off).'));
 
+    const v = s.shadow.enabled ? s.shadow.verify : null;
+    const verifyBtn = me.role === 'admin' && s.shadow.enabled ? h('button', { class: 'small', onclick: async (e) => {
+      e.target.disabled = true;
+      try { toast((await api('POST', '/api/actions/shadow-verify', {})).message); } catch (x) { toast(x.message); }
+      setTimeout(() => { e.target.disabled = false; draw().catch(() => undefined); }, 45_000);
+    } }, 'Check now') : null;
+    const issues = v && v.entities ? v.entities.filter((x) => x.differs || x.missing || x.countOk === false || x.error) : [];
+    const verifyPanel = s.shadow.enabled ? h('section', { class: 'panel' },
+      h('div', { class: 'row', style: 'justify-content:space-between' },
+        h('h2', null, 'Mirror check (does Postgres match Autotask?)'),
+        h('div', { class: 'row' },
+          v ? h('span', { class: `badge ${v.status === 'ok' ? 'ok' : v.status === 'skipped' ? '' : 'warn'}` }, v.status === 'ok' ? 'Matches Autotask' : v.status === 'skipped' ? 'Skipped' : 'Needs attention') : h('span', { class: 'badge' }, 'Not run yet'),
+          verifyBtn)),
+      v ? h('p', { class: 'muted' }, v.skipped || `Last run ${ago(v.at)} (${v.trigger}): ${v.entities.reduce((n, x) => n + x.sampled, 0)} random rows across ${v.entities.length} entities re-read from Autotask and compared field by field, plus row counts; ${v.calls} Autotask calls. ${v.entities.reduce((n, x) => n + x.changed + x.pending, 0)} recently edited row(s) were simply waiting for the next sync. Differences are repaired from Autotask.`)
+        : h('p', { class: 'muted' }, 'Runs nightly (about 2 Autotask calls per entity), or press Check now.'),
+      issues.length ? h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Entity'), h('th', { class: 'num' }, 'Sampled'), h('th', { class: 'num' }, 'Differ'), h('th', { class: 'num' }, 'Missing'), h('th', null, 'Rows: mirror vs Autotask'), h('th', null, 'Examples'))),
+        h('tbody', null, issues.map((x) => h('tr', null,
+          h('td', null, h('strong', null, x.entity)), h('td', { class: 'num' }, fmt(x.sampled)),
+          h('td', { class: 'num' }, x.differs ? h('span', { class: 'badge bad' }, fmt(x.differs)) : '0'),
+          h('td', { class: 'num' }, x.missing ? h('span', { class: 'badge warn' }, fmt(x.missing)) : '0'),
+          h('td', null, x.autotaskCount == null ? '—' : [`${fmt(x.mirrorCount)} vs ${fmt(x.autotaskCount)} `, x.countOk === false ? h('span', { class: 'badge warn' }, `Δ ${x.countDelta}`) : h('span', { class: 'badge ok' }, 'OK')]),
+          h('td', { class: 'muted mono' }, x.error || x.examples.map((ex) => h('div', null, `#${ex.id} ${ex.status === 'missing' ? 'gone from Autotask' : ex.fields.join(', ')}`))))))))
+        : null) : null;
+
     const top = srv && srv.topUpstream.length
       ? h('section', { class: 'panel' }, h('h2', null, 'Busiest Autotask calls since start'),
           h('p', { class: 'muted' }, `Since ${when(srv.since)} · ${fmt(srv.upstreamCalls)} upstream calls in total.`),
@@ -261,7 +286,7 @@ async function dashboard(body) {
       : null;
 
     body.replaceChildren(h('div', { class: 'row', style: 'justify-content:space-between' }, h('h1', null, 'Dashboard'), h('span', { class: 'muted' }, `Updated ${new Date().toLocaleTimeString()} · refreshes every 30 s`)),
-      ...[...banners, cards, shadow, top, audit].filter(Boolean));
+      ...[...banners, cards, shadow, verifyPanel, top, audit].filter(Boolean));
   };
   await draw();
   refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') draw().catch(() => undefined); }, 30_000);
@@ -578,7 +603,7 @@ const ACTIONS = {
   'login': 'Signed in', 'login.failed': 'Failed sign-in', 'password.changed': 'Changed own password',
   'setting.changed': 'Changed setting', 'setting.reset': 'Reset setting', 'action.shadow_sync': 'Started shadow sync',
   'user.created': 'Created user', 'user.updated': 'Updated user', 'user.deleted': 'Deleted user',
-  'user.password_reset': 'Reset password', 'user.signed_out': 'Signed user out',
+  'user.password_reset': 'Reset password', 'user.signed_out': 'Signed user out', 'action.shadow_verify': 'Started mirror check',
 };
 function describe(ev) {
   const d = ev.details || {};

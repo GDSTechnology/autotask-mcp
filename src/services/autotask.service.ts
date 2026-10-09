@@ -703,7 +703,7 @@ export class AutotaskService {
       const used = t.currentTimeframeRequestCount ?? null;
       const limit = t.externalRequestThreshold ?? null;
       const server = snap();
-      noteTenantUsage({ tenantUsed: used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, mcpLastHour: server.upstreamLastHour });
+      noteTenantUsage({ tenantUsed: used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, mcpLastHour: server.upstreamLastHour, mcpCountingSince: Date.parse(server.since) });
       return { server, autotask: { used, limit, windowMinutes: t.requestThresholdTimeframe ?? null, usedPct: used != null && limit ? Math.round((used / limit) * 1000) / 10 : null } };
     } catch (error) {
       return { server: snap(), autotask: { error: error instanceof Error ? error.message : String(error) } };

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // Autotask HTTP client — native fetch wrapper around the Autotask REST API.
 //
 // Replaces the autotask-node SDK in the service layer. The SDK gets several
@@ -302,15 +303,28 @@ export class AutotaskAuthError extends Error {
  * — taking production down, since n8n, cron and ChatGPT all share it. Every
  * further call against a locked or wrong credential is another failed login.
  *
- * So after a confirmed 401 the tenant is paused: calls fail fast locally until
- * the pause ends (5 min, doubling per consecutive failure, max 60 min). The
- * first call after it is a single probe (no zone-retry): success clears the
- * pause, another 401 re-arms it, longer. An administrator can clear it early
- * from the admin console after fixing the account.
+ * So after a confirmed 401 the tenant is paused: calls fail fast locally.
+ *
+ * Hardened 2026-10-09 (the production user was locked again):
+ *   - The FIRST 401 immediately sets a provisional pause, so requests that
+ *     arrive while it is being checked are not sent, and requests already in
+ *     flight that 401 too don't each run their own check (parallel lookups
+ *     would otherwise multiply failed logins).
+ *   - Before retrying, the zone is re-looked-up (unauthenticated); the request
+ *     is retried only if the zone actually changed.
+ *   - Limited automatic tests: after the first rejection, at most
+ *     AUTOTASK_AUTH_MAX_PROBES (2) single test calls (after 5, then 10 min);
+ *     when those fail too the tenant is HELD until an administrator presses
+ *     "Retry now" — no more failed logins while a person fixes the account.
+ *   - The pause is saved (Postgres, when configured) so restarts and deploys
+ *     respect it. It is tied to a fingerprint of the credentials: changing the
+ *     secret in the env file clears it automatically.
  * AUTOTASK_AUTH_PAUSE_SECONDS sets the first pause (0 disables the breaker).
  */
-interface AuthBlock { since: number; until: number; failures: number; lastError: string; probeAt?: number }
+interface AuthBlock { since: number; until: number; failures: number; lastError: string; probeAt?: number; held?: boolean; provisional?: boolean; fp?: string }
 const PROBE_WINDOW_MS = 90_000; // > REQUEST_TIMEOUT_MS: one probe at a time
+const PROVISIONAL_MS = 60_000; // while the first 401 is being confirmed
+const HELD_UNTIL = Number.MAX_SAFE_INTEGER;
 const authBlocks = new Map<string, AuthBlock>();
 const AUTH_PAUSE_MAX_MS = 60 * 60 * 1000;
 
@@ -318,36 +332,69 @@ function authPauseBaseMs(): number {
   const v = Number(process.env.AUTOTASK_AUTH_PAUSE_SECONDS);
   return (Number.isFinite(v) && v >= 0 ? v : 300) * 1000;
 }
+function authMaxProbes(): number {
+  const v = Number(process.env.AUTOTASK_AUTH_MAX_PROBES);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 2;
+}
 
-/** Record a rejected login; returns the pause length in seconds (0 = breaker disabled). */
-function tripAuthBlock(tenant: string, detail: string): number {
+/** A saved pause (survives restarts). */
+export interface PersistedAuthBlock { tenant: string; since: number; until: number | null; failures: number; lastError: string; held: boolean; fp: string | null }
+export interface AuthBlockPersistence { save(tenant: string, block: PersistedAuthBlock | null): Promise<void> }
+let persistence: AuthBlockPersistence | null = null;
+export function setAuthBlockPersistence(p: AuthBlockPersistence | null): void { persistence = p; }
+
+/** Load saved pauses at startup (before any Autotask call). */
+export function restoreAuthBlocks(entries: PersistedAuthBlock[]): void {
+  for (const e of entries) {
+    authBlocks.set(e.tenant.toLowerCase(), { since: e.since, until: e.held ? HELD_UNTIL : (e.until ?? 0), failures: e.failures, lastError: e.lastError, held: e.held, ...(e.fp ? { fp: e.fp } : {}) });
+  }
+}
+
+function persist(tenant: string): void {
+  if (!persistence) return;
+  const b = authBlocks.get(tenant);
+  const row: PersistedAuthBlock | null = b && !b.provisional
+    ? { tenant, since: b.since, until: b.held ? null : b.until, failures: b.failures, lastError: b.lastError, held: !!b.held, fp: b.fp ?? null }
+    : null;
+  persistence.save(tenant, row).catch(() => undefined); // best-effort: the in-memory pause still protects this process
+}
+
+/** Record a confirmed rejected login; returns the pause in seconds, -1 when now held, 0 when the breaker is disabled. */
+function tripAuthBlock(tenant: string, detail: string, fp?: string): number {
   const base = authPauseBaseMs();
-  if (base === 0) return 0;
+  if (base === 0) { authBlocks.delete(tenant); return 0; }
   const now = Date.now();
   const prev = authBlocks.get(tenant);
   // Calls already in flight when the pause started 401 too: don't escalate for those.
-  if (prev && prev.until > now && prev.probeAt === undefined) return Math.ceil((prev.until - now) / 1000);
-  const failures = (prev?.failures ?? 0) + 1;
+  if (prev && !prev.provisional && prev.until > now && prev.probeAt === undefined) return prev.held ? -1 : Math.ceil((prev.until - now) / 1000);
+  const failures = (prev && !prev.provisional ? prev.failures : 0) + 1;
+  const held = failures > authMaxProbes();
   const ms = Math.min(base * 2 ** (failures - 1), AUTH_PAUSE_MAX_MS);
-  authBlocks.set(tenant, { since: prev?.since ?? now, until: now + ms, failures, lastError: detail.slice(0, 300) });
-  return Math.ceil(ms / 1000);
+  authBlocks.set(tenant, { since: prev && !prev.provisional ? prev.since : now, until: held ? HELD_UNTIL : now + ms, failures, lastError: detail.slice(0, 300), ...(held ? { held: true } : {}), ...(fp ? { fp } : {}) });
+  persist(tenant);
+  return held ? -1 : Math.ceil(ms / 1000);
 }
 
-export interface AuthBlockStatus { tenant: string; blockedUntil: string | null; since: string; failures: number; lastError: string; probing: boolean }
+export interface AuthBlockStatus { tenant: string; blockedUntil: string | null; since: string; failures: number; lastError: string; probing: boolean; held: boolean }
 
-/** The tenant's auth pause, if any (also while waiting for the post-pause probe). */
+/** The tenant's auth pause, if any (also while waiting for the post-pause probe). Provisional checks are not reported. */
 export function authBlockStatus(tenant: string): AuthBlockStatus | null {
   const b = authBlocks.get(tenant.toLowerCase());
-  if (!b) return null;
+  if (!b || b.provisional) return null;
   const active = b.until > Date.now();
-  return { tenant: tenant.toLowerCase(), blockedUntil: active ? new Date(b.until).toISOString() : null, since: new Date(b.since).toISOString(), failures: b.failures, lastError: b.lastError, probing: !active };
+  return { tenant: tenant.toLowerCase(), blockedUntil: active && !b.held ? new Date(b.until).toISOString() : null, since: new Date(b.since).toISOString(), failures: b.failures, lastError: b.lastError, probing: !active, held: !!b.held };
 }
 
 /** Clear a tenant's auth pause (admin console "Retry now", after fixing the account). */
-export function clearAuthBlock(tenant: string): boolean { return authBlocks.delete(tenant.toLowerCase()); }
+export function clearAuthBlock(tenant: string): boolean {
+  const t = tenant.toLowerCase();
+  const had = authBlocks.delete(t);
+  persist(t);
+  return had;
+}
 
 /** Tests only. */
-export function _resetAuthBlocks(): void { authBlocks.clear(); }
+export function _resetAuthBlocks(): void { authBlocks.clear(); persistence = null; }
 
 function assertSafeRelativePath(path: string): void {
   if (typeof path !== 'string' || path.length === 0) {
@@ -382,7 +429,12 @@ export class AutotaskHttpClient {
     private readonly integrationCode: string,
     private readonly apiUrl: string | undefined,
     private readonly logger: Logger
-  ) {}
+  ) {
+    this.credFp = createHash('sha256').update(`${username.toLowerCase()}|${secret}|${integrationCode}`).digest('hex').slice(0, 16);
+  }
+
+  /** Fingerprint of the credentials: a saved auth pause applies only to the same ones. */
+  private readonly credFp: string;
 
   /**
    * After a 401: is it the credentials (pause everything) or just this entity?
@@ -497,12 +549,18 @@ export class AutotaskHttpClient {
     const cooldownKey = this.username.toLowerCase();
     // Auth pause: Autotask recently rejected these credentials — don't send
     // another failed login (each one counts toward locking the API user).
-    const auth = authBlocks.get(cooldownKey);
+    let auth = authBlocks.get(cooldownKey);
+    // A saved pause for DIFFERENT credentials (the secret was changed) no longer applies.
+    if (auth?.fp && auth.fp !== this.credFp) { authBlocks.delete(cooldownKey); persist(cooldownKey); auth = undefined; }
     const probeBusy = auth?.probeAt !== undefined && Date.now() - auth.probeAt < PROBE_WINDOW_MS;
     if (auth && (auth.until > Date.now() || probeBusy)) {
-      const wait = Math.max(1, Math.ceil((Math.max(auth.until, (auth.probeAt ?? 0) + PROBE_WINDOW_MS) - Date.now()) / 1000));
+      if (auth.provisional) {
+        throw new AutotaskAuthError(`Autotask just rejected a request with HTTP 401; checking whether the API login itself is rejected — this call was NOT sent (to avoid locking the API user). Try again in a minute.`, 60);
+      }
+      const wait = auth.held ? 0 : Math.max(1, Math.ceil((Math.max(auth.until, (auth.probeAt ?? 0) + PROBE_WINDOW_MS) - Date.now()) / 1000));
       throw new AutotaskAuthError(
-        `Autotask rejected this MCP's API credentials (HTTP 401) at ${new Date(auth.since).toISOString()}, so Autotask calls are paused for ${wait}s ` +
+        `Autotask rejected this MCP's API credentials (HTTP 401) at ${new Date(auth.since).toISOString()}, so Autotask calls are ` +
+        (auth.held ? `HELD until an administrator presses "Retry now" in the admin console (${auth.failures} rejected logins) ` : `paused for ${wait}s `) +
         `to avoid locking the API user — this call was NOT sent. Do NOT retry. An administrator must check the Autotask API user ` +
         `(locked out, or secret changed) and then use "Retry now" in the admin console. Last error: ${auth.lastError}`,
         wait,
@@ -574,14 +632,6 @@ export class AutotaskHttpClient {
       // stale (e.g. a data-center migration moved this tenant to a new
       // zone after we cached the old one). Drop the cache and retry once
       // against a freshly-resolved zone before giving up.
-      if (response.status === 401 && !isZoneRetry && !probing && !path.startsWith('http')) {
-        this.logger.debug(
-          `Autotask ${method} ${path} returned 401 — invalidating cached zone for ${this.username} and retrying once`
-        );
-        this.resolvedBaseUrl = null;
-        invalidateZoneUrlCache(this.username);
-        return this.sendUngated<T>(method, path, body, true, opts); // already holds the endpoint slot
-      }
       let detail = text.slice(0, 1000);
       try {
         const parsed = JSON.parse(text);
@@ -612,16 +662,42 @@ export class AutotaskHttpClient {
           retryAfter,
         );
       }
-      // Pause only when the LOGIN is rejected, not one entity: confirm with ThresholdInformation (readable by every API user).
-      if (response.status === 401 && (probing || /ThresholdInformation/i.test(path) || await this.credentialsRejected())) {
-        const pause = tripAuthBlock(cooldownKey, `HTTP 401 on ${method} ${path.split('?')[0]}: ${detail}`);
-        if (pause > 0) {
-          this.logger.error(`Autotask rejected the API credentials for ${this.username} (HTTP 401) — pausing Autotask calls for ${pause}s to avoid locking the account`);
-          throw new AutotaskAuthError(
-            `Autotask rejected this MCP's API credentials (HTTP 401): ${(detail || 'unauthorized').replace(/\.+$/, '')}. Autotask calls are now paused for ${pause}s so repeated ` +
-            `failed logins don't lock the API user. Do NOT retry. An administrator must check the Autotask API user (locked out, or secret changed).`,
-            pause,
-          );
+      if (response.status === 401 && authPauseBaseMs() > 0) {
+        const existing = authBlocks.get(cooldownKey);
+        // Another request is already checking, or the tenant is paused: don't spend another failed login on a check.
+        if (existing && !probing) {
+          throw new AutotaskAuthError(`Autotask rejected this request (HTTP 401) while the API login is being checked or is paused — not retried, to avoid locking the API user.`, 60);
+        }
+        // First 401: stop every other request right now while this one is checked.
+        if (!probing) authBlocks.set(cooldownKey, { since: Date.now(), until: Date.now() + PROVISIONAL_MS, failures: 0, lastError: 'checking', provisional: true });
+        // A stale zone (tenant moved data centre) also answers 401: re-look it up (unauthenticated) and retry only if it changed.
+        if (!probing && !isZoneRetry && !path.startsWith('http')) {
+          const before = this.resolvedBaseUrl;
+          this.resolvedBaseUrl = null;
+          invalidateZoneUrlCache(this.username);
+          let after: string | null = null;
+          try { after = await this.baseUrl(); } catch { /* keep checking below */ }
+          if (after && before && after !== before) {
+            this.logger.warn(`Autotask zone for ${this.username} changed (${before} → ${after}) — retrying once`);
+            authBlocks.delete(cooldownKey);
+            return this.sendUngated<T>(method, path, body, true, opts); // already holds the endpoint slot
+          }
+        }
+        // Pause only when the LOGIN is rejected, not one entity: confirm with ThresholdInformation (readable by every API user).
+        const rejected = probing || /ThresholdInformation/i.test(path) || await this.credentialsRejected();
+        if (rejected) {
+          const pause = tripAuthBlock(cooldownKey, `HTTP 401 on ${method} ${path.split('?')[0]}: ${detail}`, this.credFp);
+          if (pause !== 0) {
+            const how = pause < 0 ? 'HELD until an administrator presses "Retry now" in the admin console' : `paused for ${pause}s`;
+            this.logger.error(`Autotask rejected the API credentials for ${this.username} (HTTP 401) — Autotask calls ${how} to avoid locking the account`);
+            throw new AutotaskAuthError(
+              `Autotask rejected this MCP's API credentials (HTTP 401): ${(detail || 'unauthorized').replace(/\.+$/, '')}. Autotask calls are now ${how} so repeated ` +
+              `failed logins don't lock the API user. Do NOT retry. An administrator must check the Autotask API user (locked out, or secret changed).`,
+              pause < 0 ? 0 : pause,
+            );
+          }
+        } else if (authBlocks.get(cooldownKey)?.provisional) {
+          authBlocks.delete(cooldownKey); // only this entity is refused — the login works
         }
       }
       const httpError = new Error(`Autotask ${method} ${path} failed: HTTP ${response.status}: ${detail}`);
@@ -633,7 +709,8 @@ export class AutotaskHttpClient {
     }
 
     // Credentials work again: end any auth pause.
-    if (probing && authBlocks.delete(cooldownKey)) this.logger.info(`Autotask accepted the API credentials for ${this.username} again — auth pause cleared`);
+    if (probing && authBlocks.delete(cooldownKey)) { persist(cooldownKey); this.logger.info(`Autotask accepted the API credentials for ${this.username} again — auth pause cleared`); }
+    else if (authBlocks.get(cooldownKey)?.provisional) authBlocks.delete(cooldownKey); // a request succeeded: the login works
 
     // Success path — fail closed on any payload anomaly (plan §2/§29/§31).
     // A body-read failure on a 2xx is always an anomaly.

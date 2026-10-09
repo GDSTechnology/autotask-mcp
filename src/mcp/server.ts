@@ -10,6 +10,9 @@
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
 import { ingestAutotaskWebhook } from '../db/webhook-ingest.js';
 import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
+import { initAuthBlockStore } from '../db/auth-block-store.js';
+import { getPool } from '../db/pool.js';
+import { isPgEnabled } from '../db/config.js';
 import {
   createMcpHandler,
   Server,
@@ -284,6 +287,13 @@ export class AutotaskMcpServer {
   async start(): Promise<void> {
     const transportType = this.envConfig?.transport?.type || 'stdio';
     this.logger.info(`Starting Autotask MCP Server with ${transportType} transport...`);
+
+    // Restore any saved Autotask login-protection pause BEFORE the first
+    // Autotask call, so a restart during a lockout doesn't spend more logins.
+    if (isPgEnabled()) {
+      const pool = getPool(this.logger);
+      if (pool) await initAuthBlockStore(pool, this.logger);
+    }
 
     // Postgres shadow (no-op unless MCP_PG_ENABLED + MCP_PG_SHADOW_ENABLED).
     // Single-tenant env mode only: the mirror is of THIS server's tenant.

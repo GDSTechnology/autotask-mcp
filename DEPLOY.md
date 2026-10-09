@@ -88,6 +88,7 @@ Read cache and lookups (defaults are fine; tune only if needed):
 | `MCP_PG_SHADOW_REFRESH_DAYS` | Billing mirror (Invoices, BillingItems, charges): how many recent days are re-read hourly to catch paid / voided / invoiced edits (default `30`; the whole window is re-read daily) |
 | `MCP_CALLER_LABELS` | Admin console names for clients that don't declare a `source`, e.g. `172.19.0.3=n8n,Python-urllib=cron` (IP or user-agent text = name). Editable in the console under Settings → Caller names |
 | `AUTOTASK_AUTH_PAUSE_SECONDS` | After Autotask rejects the API credentials (HTTP 401), pause all calls for this long (default `300`, doubling per repeat up to 60 min) so failed logins don't lock the API user; `0` disables. Clear early with **Retry now** in the admin console |
+| `AUTOTASK_AUTH_MAX_PROBES` | Test calls after a rejected login before Autotask calls are **held** until an admin presses Retry now (default `2`). The pause is saved in Postgres (migration 0006) so restarts respect it; changing the secret clears it |
 | `AUTOTASK_COMPANY_PREWARM` | `on` restores the eager walk of every company at startup. Off by default: company names are looked up on demand |
 
 Keep secrets in the server's env file / secret store — never in the image.

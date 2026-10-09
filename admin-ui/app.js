@@ -74,6 +74,7 @@ async function api(method, path, body) {
 const ROUTES = [
   { hash: '#/', label: 'Dashboard', view: dashboard },
   { hash: '#/calls', label: 'Calls', view: calls },
+  { hash: '#/actors', label: 'Actors', view: actors },
   { hash: '#/settings', label: 'Settings', view: settings },
   { hash: '#/users', label: 'Users', view: users, admin: true },
   { hash: '#/activity', label: 'Activity', view: activity, admin: true },
@@ -490,6 +491,72 @@ async function calls(body) {
     content, exportPanel);
   await draw();
   refreshTimer = setInterval(() => { if (state.auto && document.visibilityState === 'visible') draw().catch(() => undefined); }, 10_000);
+}
+
+// ── actors (MCP-001: who is a person, who is automation) ─────────────────────
+const ACTOR_TYPE_LABEL = { human: 'Person', service_account: 'Service account', integration: 'Integration', system: 'System', unknown: 'Unknown' };
+const SOURCE_LABEL = { registry: 'set in registry', 'system-resource': 'Autotask system account', 'mcp-api-user': 'this MCP (n8n / Nexus / ChatGPT writes)', 'license-api-user': 'API User license', 'name-suggests-automation': 'name looks like automation — confirm', 'licensed-user': 'licensed user', 'not-found': 'no resource record', 'no-actor': 'no actor' };
+async function actors(body) {
+  const isAdmin = me.role === 'admin';
+  const state = { type: '', q: '', inactive: false };
+  const content = h('div');
+  const getSetting = async (key) => ((await api('GET', '/api/settings')).settings.find((s) => s.key === key) || {}).value || [];
+  async function saveLines(key, mutate) {
+    const lines = await getSetting(key);
+    const next = mutate(lines.slice());
+    await api('PUT', `/api/settings/${key}`, { value: next });
+  }
+  async function setType(id, type, label) {
+    await saveLines('actors.registry', (lines) => {
+      const rest = lines.filter((l) => l.split('=')[0].trim() !== String(id));
+      if (type) rest.push(`${id}=${type}${label ? ':' + label : ''}`);
+      return rest;
+    });
+  }
+  async function setReference(id, on, label) {
+    await saveLines('actors.reference', (lines) => {
+      const rest = lines.filter((l) => l.split('=')[0].trim() !== String(id));
+      if (on) rest.push(`${id}${label ? '=' + label : ''}`);
+      return rest;
+    });
+  }
+  async function draw() {
+    const r = await api('GET', `/api/actors${state.inactive ? '?inactive=1' : ''}`);
+    const list = r.actors.filter((a) => (!state.type || a.actorType === state.type) && (!state.q || `${a.displayName || ''} ${a.resourceId}`.toLowerCase().includes(state.q.toLowerCase())));
+    const typeBadge = (t) => h('span', { class: `badge ${t === 'human' ? 'ok' : t === 'unknown' ? 'warn' : ''}` }, ACTOR_TYPE_LABEL[t] || t);
+    content.replaceChildren(
+      h('div', { class: 'row', style: 'margin-bottom:10px' },
+        ...Object.entries(r.counts).map(([k, v]) => h('span', { class: 'badge' }, `${ACTOR_TYPE_LABEL[k] || k}: ${v}`)),
+        h('span', { class: 'badge accent' }, `★ reference: ${r.referenceCount}`)),
+      h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Resource'), h('th', { class: 'num' }, 'ID'), h('th', null, 'Type'), h('th', null, 'Why'), h('th', null, 'Reference'), isAdmin ? h('th', null, 'Set type') : null)),
+        h('tbody', null, list.map((a) => {
+          const sel = isAdmin ? h('select', { 'aria-label': `Type of ${a.displayName || a.resourceId}`, onchange: async (e) => {
+            try { await setType(a.resourceId, e.target.value, a.displayName); toast('Saved.'); await draw(); } catch (x) { toast(x.message); }
+          } }, h('option', { value: '' }, '(automatic)'), ...['human', 'service_account', 'integration', 'system', 'unknown'].map((t) => h('option', { value: t }, ACTOR_TYPE_LABEL[t]))) : null;
+          if (sel) sel.value = a.classificationSource === 'registry' && !a.reference ? a.actorType : '';
+          return h('tr', null,
+            h('td', null, h('strong', null, a.displayName || '—'), a.isActive === false ? h('span', { class: 'muted' }, ' (inactive)') : null),
+            h('td', { class: 'num mono' }, String(a.resourceId)),
+            h('td', null, typeBadge(a.actorType)),
+            h('td', { class: 'muted' }, SOURCE_LABEL[a.classificationSource] || a.classificationSource),
+            h('td', null, isAdmin
+              ? h('label', { class: 'switch', title: 'Reference technician' }, h('input', { type: 'checkbox', checked: a.reference, 'aria-label': 'Reference technician', disabled: a.actorType !== 'human' && !a.reference, onchange: async (e) => {
+                  try { await setReference(a.resourceId, e.target.checked, a.displayName); toast('Saved.'); await draw(); } catch (x) { toast(x.message); e.target.checked = !e.target.checked; }
+                } }), h('span'))
+              : (a.reference ? '★' : '')),
+            sel ? h('td', null, sel) : null);
+        }))))
+    );
+  }
+  const search = h('input', { type: 'text', placeholder: 'Search name or id…', style: 'max-width:240px', oninput: (e) => { state.q = e.target.value.trim(); clearTimeout(search._t); search._t = setTimeout(draw, 250); } });
+  const typeSel = h('select', { style: 'max-width:180px', onchange: (e) => { state.type = e.target.value; draw(); } }, h('option', { value: '' }, 'All types'), ...['human', 'service_account', 'integration', 'system', 'unknown'].map((t) => h('option', { value: t }, ACTOR_TYPE_LABEL[t])));
+  const inactive = h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center;margin:0' }, h('input', { type: 'checkbox', onchange: (e) => { state.inactive = e.target.checked; draw(); } }), 'Show inactive');
+  body.replaceChildren(
+    h('h1', null, 'Actors'),
+    h('p', { class: 'muted' }, 'Who changed a ticket: a person, or automation. Ticket history and the activity feed use this, and anything learning from technicians (Hermes) must only learn from "Person" — never from automation, including this MCP\'s own n8n / Nexus changes. "Unknown" needs confirming. ★ Reference technicians are the trusted standard.'),
+    h('section', { class: 'panel' }, h('div', { class: 'row', style: 'margin-bottom:10px' }, search, typeSel, inactive), content));
+  await draw();
 }
 
 // ── settings ──────────────────────────────────────────────────────────────

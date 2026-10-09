@@ -199,7 +199,7 @@ describe('getTicketHistoryEvents', () => {
     expect(r.events.map((e: any) => e.id)).toEqual([1, 2, 3]);
     expect(r.events[1]).toMatchObject({ field: 'Queue', from: 'Triage', to: 'Service Desk', actor: { kind: 'system', name: 'Autotask Administrator (system)' } });
     expect(r.events[2]).toMatchObject({ field: 'Account', from: 'Unknown Sorting', to: 'Edge Estimates', actor: { kind: 'mcp-api-user', name: 'Nexus Z - API' } });
-    expect(r.counts).toEqual({ events: 3, hiddenTimestampOnly: 1, byActorKind: { resource: 1, system: 1, 'mcp-api-user': 1 } });
+    expect(r.counts).toEqual({ events: 3, hiddenTimestampOnly: 1, byActorKind: { resource: 1, system: 1, 'mcp-api-user': 1 }, byActorType: { unknown: 1, system: 1, service_account: 1 } }); // no resource record → unknown, never assumed human
     expect((await s.getTicketHistoryEvents(7, { includeNoise: true }) as any).events).toHaveLength(4);
   });
 });

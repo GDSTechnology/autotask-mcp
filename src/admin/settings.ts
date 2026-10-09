@@ -7,11 +7,13 @@
 // cache) can read settings cheaply. admin/apply.ts pushes values into the
 // shadow runtime.
 
+import { registryLineProblem, referenceLineProblem } from '../utils/actor-classify.js';
+
 export type SettingType = 'boolean' | 'integer' | 'string[]' | 'lines';
 
 export interface SettingDef {
   key: string;
-  group: 'Tools' | 'Postgres shadow' | 'Autotask API' | 'Diagnostics';
+  group: 'Tools' | 'Postgres shadow' | 'Autotask API' | 'Diagnostics' | 'Actors';
   label: string;
   description: string;
   type: SettingType;
@@ -19,6 +21,8 @@ export interface SettingDef {
   max?: number;
   /** Allowed values for string[] settings (filled in by the console at startup). */
   choices?: string[];
+  /** For 'lines' settings: why a line is invalid, or null (default: pattern=name). */
+  lineProblem?: (line: string) => string | null;
   /** Only meaningful when this subsystem is running. */
   requires?: 'shadow';
   envDefault: (env: NodeJS.ProcessEnv) => unknown;
@@ -64,6 +68,18 @@ export const SETTINGS: SettingDef[] = [
     envDefault: (env) => (env.MCP_CALLER_LABELS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   },
   {
+    key: 'actors.registry', group: 'Actors', type: 'lines', label: 'Actor registry',
+    description: 'Overrides for who an Autotask resource is, used by ticket history and the activity feed. One per line: resourceId=type or resourceId=type:label, type = human, service_account, integration, system or unknown (e.g. 512=integration:Datto RMM). Use it to confirm accounts the automatic rules mark unknown.',
+    lineProblem: registryLineProblem,
+    envDefault: (env) => (env.MCP_ACTOR_REGISTRY ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  },
+  {
+    key: 'actors.reference', group: 'Actors', type: 'lines', label: 'Reference technicians',
+    description: 'People whose ticket work is the trusted standard to learn from (always human). One per line: resourceId or resourceId=name. Automation — including this MCP\'s own n8n/Nexus writes — is never a reference.',
+    lineProblem: referenceLineProblem,
+    envDefault: (env) => (env.MCP_ACTOR_REFERENCE ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  },
+  {
     key: 'cache.enabled', group: 'Autotask API', type: 'boolean', label: 'Read cache',
     description: 'Short-lived cache of Autotask reads (writes always clear it). Off sends every read to Autotask.',
     envDefault: (env) => !/^(off|false|0|no)$/i.test(env.AUTOTASK_CACHE ?? ''),
@@ -104,8 +120,9 @@ export function coerceSetting(key: string, value: unknown): unknown {
       const list = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/\r?\n|,/) : null;
       if (!list || list.some((v) => typeof v !== 'string')) throw new Error(`${def.label} must be a list of lines.`);
       const lines = list.map((v) => v.trim()).filter(Boolean);
-      if (lines.length > 50) throw new Error(`${def.label}: at most 50 rules.`);
+      if (lines.length > 200) throw new Error(`${def.label}: at most 200 lines.`);
       for (const l of lines) {
+        if (def.lineProblem) { const p = def.lineProblem(l); if (p) throw new Error(`${def.label}: ${p}.`); continue; }
         const i = l.indexOf('=');
         if (i < 1 || i === l.length - 1) throw new Error(`${def.label}: "${l}" must look like pattern=name.`);
         if (l.length - i - 1 > 40) throw new Error(`${def.label}: the name in "${l}" is longer than 40 characters.`);

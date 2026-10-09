@@ -797,28 +797,51 @@ export class AutotaskService {
    */
   async findOrCreateContact(
     companyID: number,
-    contact: Partial<AutotaskContact> & { emailAddress?: string; email?: string }
-  ): Promise<{ id: number; created: boolean }> {
+    contact: Partial<AutotaskContact> & { emailAddress?: string; email?: string; reactivate?: boolean }
+  ): Promise<{ id: number | null; created: boolean; status?: 'ambiguous'; matchedBy?: 'email' | 'name'; reactivated?: boolean; candidates?: number[] }> {
     if (companyID === undefined || companyID === null) {
       throw new Error('Cannot find-or-create contact: companyID is required.');
     }
     const http = await this.ensureClient();
-    const email = contact.emailAddress ?? contact.email;
+    const { email: emailAlias, reactivate, ...fields } = contact;
+    const email = String(fields.emailAddress ?? emailAlias ?? '').trim();
+    const norm = (v: unknown) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+    type Row = { id: number; isActive?: unknown; firstName?: string; lastName?: string };
+    // Inactive contacts are matched too: re-creating one would leave a duplicate beside it.
+    let hits: Row[] = [];
+    let matchedBy: 'email' | 'name' | undefined;
     if (email) {
-      const existing = await http.query<{ id: number }>(
-        'Contacts',
-        [
-          { op: 'eq', field: 'companyID', value: companyID },
-          { op: 'eq', field: 'emailAddress', value: email },
-        ],
-        { includeFields: ['id'], maxRecords: 1 }
-      );
-      if (existing.length > 0 && typeof existing[0].id === 'number') {
-        this.logger.info(`findOrCreateContact: matched existing contact ${existing[0].id} by email in company ${companyID}`);
-        return { id: existing[0].id, created: false };
-      }
+      hits = await http.query<Row>('Contacts', [
+        { op: 'eq', field: 'companyID', value: companyID },
+        { op: 'eq', field: 'emailAddress', value: email },
+      ], { includeFields: ['id', 'isActive'], maxRecords: 25 });
+      matchedBy = 'email';
+    } else if (norm(fields.firstName) && norm(fields.lastName)) {
+      const rows = await http.query<Row>('Contacts', [
+        { op: 'eq', field: 'companyID', value: companyID },
+        { op: 'eq', field: 'lastName', value: String(fields.lastName).trim() },
+      ], { includeFields: ['id', 'isActive', 'firstName', 'lastName'], maxRecords: 100 });
+      hits = rows.filter((r) => norm(r.firstName) === norm(fields.firstName) && norm(r.lastName) === norm(fields.lastName));
+      matchedBy = 'name';
     }
-    const id = await this.createContact({ ...contact, companyID } as Partial<AutotaskContact>);
+    const isActive = (r: Row) => !(r.isActive === false || r.isActive === 0 || r.isActive === '0');
+    // Prefer active matches; several left → ambiguous, nothing created.
+    const active = hits.filter(isActive);
+    const pool = active.length ? active : hits;
+    if (pool.length > 1) {
+      return { id: null, created: false, status: 'ambiguous', ...(matchedBy ? { matchedBy } : {}), candidates: pool.map((r) => r.id) };
+    }
+    if (pool.length === 1 && typeof pool[0].id === 'number') {
+      const hit = pool[0];
+      let reactivated = false;
+      if (!isActive(hit) && reactivate !== false) {
+        await this.updateContact(hit.id, { isActive: 1, companyID } as Partial<AutotaskContact>);
+        reactivated = true;
+      }
+      this.logger.info(`findOrCreateContact: matched existing contact ${hit.id} by ${matchedBy} in company ${companyID}${reactivated ? ' (reactivated)' : ''}`);
+      return { id: hit.id, created: false, ...(matchedBy ? { matchedBy } : {}), reactivated };
+    }
+    const id = await this.createContact({ ...fields, ...(email ? { emailAddress: email } : {}), companyID } as Partial<AutotaskContact>);
     return { id, created: true };
   }
 
@@ -1506,8 +1529,16 @@ export class AutotaskService {
   async moveTicketToCompany(
     ticketId: number,
     targetCompanyID: number,
-    opts: { contactID?: number | undefined; force?: boolean | undefined; companyLocationID?: number | undefined } = {}
+    opts: {
+      contactID?: number | undefined; force?: boolean | undefined; companyLocationID?: number | undefined;
+      /** Routing sent in the SAME write as the company (one update, one workflow-rule firing). */
+      also?: { queueID?: number | undefined; status?: number | undefined; assignedResourceID?: number | undefined; assignedResourceRoleID?: number | undefined; userDefinedFields?: Array<{ name: string; value: unknown }> | undefined } | undefined;
+    } = {}
   ): Promise<Record<string, unknown>> {
+    const also = opts.also ?? {};
+    if ((also.assignedResourceID != null) !== (also.assignedResourceRoleID != null)) {
+      throw new Error('assignedResourceID and assignedResourceRoleID go together; ticket not moved.');
+    }
     const ticket = await this.getTicket(ticketId, true);
     if (!ticket) throw new Error(`Ticket ${ticketId} not found.`);
 
@@ -1571,13 +1602,24 @@ export class AutotaskService {
       }
     }
 
+    const routed = (['queueID', 'status', 'assignedResourceID', 'assignedResourceRoleID'] as const).filter((k) => also[k] != null);
+    for (const k of routed) updates[k] = Number(also[k]);
+    const udfs = Array.isArray(also.userDefinedFields) ? also.userDefinedFields : [];
+    if (udfs.length) updates.userDefinedFields = udfs.map((u) => ({ name: u.name, value: u.value == null ? null : String(u.value) }));
+
     await this.updateTicket(ticketId, updates);
 
     const after = (await this.getTicket(ticketId, true)) as Record<string, any> | null;
+    const udfVal = (rec: Record<string, any> | null, name: string) => (rec?.userDefinedFields as Array<{ name: string; value: unknown }> | undefined)?.find((u) => u.name === name)?.value ?? null;
+    const routing = [
+      ...routed.map((k) => ({ field: k, to: after?.[k] ?? null, applied: after != null && Number(after[k]) === Number(updates[k]) })),
+      ...udfs.map((u) => { const got = udfVal(after, u.name); return { field: `udf:${u.name}`, to: got, applied: String(got ?? '') === String(u.value ?? '') }; }),
+    ];
     const verified =
       after != null && after.companyID === targetCompanyID && after.companyLocationID === location.id &&
       (opts.contactID == null || Number(after.contactID) === Number(opts.contactID)) &&
-      (!contractCleared || after.contractID == null);
+      (!contractCleared || after.contractID == null) &&
+      routing.every((r) => r.applied);
 
     return {
       status: verified ? 'updated' : 'failed-verification',
@@ -1588,10 +1630,11 @@ export class AutotaskService {
       contactID: after?.contactID,
       contractID: after?.contractID ?? null,
       ...(contractCleared ? { contractCleared } : {}),
+      ...(routing.length ? { routing } : {}),
       verified,
       message: verified
         ? `Ticket ${ticketId} moved to company ${targetCompanyID} (location ${location.id}${opts.companyLocationID != null ? '' : ', primary'}${contractCleared ? `; contract ${String(contractCleared.contractID)} cleared — it belongs to another company` : ''}).`
-        : `Ticket ${ticketId} move did not verify — check company/location/contact/contract on the ticket.`,
+        : `Ticket ${ticketId} move did not verify — check company/location/contact/contract${routing.some((r) => !r.applied) ? ` and ${routing.filter((r) => !r.applied).map((r) => r.field).join(', ')}` : ''} on the ticket.`,
     };
   }
 

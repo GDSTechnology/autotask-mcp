@@ -60,6 +60,38 @@ describe('move_ticket_to_company', () => {
     expect(String(out.message)).toMatch(/contract 55 cleared/);
   });
 
+  test('routing (queue, status, resource + role, UDFs) goes in the SAME write and is verified', async () => {
+    const m = mock({ id: 1, companyID: 111, queueID: 5, status: 1, userDefinedFields: [{ name: 'Nexus-Status', value: '2' }], estimatedHours: 3, purchaseOrderNumber: 'PO1' }, LOCS);
+    const out = await new AutotaskService(config, logger).moveTicketToCompany(1, 222, {
+      also: { queueID: 8, status: 7, assignedResourceID: 30, assignedResourceRoleID: 40, userDefinedFields: [{ name: 'Nexus-Status', value: '4' }] },
+    });
+    expect(m.patches).toHaveLength(1);
+    expect(m.patches[0]).toEqual({ id: 1, companyID: 222, companyLocationID: 900, contactID: null, queueID: 8, status: 7, assignedResourceID: 30, assignedResourceRoleID: 40, userDefinedFields: [{ name: 'Nexus-Status', value: '4' }] });
+    expect(out).toMatchObject({ status: 'updated', verified: true });
+    expect(out.routing).toEqual(expect.arrayContaining([{ field: 'queueID', to: 8, applied: true }, { field: 'udf:Nexus-Status', to: '4', applied: true }]));
+    // nothing else on the ticket is sent, so nothing else can be blanked
+    expect(m.current()).toMatchObject({ estimatedHours: 3, purchaseOrderNumber: 'PO1' });
+  });
+
+  test('a routing field Autotask did not apply fails verification', async () => {
+    jest.spyOn(global, 'fetch' as any).mockImplementation((...args: unknown[]) => {
+      const url = args[0] as string; const init = (args[1] || {}) as RequestInit; const path = new URL(url).pathname; const method = init.method || 'GET';
+      if (method === 'GET' && /\/Tickets\/\d+$/.test(path)) return Promise.resolve(res(200, { item: { id: 1, companyID: 222, companyLocationID: 900, queueID: 5 } }));
+      if (method === 'POST' && /\/CompanyLocations\/query$/.test(path)) return Promise.resolve(res(200, { items: LOCS }));
+      if (method === 'PATCH') return Promise.resolve(res(200, { itemId: 1 }));
+      return Promise.resolve(res(599, { errors: ['unexpected'] }));
+    });
+    const out = await new AutotaskService(config, logger).moveTicketToCompany(1, 222, { also: { queueID: 8 } });
+    expect(out).toMatchObject({ status: 'failed-verification', verified: false });
+    expect(String(out.message)).toMatch(/queueID/);
+  });
+
+  test('a resource without its role is refused before any write', async () => {
+    const m = mock({ id: 1, companyID: 111 }, LOCS);
+    await expect(new AutotaskService(config, logger).moveTicketToCompany(1, 222, { also: { assignedResourceID: 30 } })).rejects.toThrow(/go together/);
+    expect(m.patches).toHaveLength(0);
+  });
+
   test("a contract that already belongs to the target company is kept", async () => {
     const m = mock({ id: 1, companyID: 111, contractID: 77 }, LOCS, { 77: { companyID: 222 } });
     const out = await new AutotaskService(config, logger).moveTicketToCompany(1, 222);

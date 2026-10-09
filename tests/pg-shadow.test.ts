@@ -55,6 +55,11 @@ describe('entities + write detection', () => {
     expect(writtenRow('/Tickets/7/Notes', {}, { itemId: 1 })).toBeNull();
     expect(writtenRow('/Opportunities', { id: 1 }, {})).toBeNull();
     expect(writtenRow('/Projects/9/Tasks', { id: 4 }, {})).toEqual({ entity: 'Tasks', id: 4 });
+    // raw_request writes arrive as absolute zone URLs (n8n 'update did not verify', 2026-10-09).
+    expect(writtenRow('https://webservices3.autotask.net/ATServicesRest/v1.0/Tickets', { id: 210669, priority: 1 }, {})).toEqual({ entity: 'Tickets', id: 210669 });
+    expect(writtenRow('https://webservices3.autotask.net/ATServicesRest/v1.0/Tickets/210669', undefined, undefined)).toEqual({ entity: 'Tickets', id: 210669 });
+    expect(writtenRow('https://webservices3.autotask.net/ATServicesRest/V1.0/Companies/5/Contacts?x=1', {}, { itemId: 12 })).toEqual({ entity: 'Contacts', id: 12 });
+    expect(writtenRow('https://webservices3.autotask.net/ATServicesRest/v1.0/Tickets/query', {}, {})).toBeNull();
   });
 });
 

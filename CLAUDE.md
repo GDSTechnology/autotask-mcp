@@ -17,6 +17,12 @@ Workflow defaults (commits, changelog, memory) come from the global `~/.claude/C
   ordering under which late-arriving history is never skipped. Watermarks are
   re-scanned with a 15-min overlap; ingest is behind a pg advisory lock.
 - Contact `note` is capped at 50 characters in this tenant (`CONTACT_NOTE_MAX_LENGTH`).
+- MCP-004: TicketNotes is a shadow entity (window `createDateTime`; watermark
+  `lastActivityDate` resolved from the field list; NOT yet verified live).
+  TicketHistory can't be mirrored (per-ticket only). It is indexed in
+  `audit_event` and served from there while the ticket's
+  lastTrackedModificationDateTime ≤ indexedAt (`getTicketHistoryEvents` →
+  `source`).
 
 ## Learnings - 2026-10-07
 

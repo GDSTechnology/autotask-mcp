@@ -126,6 +126,8 @@ import {
 } from '../types/autotask';
 import { McpServerConfig } from '../types/mcp';
 import { Logger } from '../utils/logger';
+import { getShadowRuntime } from '../db/shadow-runtime.js';
+import { historyEvent } from '../utils/audit-events.js';
 import { FieldInfo, PicklistValue } from './picklist.cache';
 import {
   findDuplicateNote, formatChoices, hoursBetween, HUMAN_NOTE_TYPE_LABEL, matchPicklist, MyServiceCall,
@@ -1187,9 +1189,18 @@ export class AutotaskService {
    * this MCP's API user, or a person). Timestamp-only actions are hidden by
    * default and counted.
    */
-  async getTicketHistoryEvents(id: number, opts: { includeNoise?: boolean } = {}): Promise<Record<string, unknown>> {
-    const http = await this.ensureClient();
-    const rows = await http.query<HistoryRow>('TicketHistory', [{ op: 'eq', field: 'ticketID', value: id }], { maxRecords: 500 });
+  async getTicketHistoryEvents(id: number, opts: { includeNoise?: boolean; live?: boolean } = {}): Promise<Record<string, unknown>> {
+    // Served from the audit ledger when its copy is current (0 calls); timestamp-only rows aren't stored, so includeNoise reads live.
+    const cached = opts.includeNoise || opts.live ? null : await this.cachedTicketHistory(id);
+    let rows: HistoryRow[];
+    let parsedFromCache: Map<number, { field: string | null; from: string | null; to: string | null }> | null = null;
+    if (cached) {
+      rows = cached.rows;
+      parsedFromCache = cached.parsed;
+    } else {
+      const http = await this.ensureClient();
+      rows = await http.query<HistoryRow>('TicketHistory', [{ op: 'eq', field: 'ticketID', value: id }], { maxRecords: 500 });
+    }
     rows.sort((a, b) => String(a.date ?? '').localeCompare(String(b.date ?? '')) || Number(a.id) - Number(b.id));
     const noise = rows.filter((r) => NOISE_HISTORY_ACTIONS.has(String(r.action)));
     const kept = opts.includeNoise ? rows : rows.filter((r) => !NOISE_HISTORY_ACTIONS.has(String(r.action)));
@@ -1200,6 +1211,8 @@ export class AutotaskService {
       const f = fields.find((x) => x.name === HISTORY_FIELD_PICKLIST[field.toLowerCase()]);
       return (f?.picklistValues ?? []).map((v) => v.label);
     };
+    // A live read refreshes the index, so the activity feed and the next read skip this ticket's history call.
+    if (!cached) await this.indexTicketHistory(id, rows, labelsFor);
     let self: number | null = null;
     try { self = await this.resolveApiUserResourceId(); } catch { /* unknown */ }
     let actorNames = new Map<number, string>();
@@ -1209,7 +1222,9 @@ export class AutotaskService {
     let actorCtx: ClassifyContext | null = null;
     try { actorCtx = await this.getActorContext(); } catch { /* classification is best-effort */ }
     const events = kept.map((r) => {
-      const change = r.detail ? parseHistoryChange(String(r.detail), labelsFor(String(r.detail).split(/ changed from /i)[0] ?? '')) : null;
+      const stored = parsedFromCache?.get(Number(r.id));
+      const change = stored?.field ? { field: stored.field, from: stored.from, to: stored.to, ambiguous: false }
+        : r.detail ? parseHistoryChange(String(r.detail), labelsFor(String(r.detail).split(/ changed from /i)[0] ?? '')) : null;
       const rid = r.resourceID != null ? Number(r.resourceID) : null;
       const kind = actorKind(rid, self);
       const cls = actorCtx ? classifyActor(rid, actorCtx) : null;
@@ -1225,7 +1240,59 @@ export class AutotaskService {
     for (const e of events) byActor[e.actor.kind] = (byActor[e.actor.kind] ?? 0) + 1;
     const byActorType: Record<string, number> = {};
     for (const e of events) byActorType[e.actor.actorType] = (byActorType[e.actor.actorType] ?? 0) + 1;
-    return { ticketID: id, events, counts: { events: events.length, hiddenTimestampOnly: opts.includeNoise ? 0 : noise.length, byActorKind: byActor, byActorType }, mcpApiUserResourceID: self, truncated: rows.length >= 500 };
+    return {
+      ticketID: id, events,
+      // From the index the timestamp-only rows aren't known (they're never stored): null, not 0.
+      counts: { events: events.length, hiddenTimestampOnly: opts.includeNoise ? 0 : cached ? null : noise.length, byActorKind: byActor, byActorType },
+      mcpApiUserResourceID: self, truncated: cached ? cached.truncated : rows.length >= 500,
+      source: cached ? { from: 'index', indexedAt: cached.indexedAt, ticketLastModified: cached.ticketLastModified } : { from: 'live' },
+    };
+  }
+
+  /**
+   * The ticket's history from the audit ledger, when the ledger's copy is
+   * current: read after the ticket's last tracked change (per the Tickets
+   * mirror, itself fresh), and the ticket not written since. Otherwise null → live.
+   */
+  private async cachedTicketHistory(id: number): Promise<{
+    rows: HistoryRow[]; parsed: Map<number, { field: string | null; from: string | null; to: string | null }>;
+    indexedAt: string; ticketLastModified: string; truncated: boolean;
+  } | null> {
+    const rt = getShadowRuntime();
+    if (!rt) return null;
+    try {
+      if (rt.sync?.isDirty('Tickets', id)) return null;
+      const f = await rt.store.freshness('Tickets');
+      if (!f.ready || f.ageSeconds == null || f.ageSeconds > rt.maxAgeSeconds) return null;
+      const t = (await rt.store.query('Tickets', [{ op: 'eq', field: 'id', value: id }], { limit: 1, fields: ['lastTrackedModificationDateTime'] })).rows[0];
+      const lastMod = t?.lastTrackedModificationDateTime ? new Date(String(t.lastTrackedModificationDateTime)) : null;
+      const at = (await rt.ledger.historyFetched([id])).get(id);
+      if (!lastMod || Number.isNaN(lastMod.getTime()) || !at || at < lastMod) return null;
+      const evs = await rt.ledger.query({ start: '1970-01-01T00:00:00Z', end: '9999-01-01T00:00:00Z', sources: ['ticket_history'], entityTypes: ['ticket'], entityIds: [id] });
+      const parsed = new Map<number, { field: string | null; from: string | null; to: string | null }>();
+      const rows: HistoryRow[] = evs.map((e) => {
+        const hid = Number(String(e.eventId).replace(/^th:/, ''));
+        const d = (e.details ?? {}) as Record<string, unknown>;
+        if (e.field && (e.oldValue != null || e.newValue != null)) parsed.set(hid, { field: e.field, from: e.oldValue ?? null, to: e.newValue ?? null });
+        const detail = typeof d.detail === 'string' ? d.detail
+          : e.field && (e.oldValue != null || e.newValue != null) ? `${e.field} changed from ${e.oldValue ?? ''} to ${e.newValue ?? ''}` : null;
+        return { id: hid, date: e.timestamp, ...(typeof d.historyAction === 'string' ? { action: d.historyAction } : {}), detail, resourceID: e.resourceId };
+      });
+      return { rows, parsed, indexedAt: at.toISOString(), ticketLastModified: lastMod.toISOString(), truncated: rows.length >= 500 };
+    } catch { return null; }
+  }
+
+  /** Store a live history read in the audit ledger (best effort — the read never fails over it). */
+  private async indexTicketHistory(id: number, rows: HistoryRow[], labelsFor: (field: string) => string[]): Promise<void> {
+    const rt = getShadowRuntime();
+    if (!rt) return;
+    try {
+      const t = (await rt.store.query('Tickets', [{ op: 'eq', field: 'id', value: id }], { limit: 1, fields: ['ticketNumber', 'companyID'] })).rows[0] as { ticketNumber?: string; companyID?: number } | undefined;
+      const ticket = { id, ticketNumber: t?.ticketNumber ?? null, companyID: t?.companyID ?? null };
+      const evs = rows.map((r) => historyEvent(r as never, ticket, labelsFor)).filter((e): e is NonNullable<typeof e> => !!e);
+      await rt.ledger.insert(evs);
+      await rt.ledger.markHistoryFetched(id, new Date());
+    } catch (err) { this.logger.debug(`ticket ${id}: history not indexed`, err); }
   }
 
   /**

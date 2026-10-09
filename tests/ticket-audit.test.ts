@@ -12,6 +12,7 @@ import { Logger } from '../src/utils/logger';
 import { actorKind, labelUdfs, normalizeTicketNumber, parseHistoryChange, picklistLabels } from '../src/utils/ticket-audit';
 import { decodeEncodedWords, parseAddress, parseAddressList, parseRfc822 } from '../src/utils/rfc822';
 import type { McpServerConfig } from '../src/types/mcp';
+import { _setShadowRuntime } from '../src/db/shadow-runtime';
 
 const logger = new Logger('error');
 const config: McpServerConfig = { name: 't', version: '0', autotask: { username: 'u@e.com', secret: 's', integrationCode: 'ic', apiUrl: 'https://x/ATServicesRest/' } };
@@ -201,6 +202,65 @@ describe('getTicketHistoryEvents', () => {
     expect(r.events[2]).toMatchObject({ field: 'Account', from: 'Unknown Sorting', to: 'Edge Estimates', actor: { kind: 'mcp-api-user', name: 'Nexus Z - API' } });
     expect(r.counts).toEqual({ events: 3, hiddenTimestampOnly: 1, byActorKind: { resource: 1, system: 1, 'mcp-api-user': 1 }, byActorType: { unknown: 1, system: 1, service_account: 1 } }); // no resource record → unknown, never assumed human
     expect((await s.getTicketHistoryEvents(7, { includeNoise: true }) as any).events).toHaveLength(4);
+  });
+
+  describe('history index (MCP-004)', () => {
+    const HIST = [
+      { id: 1, date: '2026-10-05T10:00:00Z', action: 'Created', detail: '', resourceID: 31685309 },
+      { id: 2, date: '2026-10-05T10:01:00Z', action: 'Queue Changed', detail: 'Queue changed from Triage to Service Desk', resourceID: 4 },
+    ];
+    /** Fake runtime: Tickets mirror (fresh unless stale), a ledger that really stores, a sync that can mark the ticket dirty. */
+    function rt(o: { lastMod?: string; stale?: boolean; dirty?: boolean } = {}) {
+      const stored: any[] = []; const fetched = new Map<number, Date>();
+      return {
+        stored, fetched,
+        runtime: {
+          maxAgeSeconds: 900,
+          sync: { isDirty: () => !!o.dirty },
+          store: {
+            freshness: async () => ({ ready: true, ageSeconds: o.stale ? 5000 : 30 }),
+            query: async () => ({ rows: [{ id: 7, ticketNumber: 'T7', companyID: 9, lastTrackedModificationDateTime: o.lastMod ?? '2026-10-05T10:01:00Z' }] }),
+          },
+          ledger: {
+            insert: async (evs: any[]) => { for (const e of evs) if (!stored.some((x) => x.eventId === e.eventId)) stored.push(e); return evs.length; },
+            markHistoryFetched: async (id: number, at: Date) => { fetched.set(id, at); },
+            historyFetched: async (ids: number[]) => new Map([...fetched].filter(([k]) => ids.includes(k))),
+            query: async () => stored,
+          },
+        },
+      };
+    }
+    afterEach(() => _setShadowRuntime(null));
+
+    test('a live read is indexed; the next read comes from the index (0 calls) with the same events', async () => {
+      const r = rt(); _setShadowRuntime(r.runtime as never);
+      const query = jest.fn(async (e: string) => (e === 'TicketHistory' ? HIST.map((x) => ({ ...x })) : []));
+      const histCalls = () => query.mock.calls.filter((c) => c[0] === 'TicketHistory').length;
+      const s = mkService({ query });
+      jest.spyOn(s, 'resolveApiUserResourceId').mockResolvedValue(30683921);
+      const first: any = await s.getTicketHistoryEvents(7);
+      expect(first.source).toEqual({ from: 'live' });
+      expect(r.stored.map((e) => [e.eventId, e.entityReference])).toEqual([['th:1', 'T7'], ['th:2', 'T7']]);
+      const second: any = await s.getTicketHistoryEvents(7);
+      expect(histCalls()).toBe(1);
+      expect(second.source).toMatchObject({ from: 'index', ticketLastModified: '2026-10-05T10:01:00.000Z' });
+      expect(second.events.map((e: any) => [e.id, e.action, e.field ?? null, e.from ?? null, e.to ?? null])).toEqual(first.events.map((e: any) => [e.id, e.action, e.field ?? null, e.from ?? null, e.to ?? null]));
+      expect(second.counts.hiddenTimestampOnly).toBeNull();
+    });
+
+    test('changed since indexed, stale mirror, written ticket, live:true or includeNoise → live', async () => {
+      for (const [o, args] of [[{ lastMod: '2099-01-01T00:00:00Z' }, {}], [{ stale: true }, {}], [{ dirty: true }, {}], [{}, { live: true }], [{}, { includeNoise: true }]] as const) {
+        const r = rt(o); _setShadowRuntime(r.runtime as never);
+        r.fetched.set(7, new Date('2026-10-06T00:00:00Z'));
+        const query = jest.fn(async (e: string) => (e === 'TicketHistory' ? HIST.map((x) => ({ ...x })) : []));
+      const histCalls = () => query.mock.calls.filter((c) => c[0] === 'TicketHistory').length;
+        const s = mkService({ query });
+        jest.spyOn(s, 'resolveApiUserResourceId').mockResolvedValue(null);
+        const out: any = await s.getTicketHistoryEvents(7, args);
+        expect(out.source.from).toBe('live');
+        expect(histCalls()).toBe(1);
+      }
+    });
   });
 });
 

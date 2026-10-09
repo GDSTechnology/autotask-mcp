@@ -42,17 +42,19 @@ describe('entities + write detection', () => {
     expect(shadowEntity('timeentries')!.watermarkField).toBe('lastModifiedDateTime');
     expect(SHADOW_ENTITIES.filter((e) => !e.watermarkField && !e.window).map((e) => e.name)).toEqual(['ContractServices', 'ContractBlocks', 'Resources']);
     // Billing entities: windowed, watermark resolved per tenant (window refresh when none).
-    expect(SHADOW_ENTITIES.filter((e) => e.watermarkCandidates).map((e) => e.name)).toEqual(['Invoices', 'BillingItems', 'TicketCharges', 'ProjectCharges', 'ContractCharges']);
+    expect(SHADOW_ENTITIES.filter((e) => e.watermarkCandidates).map((e) => e.name)).toEqual(['TicketNotes', 'Invoices', 'BillingItems', 'TicketCharges', 'ProjectCharges', 'ContractCharges']);
     expect(modifiedAt(shadowEntity('Tickets')!, { createDate: '2026-10-01T00:00:00Z' })?.toISOString()).toBe('2026-10-01T00:00:00.000Z');
   });
   test('writtenRow: top-level PATCH/POST, by-id DELETE, child-route create; ignores queries and unmirrored entities', () => {
     expect(writtenRow('/Tickets', { id: 7, status: 5 }, {})).toEqual({ entity: 'Tickets', id: 7 });
     expect(writtenRow('/TimeEntries', { ticketID: 1 }, { itemId: 99 })).toEqual({ entity: 'TimeEntries', id: 99 });
     expect(writtenRow('/TimeEntries/55', undefined, undefined)).toEqual({ entity: 'TimeEntries', id: 55 });
+    expect(writtenRow('/Tickets/12/Notes', { title: 'x' }, { itemId: 345 })).toEqual({ entity: 'TicketNotes', id: 345 });
+    expect(writtenRow('/TicketNotes', { ticketID: 12 }, { itemId: 346 })).toEqual({ entity: 'TicketNotes', id: 346 });
+    expect(writtenRow('/Projects/3/Notes', {}, { itemId: 9 })).toBeNull(); // project notes aren't mirrored
     expect(writtenRow('/Companies/5/Contacts', { firstName: 'x' }, { itemId: 12 })).toEqual({ entity: 'Contacts', id: 12 });
     expect(writtenRow('/Contracts/9/Services', {}, { itemId: 3 })).toEqual({ entity: 'ContractServices', id: 3 });
     expect(writtenRow('/Tickets/query', {}, {})).toBeNull();
-    expect(writtenRow('/Tickets/7/Notes', {}, { itemId: 1 })).toBeNull();
     expect(writtenRow('/Opportunities', { id: 1 }, {})).toBeNull();
     expect(writtenRow('/Projects/9/Tasks', { id: 4 }, {})).toEqual({ entity: 'Tasks', id: 4 });
     // raw_request writes arrive as absolute zone URLs (n8n 'update did not verify', 2026-10-09).

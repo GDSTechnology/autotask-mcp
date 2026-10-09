@@ -3,7 +3,7 @@
 // backfill can walk `id > cursor`), and these are the queryable change fields.
 
 export type ShadowEntityName = 'Tickets' | 'TimeEntries' | 'Tasks' | 'Projects' | 'ServiceCalls' | 'CompanyToDos' | 'Companies' | 'Contacts' | 'Contracts' | 'ContractServices' | 'ContractBlocks' | 'Resources'
-  | 'Invoices' | 'BillingItems' | 'TicketCharges' | 'ProjectCharges' | 'ContractCharges';
+  | 'Invoices' | 'BillingItems' | 'TicketCharges' | 'ProjectCharges' | 'ContractCharges' | 'TicketNotes';
 
 import type { ShadowFilter } from './shadow-sql.js';
 
@@ -83,6 +83,19 @@ export const SHADOW_ENTITIES: ShadowEntity[] = [
   { name: 'ContractServices', watermarkField: null, createField: null, fullEveryMinutes: 60 },
   { name: 'ContractBlocks', watermarkField: null, createField: null, fullEveryMinutes: 60 },
   { name: 'Resources', watermarkField: null, createField: null, fullEveryMinutes: 60 },
+
+  // ── Ticket notes (2026-10-09, gap register MCP-004) ────────────────────
+  // The activity feed and note reads come from here (0 calls). Windowed by
+  // creation: a note created before the window on an old open ticket is not
+  // mirrored (those reads go live). lastActivityDate is the documented
+  // last-modified field — resolved from the tenant's field list; without it the
+  // entity runs in window-refresh mode.
+  {
+    name: 'TicketNotes', watermarkField: null, createField: 'createDateTime', requiredFields: ['createDateTime'],
+    watermarkCandidates: ['lastActivityDate', 'lastModifiedDateTime'], refreshEveryMinutes: 60,
+    window: (c) => ({ op: 'gte', field: 'createDateTime', value: c }),
+    windowCovers: (fs, c) => lowerBoundAtLeast(fs, ['createDateTime'], c),
+  },
 
   // ── Billing / financial review (2026-10-08) ─────────────────────────────
   // Windowed by their own date; no confirmed last-modified field, so they run

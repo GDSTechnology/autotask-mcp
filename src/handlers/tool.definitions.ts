@@ -1367,14 +1367,15 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_get_ticket_change_history',
-    description: 'READ-ONLY. Who changed what on a ticket, oldest first: each TicketHistory event parsed into field / from / to ("Account changed from A to B" → field Account), with the actor named and classified — system (resource 4: workflow/triage rules, notifications), mcp-api-user (this MCP\'s API user, i.e. automation writing through it) or resource (a person). Timestamp-only events (Last Activity Date, Last Tracked Modification Date) are hidden by default and counted. Use it to find which automation changed the account, contact, queue, priority or status.',
+    description: 'READ-ONLY. Who changed what on a ticket, oldest first: each TicketHistory event parsed into field / from / to ("Account changed from A to B" → field Account), with the actor named and classified — system (resource 4: workflow/triage rules, notifications), mcp-api-user (this MCP\'s API user, i.e. automation writing through it) or resource (a person). Timestamp-only events (Last Activity Date, Last Tracked Modification Date) are hidden by default and counted. Use it to find which automation changed the account, contact, queue, priority or status. With the Postgres store on, history is INDEXED: a read stores it, and later reads come from the index (0 Autotask calls) while the ticket has not changed since — result.source says index or live; live:true forces a fresh read.',
     annotations: { title: 'Get ticket change history (parsed)', readOnlyHint: true },
     inputSchema: {
       type: 'object',
       properties: {
         ticketNumber: { type: 'string', description: 'Ticket number, e.g. T20261005.0123' },
         ticketID: { type: 'number', description: 'Numeric ticket ID (alternative to ticketNumber)' },
-        includeTimestampOnly: { type: 'boolean', description: 'Include Last Activity / Last Tracked Modification date events. Default false.' }
+        includeTimestampOnly: { type: 'boolean', description: 'Include Last Activity / Last Tracked Modification date events (always read live — the index does not store them). Default false.' },
+        live: { type: 'boolean', description: 'Skip the history index and read Autotask now. Default false.' }
       },
       required: []
     }

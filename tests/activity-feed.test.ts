@@ -50,7 +50,7 @@ const NOW = new Date('2026-10-09T12:00:00Z');
 const SINCE = new Date('2026-10-09T00:00:00Z');
 
 /** Fake Autotask + shadow. TimeEntries + Tickets mirrored (fresh); notes + history live. */
-function world(o: { tickets?: Array<Record<string, unknown>>; history?: Record<number, Array<Record<string, unknown>>>; notes?: Array<Record<string, unknown>>; times?: Array<Record<string, unknown>>; shadowFresh?: boolean } = {}) {
+function world(o: { tickets?: Array<Record<string, unknown>>; history?: Record<number, Array<Record<string, unknown>>>; notes?: Array<Record<string, unknown>>; times?: Array<Record<string, unknown>>; shadowFresh?: boolean; notesWindowFrom?: string } = {}) {
   const calls: Array<{ entity: string; filters: unknown }> = [];
   const match = (row: Record<string, unknown>, f: Array<{ op: string; field: string; value: unknown }>) => f.every((x) => {
     const v = row[x.field];
@@ -69,7 +69,7 @@ function world(o: { tickets?: Array<Record<string, unknown>>; history?: Record<n
     }),
   };
   const store = {
-    freshness: async (e: string) => ({ ready: (e === 'Tickets' || e === 'TimeEntries') && o.shadowFresh !== false, ageSeconds: 60 }),
+    freshness: async (e: string) => ({ ready: (e === 'Tickets' || e === 'TimeEntries' || (e === 'TicketNotes' && o.notesWindowFrom != null)) && o.shadowFresh !== false, ageSeconds: 60, windowFrom: e === 'TicketNotes' ? o.notesWindowFrom ?? null : null }),
     query: async (e: string, f: Array<{ op: string; field: string; value: unknown }>, opts: { limit?: number }) => ({ rows: table(e).filter((r) => match(r, f)).sort((a, b) => Number(a.id) - Number(b.id)).slice(0, opts.limit ?? 100) }),
   };
   const service = {
@@ -143,6 +143,20 @@ describe('ingestActivity', () => {
     const w2 = world({ tickets: [late, T2], history: HIST });
     await ingestActivity(deps(w2, ledger), { ...opts, sources: ['tickets'] });
     expect(ledger.rows.map((e) => e.eventId)).toEqual(['th:201', 'th:101']);
+  });
+
+  test('notes come from the TicketNotes mirror (0 calls) when its window covers the scan; live when the window starts later', async () => {
+    const note = { id: 501, ticketID: 1, creatorResourceID: 10, createDateTime: '2026-10-09T09:05:00Z', description: 'x', noteType: 1, publish: 1 };
+    const ledger = new FakeLedger();
+    const w = world({ tickets: [T1], notes: [note], notesWindowFrom: '2026-04-01' });
+    const r = await ingestActivity(deps(w, ledger), { ...opts, sources: ['ticketNotes'] });
+    expect(r.sources.ticketNotes).toMatchObject({ read: 'shadow', ingested: 1 });
+    expect(w.calls.filter((c) => c.entity === 'TicketNotes')).toHaveLength(0);
+
+    const w2 = world({ tickets: [T1], notes: [note], notesWindowFrom: '2026-10-09' }); // window starts after the scan (since − overlap)
+    const r2 = await ingestActivity(deps(w2, new FakeLedger()), { ...opts, sources: ['ticketNotes'] });
+    expect(r2.sources.ticketNotes!.read).toBe('live');
+    expect(w2.calls.map((c) => c.entity)).toContain('TicketNotes');
   });
 
   test('another ingest holding the lock → nothing run, reported', async () => {

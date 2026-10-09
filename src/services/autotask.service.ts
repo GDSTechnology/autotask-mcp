@@ -1061,7 +1061,7 @@ export class AutotaskService {
   // =====================================================
 
   /** A ticket id from { ticketID } or { ticketNumber } ("T20261005.0123", T optional). */
-  async resolveTicketRef(ref: { ticketID?: unknown; ticketNumber?: unknown }): Promise<{ id: number; ticketNumber?: string } | { error: string }> {
+  async resolveTicketRef(ref: { ticketID?: unknown; ticketNumber?: unknown }, opts: { withRow?: boolean } = {}): Promise<{ id: number; ticketNumber?: string; row?: AutotaskTicket } | { error: string }> {
     if (ref.ticketID !== undefined && ref.ticketID !== null && ref.ticketID !== '') {
       const id = Number(ref.ticketID);
       return Number.isInteger(id) && id > 0 ? { id } : { error: `ticketID must be a positive integer, got "${String(ref.ticketID)}".` };
@@ -1069,21 +1069,23 @@ export class AutotaskService {
     const number = normalizeTicketNumber(ref.ticketNumber);
     if (!number) return { error: `Provide ticketID or a ticket number like T20261005.0123 (got "${String(ref.ticketNumber ?? '')}").` };
     const http = await this.ensureClient();
-    const hits = await http.query<{ id: number; ticketNumber: string }>('Tickets', [{ op: 'eq', field: 'ticketNumber', value: number }], { maxRecords: 5, includeFields: ['id', 'ticketNumber'] });
+    // withRow: fetch the whole ticket here, so the caller needn't GET it again (one round-trip less).
+    const hits = await http.query<AutotaskTicket & { id: number; ticketNumber: string }>('Tickets', [{ op: 'eq', field: 'ticketNumber', value: number }], { maxRecords: 5, ...(opts.withRow ? {} : { includeFields: ['id', 'ticketNumber'] }) });
     if (!hits.length) return { error: `No ticket ${number} found.` };
     if (hits.length > 1) return { error: `Ticket number ${number} matched ${hits.length} tickets (ids ${hits.map((h) => h.id).join(', ')}) — pass ticketID.` };
-    return { id: Number(hits[0]!.id), ticketNumber: number };
+    return { id: Number(hits[0]!.id), ticketNumber: number, ...(opts.withRow ? { row: hits[0]! } : {}) };
   }
 
   /**
    * The full ticket with every picklist labelled and every reference named:
    * company, contact(s) with email, resources, role, contract, opportunity,
    * configuration item, work type, location, UDFs (list labels), and the
-   * Autotask link. Read-only; one call per referenced entity, sequential.
+   * Autotask link. Read-only; one call per referenced entity, all in parallel.
+   * `preloaded`: the ticket row when the caller already has it (skips the GET).
    */
-  async getTicketFull(id: number): Promise<Record<string, unknown> | null> {
+  async getTicketFull(id: number, preloaded?: AutotaskTicket): Promise<Record<string, unknown> | null> {
     const http = await this.ensureClient();
-    const raw = await http.get<AutotaskTicket>('Tickets', id);
+    const raw = preloaded && Number(preloaded.id) === id ? preloaded : await http.get<AutotaskTicket>('Tickets', id);
     if (!raw) return null;
     const { userDefinedFields, ...ticket } = raw;
     const errors: Array<{ section: string; error: string }> = [];
@@ -1093,30 +1095,38 @@ export class AutotaskService {
     const num = (v: unknown): number | null => (v === null || v === undefined || v === '' ? null : Number(v));
     const names: Record<string, Record<string, unknown>> = {};
 
-    const labels = (await section('labels', async () => picklistLabels(ticket, await this.getFieldInfo('Tickets')))) ?? {};
+    // Every lookup below depends only on the ticket, so they all run at once
+    // (2026-10-08: sequential, a cold call took 11 Autotask round-trips ≈ 7.4 s).
+    // The per-endpoint gate still caps Autotask threads; mirrored entities
+    // (company, contacts, resources, contract, project, problem ticket) are
+    // answered by the Postgres shadow when it's on.
+    const lookups: Array<Promise<unknown>> = [];
+    let labels: Record<string, string> = {};
+    lookups.push(section('labels', async () => picklistLabels(ticket, await this.getFieldInfo('Tickets'))).then((l) => { labels = l ?? {}; }));
 
     const companyID = num(ticket.companyID);
     if (companyID != null) {
-      const c = await section('company', () => this.getCompanyNamesByIds([companyID]));
-      names.companyID = { id: companyID, name: c?.[0]?.companyName ?? null };
+      lookups.push(section('company', () => this.getCompanyNamesByIds([companyID])).then((c) => { names.companyID = { id: companyID, name: c?.[0]?.companyName ?? null }; }));
     }
     const contactIds = TICKET_CONTACT_FIELDS.map((f) => num(ticket[f])).filter((x): x is number => x != null);
     if (contactIds.length) {
-      const rows = await section('contacts', () => http.query<ContactRow>('Contacts', [{ op: 'in', field: 'id', value: [...new Set(contactIds)] }], { maxRecords: 10, includeFields: ['id', 'firstName', 'lastName', 'emailAddress', 'companyID', 'isActive'] }));
-      for (const f of TICKET_CONTACT_FIELDS) {
-        const cid = num(ticket[f]);
-        if (cid == null) continue;
-        const r = rows?.find((x) => Number(x.id) === cid);
-        names[f] = { id: cid, name: contactName(r), email: r?.emailAddress ?? null, companyID: r?.companyID ?? null, isActive: r?.isActive ?? null };
-      }
+      lookups.push(section('contacts', () => http.query<ContactRow>('Contacts', [{ op: 'in', field: 'id', value: [...new Set(contactIds)] }], { maxRecords: 10, includeFields: ['id', 'firstName', 'lastName', 'emailAddress', 'companyID', 'isActive'] })).then((rows) => {
+        for (const f of TICKET_CONTACT_FIELDS) {
+          const cid = num(ticket[f]);
+          if (cid == null) continue;
+          const r = rows?.find((x) => Number(x.id) === cid);
+          names[f] = { id: cid, name: contactName(r), email: r?.emailAddress ?? null, companyID: r?.companyID ?? null, isActive: r?.isActive ?? null };
+        }
+      }));
     }
     const resIds = TICKET_RESOURCE_FIELDS.map((f) => num(ticket[f])).filter((x): x is number => x != null);
     if (resIds.length) {
-      const m = await section('resources', () => this.getResourceNames(resIds));
-      for (const f of TICKET_RESOURCE_FIELDS) {
-        const rid = num(ticket[f]);
-        if (rid != null) names[f] = { id: rid, name: m?.get(rid) ?? (rid === SYSTEM_RESOURCE_ID ? 'Autotask Administrator (system)' : null) };
-      }
+      lookups.push(section('resources', () => this.getResourceNames(resIds)).then((m) => {
+        for (const f of TICKET_RESOURCE_FIELDS) {
+          const rid = num(ticket[f]);
+          if (rid != null) names[f] = { id: rid, name: m?.get(rid) ?? (rid === SYSTEM_RESOURCE_ID ? 'Autotask Administrator (system)' : null) };
+        }
+      }));
     }
     // Single-row lookups: [ticket field, entity, the entity's name field(s)].
     const singles: Array<[string, string, string[]]> = [
@@ -1132,12 +1142,15 @@ export class AutotaskService {
     for (const [field, entity, nameFields] of singles) {
       const rid = num(ticket[field]);
       if (rid == null) continue;
-      const rows = await section(field, () => http.query<Record<string, unknown>>(entity, [{ op: 'eq', field: 'id', value: rid }], { maxRecords: 1, includeFields: ['id', ...nameFields] }));
-      const r = rows?.[0];
-      names[field] = { id: rid, ...Object.fromEntries(nameFields.map((n) => [n, r?.[n] ?? null])) };
+      lookups.push(section(field, () => http.query<Record<string, unknown>>(entity, [{ op: 'eq', field: 'id', value: rid }], { maxRecords: 1, includeFields: ['id', ...nameFields] })).then((rows) => {
+        const r = rows?.[0];
+        names[field] = { id: rid, ...Object.fromEntries(nameFields.map((n) => [n, r?.[n] ?? null])) };
+      }));
     }
 
-    const udfs = await section('udfs', async () => labelUdfs(userDefinedFields, (await http.udfInfo('Tickets')).fields));
+    let udfs: unknown;
+    lookups.push(section('udfs', async () => labelUdfs(userDefinedFields, (await http.udfInfo('Tickets')).fields)).then((u) => { udfs = u; }));
+    await Promise.all(lookups);
     let ticketUrl: string | null = null;
     try { ticketUrl = this.getTicketWebUrl(id); } catch { /* no web base resolvable */ }
     return { ticket, labels, names, udfs: udfs ?? (Array.isArray(userDefinedFields) ? userDefinedFields : []), ticketUrl, ...(errors.length ? { errors } : {}) };

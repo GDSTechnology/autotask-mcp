@@ -1510,9 +1510,9 @@ export class AutotaskToolHandler {
 
       // Ticket audit (read-only): full resolved ticket, parsed history, original email, picklists.
       ['autotask_get_ticket_by_number', async (a) => {
-        const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId ?? a.id, ticketNumber: a.ticketNumber });
+        const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId ?? a.id, ticketNumber: a.ticketNumber }, { withRow: true });
         if ('error' in ref) return { result: null, message: ref.error };
-        const r = await s.getTicketFull(ref.id);
+        const r = await s.getTicketFull(ref.id, ref.row);
         if (!r) return { result: null, message: `Ticket ${ref.ticketNumber ?? ref.id} not found.` };
         const t = r.ticket as Record<string, unknown>;
         const l = r.labels as Record<string, string>;

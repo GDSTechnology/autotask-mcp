@@ -144,7 +144,7 @@ describe('resolveTicketRef', () => {
 });
 
 describe('getTicketFull', () => {
-  test('labels picklists, names references (sequential), labels UDFs, links', async () => {
+  test('labels picklists, names references (in parallel — the per-endpoint gate caps threads), labels UDFs, links', async () => {
     let inFlight = 0, max = 0;
     const ticket = { id: 7, ticketNumber: 'T1', title: 'Help', status: 8, priority: 1, queueID: 29682833, source: 4, creatorType: 2,
       companyID: 100, contactID: 200, createdByContactID: 200, assignedResourceID: 300, creatorResourceID: 4, assignedResourceRoleID: 9, contractID: 55,
@@ -163,7 +163,7 @@ describe('getTicketFull', () => {
     jest.spyOn(s, 'getResourceNames').mockResolvedValue(new Map([[300, 'Tech One']]));
     jest.spyOn(s, 'getTicketWebUrl').mockReturnValue('https://ww/x?TicketID=7');
     const r: any = await s.getTicketFull(7);
-    expect(max).toBe(1);
+    expect(max).toBeGreaterThan(1); // lookups run together (different endpoints)
     expect(r.labels).toMatchObject({ status: 'In Progress', priority: 'High', queueID: 'Triage', source: 'Email', creatorType: 'Contact' });
     expect(r.names.companyID).toEqual({ id: 100, name: 'Edge Estimates' });
     expect(r.names.contactID).toMatchObject({ id: 200, name: 'Dan Lee', email: 'dan@x.com' });
@@ -175,6 +175,10 @@ describe('getTicketFull', () => {
     expect(r.ticket.userDefinedFields).toBeUndefined();
     expect(r.ticketUrl).toMatch(/TicketID=7/);
     expect(r.errors).toBeUndefined();
+    // A caller that already holds the row (get_ticket_by_number) skips the GET.
+    http.get.mockClear();
+    await s.getTicketFull(7, ticket as any);
+    expect(http.get).not.toHaveBeenCalled();
   });
 });
 

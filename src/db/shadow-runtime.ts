@@ -68,7 +68,7 @@ export function writtenRow(path: string, body: unknown, response: unknown): { en
   if (!segs.length || segs[segs.length - 1] === 'query' || segs.includes('query')) return null;
   const childMap: Record<string, string> = { Contacts: 'Contacts', Services: 'ContractServices', Blocks: 'ContractBlocks', Tasks: 'Tasks', ToDos: 'CompanyToDos' };
   // "Charges" is a child of several parents: /Tickets/1/Charges → TicketCharges, etc.
-  const parentChild: Record<string, string> = { 'Tickets/Charges': 'TicketCharges', 'Projects/Charges': 'ProjectCharges', 'Contracts/Charges': 'ContractCharges' };
+  const parentChild: Record<string, string> = { 'Tickets/Charges': 'TicketCharges', 'Projects/Charges': 'ProjectCharges', 'Contracts/Charges': 'ContractCharges', 'Tickets/Notes': 'TicketNotes' };
   const entityName = segs.length >= 3 ? (parentChild[`${segs[0]}/${segs[2]}`] ?? childMap[segs[2]!]) : segs[0];
   const e = entityName ? shadowEntity(entityName) : undefined;
   if (!e) return null;

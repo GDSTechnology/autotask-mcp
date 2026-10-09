@@ -4,8 +4,8 @@
 //
 // Two halves:
 //   ingest  — brings audit_event up to date from per-source checkpoints:
-//             time entries from the shadow (0 calls), ticket notes from a live
-//             query by createDateTime (1 call / 500 notes), then ticket
+//             time entries and ticket notes from the shadow (0 calls; live by
+//             id when it is stale or its window starts later), then ticket
 //             history for every ticket changed since the checkpoint (1 call per
 //             ticket; a ticket whose history was read after its last change is
 //             skipped). Bounded by maxApiCalls; whatever the budget cut off is
@@ -39,7 +39,7 @@ export interface FeedDeps {
   ledger: Pick<AuditLedger, 'insert' | 'historyFetched' | 'markHistoryFetched' | 'feedPage' | 'feedCheckpoints' | 'setFeedCheckpoint' | 'withIngestLock'>;
   /** The shadow store (null when Postgres mirroring is off). */
   store: {
-    freshness(entity: string): Promise<{ ready: boolean; ageSeconds: number | null }>;
+    freshness(entity: string): Promise<{ ready: boolean; ageSeconds: number | null; windowFrom?: string | null }>;
     query(entity: string, filters: ShadowFilter[], opts: { fields?: string[]; limit?: number; order?: 'id_asc' | 'id_desc' }): Promise<{ rows: Array<Record<string, unknown>> }>;
   } | null;
   http: { query<T>(entity: string, filters: ShadowFilter[], opts: { maxRecords?: number; includeFields?: string[] }): Promise<T[]> };
@@ -103,15 +103,19 @@ export async function ingestActivity(deps: FeedDeps, o: { since: Date; sources: 
       report.apiCallsUsed += Math.max(1, Math.ceil(rows.length / 500));
       return rows;
     };
-    const shadowFresh = async (entity: string) => {
+    const shadowFresh = async (entity: string, fromIso?: string) => {
       if (!deps.store) return false;
-      try { const f = await deps.store.freshness(entity); return f.ready && f.ageSeconds != null && f.ageSeconds <= SHADOW_MAX_AGE_S; } catch { return false; }
+      try {
+        const f = await deps.store.freshness(entity);
+        // Fresh, and its history window reaches back to the scan start (else rows before the window would be missed).
+        return f.ready && f.ageSeconds != null && f.ageSeconds <= SHADOW_MAX_AGE_S && (!fromIso || !f.windowFrom || f.windowFrom <= fromIso.slice(0, 10));
+      } catch { return false; }
     };
     /** Every row matching `filter`, walked by id: from the shadow when fresh (0 calls), else live (budgeted). */
-    const walk = async (entity: string, filter: ShadowFilter[], fields: string[]): Promise<{ rows: Row[]; read: 'shadow' | 'live'; complete: boolean }> => {
+    const walk = async (entity: string, filter: ShadowFilter[], fields: string[], fromIso?: string): Promise<{ rows: Row[]; read: 'shadow' | 'live'; complete: boolean }> => {
       const rows: Row[] = [];
       let lastId = 0;
-      if (await shadowFresh(entity)) {
+      if (await shadowFresh(entity, fromIso)) {
         for (;;) {
           const r = await deps.store!.query(entity, [...filter, { op: 'gt', field: 'id', value: lastId }], { fields, limit: 5000, order: 'id_asc' });
           rows.push(...(r.rows as Row[]));
@@ -155,7 +159,7 @@ export async function ingestActivity(deps: FeedDeps, o: { since: Date; sources: 
       const { wm, coveredFrom } = start('timeEntries');
       const from = new Date(wm.getTime() - OVERLAP_MS).toISOString();
       const w = await walk('TimeEntries', [{ op: 'gte', field: 'lastModifiedDateTime', value: from }],
-        ['id', 'resourceID', 'ticketID', 'taskID', 'dateWorked', 'startDateTime', 'endDateTime', 'hoursWorked', 'hoursToBill', 'isNonBillable', 'roleID', 'billingCodeID', 'internalBillingCodeID', 'contractID', 'summaryNotes', 'createDateTime', 'lastModifiedDateTime', 'creatorUserID', 'lastModifiedUserID', 'billingApprovalDateTime']);
+        ['id', 'resourceID', 'ticketID', 'taskID', 'dateWorked', 'startDateTime', 'endDateTime', 'hoursWorked', 'hoursToBill', 'isNonBillable', 'roleID', 'billingCodeID', 'internalBillingCodeID', 'contractID', 'summaryNotes', 'createDateTime', 'lastModifiedDateTime', 'creatorUserID', 'lastModifiedUserID', 'billingApprovalDateTime'], from);
       await ensureTickets(w.rows.map((r) => num(r.ticketID)).filter((x): x is number => x != null));
       const evs: AuditEvent[] = [];
       let max = wm.getTime();
@@ -179,12 +183,12 @@ export async function ingestActivity(deps: FeedDeps, o: { since: Date; sources: 
       if (!w.complete) report.incomplete.push(`timeEntries: API-call budget (${budget}) reached — continues on the next call`);
     });
 
-    // 2. Ticket notes (live by creation, walked by id — ids follow creation order).
+    // 2. Ticket notes by creation (the TicketNotes mirror, else live), walked by id — ids follow creation order.
     if (o.sources.includes('ticketNotes')) await guard('ticketNotes', async () => {
       const { wm, coveredFrom } = start('ticketNotes');
       const from = new Date(wm.getTime() - OVERLAP_MS).toISOString();
       const w = await walk('TicketNotes', [{ op: 'gte', field: 'createDateTime', value: from }],
-        ['id', 'ticketID', 'title', 'description', 'noteType', 'publish', 'creatorResourceID', 'createdByContactID', 'createDateTime']);
+        ['id', 'ticketID', 'title', 'description', 'noteType', 'publish', 'creatorResourceID', 'createdByContactID', 'createDateTime'], from);
       let types: Array<{ value: string; label: string }> = [], pubs: Array<{ value: string; label: string }> = [];
       try { types = await deps.service.getPicklistValues('TicketNotes', 'noteType'); pubs = await deps.service.getPicklistValues('TicketNotes', 'publish'); } catch { /* raw values */ }
       await ensureTickets(w.rows.map((r) => num(r.ticketID)).filter((x): x is number => x != null));
@@ -215,7 +219,7 @@ export async function ingestActivity(deps: FeedDeps, o: { since: Date; sources: 
     if (o.sources.includes('tickets')) await guard('tickets', async () => {
       const { wm, coveredFrom } = start('tickets');
       const from = new Date(wm.getTime() - OVERLAP_MS).toISOString();
-      const w = await walk('Tickets', [{ op: 'gte', field: 'lastTrackedModificationDateTime', value: from }], ['id', 'ticketNumber', 'companyID', 'lastTrackedModificationDateTime']);
+      const w = await walk('Tickets', [{ op: 'gte', field: 'lastTrackedModificationDateTime', value: from }], ['id', 'ticketNumber', 'companyID', 'lastTrackedModificationDateTime'], from);
       const cand = w.rows
         .map((t) => ({ id: Number(t.id), ticketNumber: (t.ticketNumber as string) ?? null, companyID: num(t.companyID), lastMod: ms(t.lastTrackedModificationDateTime) }))
         .filter((t): t is typeof t & { lastMod: number } => t.lastMod != null)

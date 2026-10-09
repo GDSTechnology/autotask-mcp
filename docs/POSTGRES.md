@@ -106,6 +106,34 @@ their last-modified field), ContractServices, ContractBlocks, Resources (small;
 refreshed in full hourly). One table, `shadow_record (entity, id, data jsonb, …)`,
 plus `shadow_sync_state` (migration `0002_shadow.sql`).
 
+**Ticket notes** (since 3.65, gap register MCP-004): TicketNotes, windowed by
+`createDateTime`.
+- **Sync mode.** `lastActivityDate` is the documented last-modified field. It
+  is confirmed from the tenant's field list at start-up and used for
+  incremental sync; if it isn't there, notes run in window-refresh mode
+  (below).
+- **What reads from the mirror.** The activity feed reads notes here at no API
+  cost. Note queries bounded by `createDateTime` are served from the mirror
+  when it covers the window.
+- **What still goes live.** A by-ticket note search with no date bound, or a
+  note created before the window on an old ticket.
+- **New notes.** A note the MCP creates (`POST /Tickets/{id}/Notes` or
+  `/TicketNotes`) is fetched into the mirror right after the write.
+
+**Ticket history** cannot be mirrored the same way, because Autotask only
+answers it one ticket at a time. Instead it is **indexed** in the audit ledger
+(`audit_event`, `source = ticket_history`):
+- **Indexing.** Every live read, from `autotask_get_ticket_change_history`,
+  the activity feed, or the audit tools, stores the parsed rows and the time
+  they were read.
+- **Serving.** A later read comes from the index (0 calls) as long as the
+  Tickets mirror is fresh, the ticket's `lastTrackedModificationDateTime` is
+  not newer than that read, and the MCP hasn't just written the ticket.
+- **Reporting.** `result.source` says `index` (with `indexedAt` /
+  `ticketLastModified`) or `live`; `live: true` forces a fresh read.
+- **What the index leaves out.** It skips timestamp-only rows, so
+  `includeTimestampOnly` always reads live.
+
 **Billing / financial review** (since 3.57): Invoices, BillingItems, and
 TicketCharges, ProjectCharges and ContractCharges.
 
@@ -261,12 +289,13 @@ that decided it, and the reference-technician flag from the console's Actors pag
   Replaying a cursor returns the same `eventId`s, because `event_key` is unique.
   Consumers dedupe on `eventId`.
 - **Each call ingests first**, from per-source checkpoints, within `maxApiCalls`
-  (default 40):
+  (default 40). Time entries and ticket notes come from the mirror when it
+  covers the scan (otherwise live):
 
   | Source | Read from | Cost |
   |---|---|---|
   | Time entries | the shadow | 0 calls |
-  | Ticket notes | live query by `createDateTime` | 1 call per 500 notes |
+  | Ticket notes | the TicketNotes mirror (live by `createDateTime` when it doesn't cover the scan) | 0 calls (live: 1 per 500 notes) |
   | Ticket history | each ticket changed since the checkpoint, oldest change first | 1 call per changed ticket; skipped when it was already read after its last change |
 
   Each scan starts 15 minutes behind the watermark, so rows the shadow synced

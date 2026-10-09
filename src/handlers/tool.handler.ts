@@ -1630,7 +1630,7 @@ export class AutotaskToolHandler {
       ['autotask_get_ticket_change_history', async (a) => {
         const ref = await s.resolveTicketRef({ ticketID: a.ticketID ?? a.ticketId, ticketNumber: a.ticketNumber });
         if ('error' in ref) return { result: null, message: ref.error };
-        const r = await s.getTicketHistoryEvents(ref.id, { includeNoise: a.includeTimestampOnly === true });
+        const r = await s.getTicketHistoryEvents(ref.id, { includeNoise: a.includeTimestampOnly === true, live: a.live === true });
         const c = r.counts as { events: number; hiddenTimestampOnly: number; byActorKind: Record<string, number> };
         const kinds = Object.entries(c.byActorKind).map(([k, v]) => `${v} by ${k}`).join(', ');
         return { result: r, message: `${c.events} history event(s) on ticket ${ref.ticketNumber ?? ref.id}${kinds ? ` (${kinds})` : ''}${c.hiddenTimestampOnly ? `; ${c.hiddenTimestampOnly} timestamp-only event(s) hidden (includeTimestampOnly:true to show)` : ''}.` };

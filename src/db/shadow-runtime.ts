@@ -58,7 +58,13 @@ export const getShadowRuntime = (): ShadowRuntime | null => runtime;
 
 /** Which shadow row an Autotask write touched (path forms: /Tickets, /TimeEntries/123, /Companies/5/Contacts, /Projects/9/Tasks). */
 export function writtenRow(path: string, body: unknown, response: unknown): { entity: string; id: number } | null {
-  const segs = path.split('?')[0]!.split('/').filter(Boolean);
+  // raw_request writes arrive as ABSOLUTE zone URLs (https://…/ATServicesRest/v1.0/Tickets).
+  // Missing that left the row un-dirtied, so n8n's read-back after a raw PATCH
+  // was answered from the stale mirror ("update did not verify", 2026-10-09).
+  let p = path.split('?')[0]!;
+  if (/^https?:\/\//i.test(p)) { try { p = new URL(p).pathname; } catch { /* keep */ } }
+  p = p.replace(/^.*?\/v1\.0(?=\/|$)/i, '');
+  const segs = p.split('/').filter(Boolean);
   if (!segs.length || segs[segs.length - 1] === 'query' || segs.includes('query')) return null;
   const childMap: Record<string, string> = { Contacts: 'Contacts', Services: 'ContractServices', Blocks: 'ContractBlocks', Tasks: 'Tasks', ToDos: 'CompanyToDos' };
   // "Charges" is a child of several parents: /Tickets/1/Charges → TicketCharges, etc.

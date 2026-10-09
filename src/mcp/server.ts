@@ -38,6 +38,7 @@ import { extractRequestOrigin } from '../utils/origin.js';
 import { runWithRequestContext } from '../utils/request-context.js';
 import { usageSnapshot } from '../services/http-cache.js';
 import { authBlockStatus } from '../services/autotask-http.js';
+import { backpressure } from '../services/backpressure.js';
 
 export class AutotaskMcpServer {
   private config: McpServerConfig;
@@ -416,6 +417,8 @@ export class AutotaskMcpServer {
           ...shadowHealth(),
           ...(adminHealth() ? { admin: adminHealth() } : {}),
           ...(apiUser && authBlockStatus(apiUser) ? { autotaskAuth: authBlockStatus(apiUser) } : {}),
+          // MCP-008: one verdict for dispatchers (n8n) — ok / slow / stop, why, and how long to wait.
+          ...(apiUser ? { backpressure: ((b) => ({ level: b.level, reasons: b.reasons, retryAfterSeconds: b.retryAfterSeconds, usedPct: b.autotask.usedPct }))(backpressure(apiUser)) } : {}),
         }));
         return;
       }

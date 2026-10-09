@@ -1222,6 +1222,18 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_get_backpressure',
+    description: 'READ-ONLY, 0 Autotask calls (unless refresh). Should a dispatcher (n8n, Hermes) send work to Autotask right now? Returns level ok / slow / stop, the reasons, retryAfterSeconds, and the inputs: tenant API usage % of the hourly limit (latest reading and its age; Autotask adds 0.5 s per call past 50% and 1 s past 75%), the login-protection state (paused after a failed login, or HELD until an administrator presses Retry now), the 429 cooldown, and requests queued behind the per-endpoint concurrency gate. stop = do not call (queue and retry after retryAfterSeconds); slow = essential calls only, one at a time, postpone bulk work. The same summary is on GET /health as backpressure.',
+    annotations: { title: 'Backpressure (ok / slow / stop)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        refresh: { type: 'boolean', description: 'Take a fresh tenant usage reading first (1 Autotask call). Default false.' }
+      },
+      required: []
+    }
+  },
+  {
     name: 'autotask_get_operations',
     description: 'READ-ONLY. The operation log (correlation, MCP-007): which tool calls through this MCP wrote to Autotask, what each wrote (method, entity, id, time), and the ids that tie them to the caller — correlationId, decisionId (e.g. a Hermes recommendation), idempotencyKey, n8n workflow / node / executionId / eventId (pass these in the MCP request _meta). Look up by operationId (from a write result\'s _operation), correlationId, decisionId, idempotencyKey, or ticketId (operations that wrote that ticket or something under it, e.g. a note). Status: ok / error (nothing written) / partial (failed after writing) / running. Needs the Postgres store (migration 0008).',
     annotations: { title: 'Operation log (correlation)', readOnlyHint: true },
@@ -6162,7 +6174,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
     description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_get_actor_roster', 'autotask_get_operations', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
+    tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_get_actor_roster', 'autotask_get_operations', 'autotask_get_backpressure', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']
   },
   companies: {
     description: 'Search, create, and update companies',

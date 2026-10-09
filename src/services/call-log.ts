@@ -206,6 +206,13 @@ export function noteTenantUsage(s: { tenantUsed: number | null; limit: number | 
   while (usageSamples.length && usageSamples[0]!.at < cutoff) usageSamples.shift();
 }
 
+/** The most recent tenant usage reading (taken whenever usage is read — the shadow sync does so every run). No Autotask call. */
+export function latestTenantUsage(): { at: string; used: number; limit: number | null; usedPct: number | null; windowMinutes: number | null } | null {
+  const s = usageSamples[usageSamples.length - 1];
+  if (!s) return null;
+  return { at: new Date(s.at).toISOString(), used: s.tenantUsed, limit: s.limit, usedPct: s.limit ? Math.round((s.tenantUsed / s.limit) * 1000) / 10 : null, windowMinutes: s.windowMinutes };
+}
+
 export interface OutsideTraffic { at: string; tenantCalls: number; mcpCalls: number; otherCalls: number; otherPct: number; windowMinutes: number | null; samples24h: number; otherMax24h: number; otherAvg24h: number;
   /** The MCP started counting less than one window ago (restart): its count is incomplete, the estimate reads high. */
   partial: boolean }

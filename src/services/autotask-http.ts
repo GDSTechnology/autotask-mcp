@@ -275,6 +275,12 @@ const rateLimitCooldowns = new Map<string, number>();
 /** Cap a bad/hostile Retry-After header so it can't lock a tenant out for long. */
 const MAX_COOLDOWN_MS = 5 * 60 * 1000;
 
+/** Seconds left in the tenant's 429 cooldown (0 = none) — backpressure state for dispatchers. */
+export function rateLimitCooldownSeconds(tenant: string): number {
+  const until = rateLimitCooldowns.get(tenant.toLowerCase());
+  return until && until > Date.now() ? Math.ceil((until - Date.now()) / 1000) : 0;
+}
+
 /**
  * Reset the cooldown gate. Intended for tests only.
  */

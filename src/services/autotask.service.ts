@@ -1485,11 +1485,20 @@ export class AutotaskService {
    * ticket linked to a configuration item (§7.12 — that can break the
    * RMM-to-Autotask device relationship) unless force is set, and clears the
    * contact unless a target contact is supplied. Reads back to verify.
+   *
+   * companyLocationID: a specific location of the TARGET company (e.g. the
+   * matched contact's site) instead of the primary one — refused if it isn't
+   * one of the target company's locations.
+   * Contract: a contract belongs to one company, so when the ticket's contract
+   * isn't the target company's, contract + service + bundle are cleared as part
+   * of the move and reported in `contractCleared` (n8n's Blackpoint sorting
+   * flow did this through raw_request, bypassing the financial gate; here it is
+   * validated and reported).
    */
   async moveTicketToCompany(
     ticketId: number,
     targetCompanyID: number,
-    opts: { contactID?: number | undefined; force?: boolean | undefined } = {}
+    opts: { contactID?: number | undefined; force?: boolean | undefined; companyLocationID?: number | undefined } = {}
   ): Promise<Record<string, unknown>> {
     const ticket = await this.getTicket(ticketId, true);
     if (!ticket) throw new Error(`Ticket ${ticketId} not found.`);
@@ -1508,7 +1517,16 @@ export class AutotaskService {
       };
     }
 
-    const location = await this.resolvePrimaryCompanyLocation(targetCompanyID);
+    let location: AutotaskCompanyLocation | null;
+    if (opts.companyLocationID != null) {
+      const wanted = Number(opts.companyLocationID);
+      location = (await this.searchCompanyLocations(targetCompanyID)).find((l) => Number(l.id) === wanted) ?? null;
+      if (!location) {
+        throw new Error(`Location ${wanted} is not a location of company ${targetCompanyID}; ticket ${ticketId} not moved.`);
+      }
+    } else {
+      location = await this.resolvePrimaryCompanyLocation(targetCompanyID);
+    }
     if (!location || location.id == null) {
       throw new Error(
         `Target company ${targetCompanyID} has no active location; cannot move ticket ${ticketId} ` +
@@ -1524,19 +1542,48 @@ export class AutotaskService {
     // from the old company is invalid on the new one (§7.6).
     updates.contactID = opts.contactID != null ? opts.contactID : null;
 
+    // A contract belongs to one company: keep it only if it is the target company's.
+    const t = ticket as Record<string, any>;
+    let contractCleared: Record<string, unknown> | null = null;
+    if (t.contractID != null) {
+      let contractCompany: number | null = null;
+      try {
+        const http = await this.ensureClient();
+        const c = await http.get<Record<string, unknown>>('Contracts', Number(t.contractID));
+        contractCompany = c?.companyID != null ? Number(c.companyID) : null;
+      } catch { /* unknown → treat as not the target's */ }
+      if (contractCompany !== targetCompanyID) {
+        updates.contractID = null;
+        updates.contractServiceID = null;
+        updates.contractServiceBundleID = null;
+        contractCleared = {
+          contractID: t.contractID, contractServiceID: t.contractServiceID ?? null, contractServiceBundleID: t.contractServiceBundleID ?? null,
+          contractCompanyID: contractCompany, reason: 'the contract belongs to another company',
+        };
+      }
+    }
+
     await this.updateTicket(ticketId, updates);
 
     const after = (await this.getTicket(ticketId, true)) as Record<string, any> | null;
     const verified =
-      after != null && after.companyID === targetCompanyID && after.companyLocationID === location.id;
+      after != null && after.companyID === targetCompanyID && after.companyLocationID === location.id &&
+      (opts.contactID == null || Number(after.contactID) === Number(opts.contactID)) &&
+      (!contractCleared || after.contractID == null);
 
     return {
       status: verified ? 'updated' : 'failed-verification',
       ticketId,
       companyID: after?.companyID,
       companyLocationID: after?.companyLocationID,
+      locationSource: opts.companyLocationID != null ? 'given' : 'primary',
       contactID: after?.contactID,
+      contractID: after?.contractID ?? null,
+      ...(contractCleared ? { contractCleared } : {}),
       verified,
+      message: verified
+        ? `Ticket ${ticketId} moved to company ${targetCompanyID} (location ${location.id}${opts.companyLocationID != null ? '' : ', primary'}${contractCleared ? `; contract ${String(contractCleared.contractID)} cleared — it belongs to another company` : ''}).`
+        : `Ticket ${ticketId} move did not verify — check company/location/contact/contract on the ticket.`,
     };
   }
 

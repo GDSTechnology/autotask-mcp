@@ -1440,10 +1440,21 @@ export class AutotaskToolHandler {
         if (!after) return { result: ticketId, message: `Successfully updated ticket ${ticketId}` };
         if (!fields.length) { try { fields = await s.getFieldInfo('Tickets'); } catch { /* raw values */ } }
         const lbl = (k: string, v: unknown) => fields.find((f) => f.name === k)?.picklistValues?.find((p) => String(p.value) === String(v))?.label ?? v;
-        const changes = Object.keys(payload).filter((k) => k !== 'userDefinedFields' && k !== 'ticketAdditionalContacts').map((k) => ({
+        const changes: Array<{ field: string; from: unknown; to: unknown; applied: boolean }> = Object.keys(payload).filter((k) => k !== 'userDefinedFields' && k !== 'ticketAdditionalContacts').map((k) => ({
           field: k, from: before ? lbl(k, before[k] ?? null) : undefined, to: lbl(k, after![k] ?? null),
           applied: JSON.stringify(after![k] ?? null) === JSON.stringify(payload[k] ?? null) || String(after![k]) === String(payload[k]),
         }));
+        // UDFs are verified too (callers like n8n check e.g. BP-Status / Nexus-Status after the write).
+        if (Array.isArray(payload.userDefinedFields)) {
+          const udfVal = (list: unknown, name: string) => { const u = (Array.isArray(list) ? list : []).find((x: { name?: unknown }) => String(x?.name) === name) as { value?: unknown } | undefined; return u?.value === undefined || u?.value === '' ? null : u.value; };
+          for (const u of payload.userDefinedFields as Array<{ name?: unknown; value?: unknown }>) {
+            const name = String(u?.name ?? '');
+            if (!name) continue;
+            const want = u.value === undefined || u.value === '' ? null : u.value;
+            const got = udfVal(after.userDefinedFields, name);
+            changes.push({ field: `udf:${name}`, from: before ? udfVal(before.userDefinedFields, name) : undefined, to: got, applied: String(got ?? '') === String(want ?? '') });
+          }
+        }
         const notApplied = changes.filter((c) => !c.applied);
         const tn = (after.ticketNumber as string) ?? `ticket ${ticketId}`;
         const desc = changes.filter((c) => c.applied).map((c) => `${c.field}${c.from !== undefined ? ` ${c.from ?? '∅'} →` : ' →'} ${c.to ?? '∅'}`).join('; ');
@@ -1453,7 +1464,7 @@ export class AutotaskToolHandler {
         };
       }],
       ['autotask_move_ticket_to_company', async (a) => {
-        const r = await s.moveTicketToCompany(a.ticketId, a.companyID, { contactID: a.contactID, force: a.force });
+        const r = await s.moveTicketToCompany(a.ticketId, a.companyID, { contactID: a.contactID, force: a.force, companyLocationID: a.companyLocationID });
         return { result: r, message: (r.message as string) ?? `Ticket ${a.ticketId} move result: ${r.status}` };
       }],
       ['autotask_find_ticket_by_external_id', async (a) => {

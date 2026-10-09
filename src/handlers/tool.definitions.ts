@@ -1203,6 +1203,25 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
   {
+    name: 'autotask_backfill_history',
+    description: 'Historical learning backfill (MCP-006), READ-ONLY toward Autotask: stores the history, notes and time entries of the tickets COMPLETED in a date range (max 366 days) in the MCP\'s ledger, so autotask_get_activity_feed (ingest:false, since = range start) and the audit tools can read periods older than the shadow window at 0 calls. Bounded and resumable: start a job with from/to (dryRun:true first — it counts the tickets and estimates the Autotask calls, 1 call), then call again with the returned jobId; each call advances the job by at most maxApiCalls and reports progress. A step is skipped (nothing read) while tenant API usage is at/above pauseAtUsagePct. Any Autotask error stops the step without retrying and is recorded on the job. Without arguments: lists recent jobs. Needs the Postgres store (migration 0009).',
+    annotations: { title: 'Backfill ticket history (bounded)', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'New job: range start (ISO), tickets completed at/after' },
+        to: { type: 'string', description: 'New job: range end (ISO, exclusive). Default now.' },
+        jobId: { type: 'string', description: 'Continue this job' },
+        sources: { type: 'array', items: { type: 'string', enum: ['tickets', 'ticketNotes', 'timeEntries'] }, description: 'What to store (default all): tickets = field-change history' },
+        dryRun: { type: 'boolean', description: 'New job: count the tickets and estimate the calls; creates nothing' },
+        maxApiCalls: { type: 'number', description: 'Budget for this step (default 100, min 10, max 500)' },
+        batchSize: { type: 'number', description: 'Tickets per page (default 50, max 200)' },
+        pauseAtUsagePct: { type: 'number', description: 'Skip the step while tenant API usage is at/above this % (default 50)' }
+      },
+      required: []
+    }
+  },
+  {
     name: 'autotask_get_operations',
     description: 'READ-ONLY. The operation log (correlation, MCP-007): which tool calls through this MCP wrote to Autotask, what each wrote (method, entity, id, time), and the ids that tie them to the caller — correlationId, decisionId (e.g. a Hermes recommendation), idempotencyKey, n8n workflow / node / executionId / eventId (pass these in the MCP request _meta). Look up by operationId (from a write result\'s _operation), correlationId, decisionId, idempotencyKey, or ticketId (operations that wrote that ticket or something under it, e.g. a note). Status: ok / error (nothing written) / partial (failed after writing) / running. Needs the Postgres store (migration 0008).',
     annotations: { title: 'Operation log (correlation)', readOnlyHint: true },
@@ -6163,7 +6182,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
-    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_activity_without_time', 'autotask_search_audit_activity', 'autotask_get_activity_feed', 'autotask_report_resource_activity', 'autotask_report_resource_daily_audit', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
+    tools: ['autotask_create_time_entry', 'autotask_create_task_time_entries_bulk', 'autotask_log_ticket_collaboration', 'autotask_log_my_time', 'autotask_list_regular_time_categories', 'autotask_get_time_entry_targets', 'autotask_get_my_day', 'autotask_search_time_entries', 'autotask_get_time_entry', 'autotask_update_time_entry', 'autotask_delete_time_entry', 'autotask_search_billing_items', 'autotask_get_billing_item', 'autotask_search_billing_item_approval_levels', 'autotask_report_time_entry_compliance', 'autotask_report_activity_without_time', 'autotask_search_audit_activity', 'autotask_get_activity_feed', 'autotask_backfill_history', 'autotask_report_resource_activity', 'autotask_report_resource_daily_audit', 'autotask_report_unbilled_time', 'autotask_get_expense_report', 'autotask_search_expense_reports', 'autotask_create_expense_report', 'autotask_create_expense_item']
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',

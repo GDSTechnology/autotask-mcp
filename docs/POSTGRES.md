@@ -244,3 +244,42 @@ attributable event) and `ticket_history_fetch`. It powers
   assigned to someone (automations complete To-Dos too) is listed, not scored.
 - **Timesheet status is not available** through the Autotask API (no entity); the
   daily audit reports it as unknown.
+
+## Activity feed — incremental, cursor-paged (`autotask_get_activity_feed`)
+
+Migration `0007_activity_feed.sql` adds `activity_feed_checkpoint` (one row per
+source) and an index for per-ticket reads. The feed serves the same
+`audit_event` ledger as one tenant-wide stream for learning pipelines and n8n
+dispatchers: ticket field changes (TicketHistory, before → after), ticket notes,
+and time entries (created and edited). Each event carries a classified actor
+(human / service_account / integration / system / contact / unknown, the rule
+that decided it, and the reference-technician flag from the console's Actors page).
+
+- **Cursor = ingestion order** (`audit_event.id`), not `occurredAt`. An event
+  that arrives late, such as a ticket whose history is read after newer events,
+  gets a higher id. A reader that already passed its time still receives it.
+  Replaying a cursor returns the same `eventId`s, because `event_key` is unique.
+  Consumers dedupe on `eventId`.
+- **Each call ingests first**, from per-source checkpoints, within `maxApiCalls`
+  (default 40):
+
+  | Source | Read from | Cost |
+  |---|---|---|
+  | Time entries | the shadow | 0 calls |
+  | Ticket notes | live query by `createDateTime` | 1 call per 500 notes |
+  | Ticket history | each ticket changed since the checkpoint, oldest change first | 1 call per changed ticket; skipped when it was already read after its last change |
+
+  Each scan starts 15 minutes behind the watermark, so rows the shadow synced
+  late are still caught. Whatever the budget leaves stays **pending**
+  (`hasMore: true`) and is picked up on the next call. Nothing is dropped.
+  An advisory lock stops two ingests from running at once; the second caller is
+  served what is already stored.
+- **Coverage**: the first ingest starts at the requested `since`, at most 90 days
+  back. A later request for earlier events reports `coverage.complete: false`
+  rather than silently returning a partial stream. `backfill: true` extends the
+  coverage within the call budget; repeat the call until coverage is complete.
+- `watermark` means every event before it is stored. `sourceLagSeconds` is
+  how far behind now that is.
+- Autotask 401 or 429 responses are not retried by the feed. The client's login
+  protection and the concurrency gate apply, and the source is reported as
+  incomplete.

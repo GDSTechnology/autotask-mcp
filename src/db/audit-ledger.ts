@@ -12,6 +12,8 @@ interface Row {
 }
 
 const n = (v: string | null): number | null => (v == null ? null : Number(v));
+/** Advisory-lock key for activity-feed ingestion (arbitrary constant). */
+const FEED_LOCK_KEY = 74_120_007;
 
 export class AuditLedger {
   constructor(private readonly pool: Pool) {}
@@ -60,6 +62,59 @@ export class AuditLedger {
       field: x.field, oldValue: x.old_value, newValue: x.new_value, source: x.source as AuditEvent['source'], systemGenerated: x.system_generated,
       ...(x.details ? { details: x.details } : {}),
     }));
+  }
+
+  /**
+   * Activity-feed page: events stored after `afterId` (ingestion order — the
+   * cursor), occurring at/after `since`. Fetches limit+1 so the caller knows
+   * whether more are stored.
+   */
+  async feedPage(opts: { afterId: number; since: string; limit: number; entityTypes?: string[]; ticketIds?: number[]; resourceIds?: number[] }): Promise<Array<AuditEvent & { feedId: number; ingestedAt: string }>> {
+    const where = ['id > $1', 'occurred_at >= $2'];
+    const params: unknown[] = [opts.afterId, opts.since];
+    const add = (sql: string, v: unknown) => { params.push(v); where.push(sql.split('?').join(`$${params.length}`)); };
+    if (opts.entityTypes?.length) add('entity_type = ANY(?::text[])', opts.entityTypes);
+    if (opts.ticketIds?.length) add(`((entity_type = 'ticket' AND entity_id = ANY(?::bigint[])) OR (parent_entity_type = 'ticket' AND parent_entity_id = ANY(?::bigint[])))`, opts.ticketIds);
+    if (opts.resourceIds?.length) add('resource_id = ANY(?::bigint[])', opts.resourceIds);
+    params.push(Math.min(Math.max(opts.limit, 1), 2000) + 1);
+    const r = await this.pool.query<Row & { id: string; ingested_at: Date }>(`SELECT * FROM audit_event WHERE ${where.join(' AND ')} ORDER BY id LIMIT $${params.length}`, params);
+    return r.rows.map((x) => ({
+      feedId: Number(x.id), ingestedAt: new Date(x.ingested_at).toISOString(),
+      eventId: x.event_key, timestamp: new Date(x.occurred_at).toISOString(), resourceId: n(x.resource_id), action: x.action as AuditEvent['action'],
+      entityType: x.entity_type as AuditEntityType, entityId: Number(x.entity_id), entityReference: x.entity_reference,
+      parentEntityType: x.parent_entity_type as AuditEntityType | null, parentEntityId: n(x.parent_entity_id), companyId: n(x.company_id),
+      field: x.field, oldValue: x.old_value, newValue: x.new_value, source: x.source as AuditEvent['source'], systemGenerated: x.system_generated,
+      ...(x.details ? { details: x.details } : {}),
+    }));
+  }
+
+  /** The highest stored event id (a "start from now" cursor). */
+  async maxEventId(): Promise<number> {
+    const r = await this.pool.query<{ m: string | null }>('SELECT max(id) AS m FROM audit_event');
+    return Number(r.rows[0]?.m ?? 0);
+  }
+
+  async feedCheckpoints(): Promise<Map<string, { watermark: Date; coveredFrom: Date; updatedAt: Date }>> {
+    const r = await this.pool.query<{ source: string; watermark: Date; covered_from: Date; updated_at: Date }>('SELECT source, watermark, covered_from, updated_at FROM activity_feed_checkpoint');
+    return new Map(r.rows.map((x) => [x.source, { watermark: new Date(x.watermark), coveredFrom: new Date(x.covered_from), updatedAt: new Date(x.updated_at) }]));
+  }
+
+  async setFeedCheckpoint(source: string, watermark: Date, coveredFrom: Date): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO activity_feed_checkpoint (source, watermark, covered_from, updated_at) VALUES ($1, $2, $3, now())
+       ON CONFLICT (source) DO UPDATE SET watermark = EXCLUDED.watermark, covered_from = EXCLUDED.covered_from, updated_at = now()`,
+      [source, watermark, coveredFrom],
+    );
+  }
+
+  /** Run `fn` holding the feed-ingest lock; null (fn not run) when another ingest holds it. */
+  async withIngestLock<T>(fn: () => Promise<T>): Promise<T | null> {
+    const client = await this.pool.connect();
+    try {
+      const got = await client.query<{ ok: boolean }>('SELECT pg_try_advisory_lock($1) AS ok', [FEED_LOCK_KEY]);
+      if (!got.rows[0]?.ok) return null;
+      try { return await fn(); } finally { await client.query('SELECT pg_advisory_unlock($1)', [FEED_LOCK_KEY]).catch(() => undefined); }
+    } finally { client.release(); }
   }
 
   /** When each ticket's history was last fetched into the ledger. */

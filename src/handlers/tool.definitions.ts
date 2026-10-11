@@ -102,6 +102,30 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       required: ['kind', 'action']
     }
   },
+  {
+    name: 'autotask_vendor_prices',
+    description: 'The vendor price reference reconciliation and catalog plans price from: partner cost and the vendor’s suggested price per SKU and term (MM / AM / monthly per month; AA / annual per year), each with its source and date. action: list (current price per SKU + term), refresh (record what the imported invoices show), set (add prices for terms not on an invoice yet — e.g. from the Pax8 catalog; items [{ sku, cadence, unitCost, suggestedPrice, effectiveDate? }]). Stored in the MCP’s Postgres only.',
+    annotations: { title: 'Vendor price reference', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'refresh', 'set'] }, vendor: { type: 'string', description: 'Default pax8' }, items: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: [] }
+  },
+  {
+    name: 'autotask_catalog_plan_standardize',
+    description: 'Build (read-only) a plan that brings the Autotask service catalog to one standard service per product and term, for the products we sell (on the vendor invoices or already in the catalog). Microsoft NCE products get MM / AM / AA; month-to-month products (e.g. NinjaOne SaaS Backup) get Monthly. Standard name "<Product> [NCE] - AM"; the description and invoice description spell the term out. Per product + term: KEEP the service most active contracts use and rename it; deactivate unused duplicates (an in-use duplicate is listed, never touched); CREATE missing terms with the vendor cost + suggested price and a sibling’s work type (blocked when a price is missing); optional catalog-price rows (reference only — customer contract prices never change here). Nothing is written: returns a frozen, numbered plan (id + hash) to approve with autotask_change_plan_review and apply with autotask_change_plan_execute.',
+    annotations: { title: 'Plan: standardize service catalog', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { vendor: { type: 'string', description: 'Default pax8' }, offeringIds: { type: 'array', items: { type: 'number' }, description: 'Only these offerings' } }, required: [] }
+  },
+  {
+    name: 'autotask_change_plan_review',
+    description: 'Review and approve change plans (catalog standardization; contract pricing later). action: list (recent plans with row counts), get (every numbered row: action, before → after, reason, blocked, status), approve / exclude (rows "all", "3-15", "1,4,7-9" — with the plan hash you reviewed; blocked and information rows are never approvable). Approval is recorded with who and when. Nothing is written to Autotask here.',
+    annotations: { title: 'Review / approve change plan', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'get', 'approve', 'exclude'] }, planId: { type: 'string' }, hash: { type: 'string', description: 'approve / exclude: the plan hash you reviewed' }, rows: { description: '"all", "3-15", "1,4,7-9" or [row numbers]' }, actionableOnly: { type: 'boolean', description: 'get: only rows that can be approved' }, limit: { type: 'number' } }, required: [] }
+  },
+  {
+    name: 'autotask_change_plan_execute',
+    description: 'FINANCIAL — apply the APPROVED rows of a change plan to Autotask (confirm:true required). Each target is re-read first: a row whose record changed since the plan was built is skipped as STALE (rebuild the plan), never written over. Only that row’s fields are written, then read back and verified; failures are reported per row and re-running is safe (applied rows never run again; a create checks the record isn’t already there). An Autotask 401 / 429 stops the run. At most maxRows (default 25) per call — call again for the rest.',
+    annotations: { title: 'Execute approved change plan rows', readOnlyHint: false, destructiveHint: false },
+    inputSchema: { type: 'object', properties: { planId: { type: 'string' }, maxRows: { type: 'number', description: 'Rows per call (default 25, max 100)' }, confirm: { type: 'boolean', description: 'Must be true' } }, required: ['planId'] }
+  },
   // Connection testing
   {
     name: 'autotask_test_connection',
@@ -6232,7 +6256,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   vendor_billing: {
     description: 'Vendor purchasing & billing reconciliation (Pax8 first): import every invoice line, map vendor customers and SKUs to Autotask companies and manufacturer offerings',
-    tools: ['autotask_vendor_list_sources', 'autotask_vendor_import_invoice', 'autotask_vendor_get_lines', 'autotask_reconcile_resolve_mapping']
+    tools: ['autotask_vendor_list_sources', 'autotask_vendor_import_invoice', 'autotask_vendor_get_lines', 'autotask_reconcile_resolve_mapping', 'autotask_vendor_prices', 'autotask_catalog_plan_standardize', 'autotask_change_plan_review', 'autotask_change_plan_execute']
   },
   utility: {
     description: 'Connection testing and field/picklist discovery',

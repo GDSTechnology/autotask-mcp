@@ -43,6 +43,10 @@ const NON_MUTATING_TOOLS = new Set<string>([
   'autotask_backfill_history', // writes only to the MCP's own Postgres ledger; a resume call must run, never replay
   'autotask_vendor_import_invoice', // Postgres only, idempotent by file hash
   'autotask_reconcile_resolve_mapping', // Postgres only; a repeated propose must see current data
+  'autotask_vendor_prices', // Postgres only
+  'autotask_catalog_plan_standardize', // builds a new plan each time (read-only toward Autotask)
+  'autotask_change_plan_review', // Postgres only
+  'autotask_change_plan_execute', // per-row idempotent (applied rows never re-run); a second call must run the remaining rows, not replay
   'autotask_raw_request', // admin escape hatch — gated separately (§3.4); a raw GET must never be replayed
 ]);
 

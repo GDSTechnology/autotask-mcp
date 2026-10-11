@@ -53,11 +53,11 @@ describe('Pax8 adapter', () => {
 
   test('detects the invoice export and the company report (crosswalk)', () => {
     expect(detectFile('csv-p1-2026-1-2-2026-10-01.csv', HEADER)?.kind).toBe('invoice');
-    const xw = 'Company ID, Company Name, PSA Company ID, PSA Company Name, Connection ID, Partner ID\nabc,Cathy Sell Real Estate Services,29683502,Ben Carter Enterprises,c,p\ndef,Loisdale 24,29683556,,c,p\n';
+    const xw = 'Company ID, Company Name, PSA Company ID, PSA Company Name, Connection ID, Partner ID\nabc,Fabrikam Realty Services,5001,Northwind Holdings,c,p\ndef,Woodgrove 24,5002,,c,p\n';
     expect(detectFile('6ccf.csv', xw)?.kind).toBe('crosswalk');
     expect(parseCrosswalk(xw)).toEqual([
-      { vendor: 'pax8', vendorCustomerRef: 'abc', vendorCustomerName: 'Cathy Sell Real Estate Services', autotaskCompanyId: 29683502, autotaskCompanyName: 'Ben Carter Enterprises' },
-      { vendor: 'pax8', vendorCustomerRef: 'def', vendorCustomerName: 'Loisdale 24', autotaskCompanyId: 29683556, autotaskCompanyName: null },
+      { vendor: 'pax8', vendorCustomerRef: 'abc', vendorCustomerName: 'Fabrikam Realty Services', autotaskCompanyId: 5001, autotaskCompanyName: 'Northwind Holdings' },
+      { vendor: 'pax8', vendorCustomerRef: 'def', vendorCustomerName: 'Woodgrove 24', autotaskCompanyId: 5002, autotaskCompanyName: null },
     ]);
     expect(detectFile('random.csv', 'a,b,c')).toBeNull();
   });
@@ -101,24 +101,24 @@ const L = (id: string, name: string, extra: Record<string, unknown> = {}) => ({ 
 describe('proposals never guess', () => {
   test('customers: crosswalk first (high), inactive flagged (medium), own company = internal, exact name (medium), else unmatched', async () => {
     const store = fakeStore({
-      lines: [L('1', 'Cathy Sell Real Estate Services, LLC'), L('2', 'Riveredge Summit'), L('3', 'GDS Technology'), L('4', 'Halalco'), L('5', 'GDS - Demo')],
+      lines: [L('1', 'Fabrikam Realty Services, LLC'), L('2', 'Lakeview Summit'), L('3', 'GDS Technology'), L('4', 'Tailspin Toys'), L('5', 'GDS - Demo')],
       crosswalk: [
-        { vendorCustomerName: 'Cathy Sell Real Estate Services, LLC', autotaskCompanyId: 29683502, autotaskCompanyName: 'Ben Carter Enterprises' },
-        { vendorCustomerName: 'Riveredge Summit', autotaskCompanyId: 29683815, autotaskCompanyName: null },
+        { vendorCustomerName: 'Fabrikam Realty Services, LLC', autotaskCompanyId: 5001, autotaskCompanyName: 'Northwind Holdings' },
+        { vendorCustomerName: 'Lakeview Summit', autotaskCompanyId: 5003, autotaskCompanyName: null },
         { vendorCustomerName: 'GDS Technology', autotaskCompanyId: 0, autotaskCompanyName: 'GDS Technology, LLC' },
       ],
     });
     const lookup = {
-      byIds: async () => [{ id: 29683502, companyName: 'Ben Carter Enterprises', isActive: true }, { id: 29683815, companyName: 'Riveredge Summit Parkway, LLC', isActive: false }, { id: 0, companyName: 'GDS Technology, LLC', isActive: true }],
-      byNames: async () => [{ id: 29683894, companyName: 'Halalco', isActive: true }],
+      byIds: async () => [{ id: 5001, companyName: 'Northwind Holdings', isActive: true }, { id: 5003, companyName: 'Lakeview Summit Parkway, LLC', isActive: false }, { id: 0, companyName: 'GDS Technology, LLC', isActive: true }],
+      byNames: async () => [{ id: 5004, companyName: 'Tailspin Toys', isActive: true }],
     };
     const p = await proposeCustomers(store, lookup, 'pax8');
     const by = Object.fromEntries(p.map((x) => [x.vendorCustomerName, x]));
-    expect(by['Cathy Sell Real Estate Services, LLC']).toMatchObject({ confidence: 'high', method: 'vendor-crosswalk', proposed: { status: 'mapped', autotaskCompanyId: 29683502, autotaskCompanyName: 'Ben Carter Enterprises' } });
-    expect(by['Riveredge Summit']).toMatchObject({ confidence: 'medium', proposed: { active: false } });
-    expect(by['Riveredge Summit']!.why).toMatch(/INACTIVE/);
+    expect(by['Fabrikam Realty Services, LLC']).toMatchObject({ confidence: 'high', method: 'vendor-crosswalk', proposed: { status: 'mapped', autotaskCompanyId: 5001, autotaskCompanyName: 'Northwind Holdings' } });
+    expect(by['Lakeview Summit']).toMatchObject({ confidence: 'medium', proposed: { active: false } });
+    expect(by['Lakeview Summit']!.why).toMatch(/INACTIVE/);
     expect(by['GDS Technology']).toMatchObject({ proposed: { status: 'internal', autotaskCompanyId: 0 } });
-    expect(by['Halalco']).toMatchObject({ confidence: 'medium', method: 'exact-name', proposed: { autotaskCompanyId: 29683894 } });
+    expect(by['Tailspin Toys']).toMatchObject({ confidence: 'medium', method: 'exact-name', proposed: { autotaskCompanyId: 5004 } });
     expect(by['GDS - Demo']).toMatchObject({ proposed: null, confidence: 'none' });
   });
 

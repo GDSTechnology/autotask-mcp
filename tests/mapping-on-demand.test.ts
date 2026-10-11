@@ -16,7 +16,7 @@ import type { McpServerConfig } from '../src/types/mcp';
 const logger = new Logger('error');
 const config: McpServerConfig = { name: 't', version: '0', autotask: { username: 'u@e.com', secret: 's', integrationCode: 'ic', apiUrl: 'https://webservices3.autotask.net/ATServicesRest/' } };
 
-const svc = (names: Record<number, string> = { 1: 'Chesterbrook', 2: '600 Washington Blvd', 3: 'DBR - David Rubenstein' }) => ({
+const svc = (names: Record<number, string> = { 1: 'Fourth Coffee', 2: '100 Example Ave', 3: 'Example Holdings LP' }) => ({
   listAllCompanies: jest.fn(async () => []),
   getCompanyNamesByIds: jest.fn(async (ids: number[]) => ids.filter((id) => names[id]).map((id) => ({ id, companyName: names[id]! }))),
   getCompany: jest.fn(async () => null),
@@ -40,7 +40,7 @@ describe('MappingService — on-demand company names (default)', () => {
     await m.primeCompanies([1, 2, 2, null, undefined, 3]);
     expect(s.getCompanyNamesByIds).toHaveBeenCalledTimes(1);
     expect(s.getCompanyNamesByIds).toHaveBeenCalledWith([1, 2, 3]);
-    expect(await m.getCompanyName(2)).toBe('600 Washington Blvd');
+    expect(await m.getCompanyName(2)).toBe('100 Example Ave');
     await m.primeCompanies([1, 3]);
     expect(s.getCompanyNamesByIds).toHaveBeenCalledTimes(1); // all known — no call
     expect(s.getCompany).not.toHaveBeenCalled(); // never a per-id GET
@@ -62,10 +62,10 @@ describe('MappingService — on-demand company names (default)', () => {
   test('getCompanyName alone batches the single id; a failed lookup keeps known names', async () => {
     const s = svc();
     const m = await MappingService.create(s as unknown as AutotaskService, logger, { tenantKey: 'u@e.com' });
-    expect(await m.getCompanyName(3)).toBe('DBR - David Rubenstein');
+    expect(await m.getCompanyName(3)).toBe('Example Holdings LP');
     s.getCompanyNamesByIds.mockRejectedValueOnce(new Error('429'));
     expect(await m.getCompanyName(9)).toBeNull();
-    expect(await m.getCompanyName(3)).toBe('DBR - David Rubenstein');
+    expect(await m.getCompanyName(3)).toBe('Example Holdings LP');
   });
 
   test('names stay per tenant (2026-06-03 isolation invariant)', async () => {
@@ -88,14 +88,14 @@ describe('MappingService — on-demand company names (default)', () => {
 describe('getCompanyNamesByIds', () => {
   test('one `in` query per 200 ids, names only', async () => {
     const s = new AutotaskService(config, logger);
-    const query = jest.fn(async (_e: string, _f: unknown, _o?: unknown) => [{ id: 1, companyName: 'Chesterbrook' }, { id: 2 }]);
+    const query = jest.fn(async (_e: string, _f: unknown, _o?: unknown) => [{ id: 1, companyName: 'Fourth Coffee' }, { id: 2 }]);
     jest.spyOn(s as any, 'ensureClient').mockResolvedValue({ query });
     const ids = Array.from({ length: 250 }, (_, i) => i + 1);
     const out = await s.getCompanyNamesByIds(ids);
     expect(query).toHaveBeenCalledTimes(2);
     expect(query.mock.calls[0]![1]).toEqual([{ op: 'in', field: 'id', value: ids.slice(0, 200) }]);
     expect(query.mock.calls[0]![2]).toEqual(expect.objectContaining({ includeFields: ['id', 'companyName'] }));
-    expect(out).toEqual([{ id: 1, companyName: 'Chesterbrook' }, { id: 1, companyName: 'Chesterbrook' }]);
+    expect(out).toEqual([{ id: 1, companyName: 'Fourth Coffee' }, { id: 1, companyName: 'Fourth Coffee' }]);
   });
 });
 

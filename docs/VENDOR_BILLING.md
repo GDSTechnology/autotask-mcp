@@ -34,7 +34,7 @@ vendor line ──SKU──▶ offering ◀──link── Autotask Service (on
 1. **Import the invoices.** Use `autotask_vendor_import_invoice` with the Pax8 invoice CSV export (Billing → Invoices → export CSV), file name `csv-p<account>-<invoice>-<date>.csv`.
    - Every line is imported, and each customer's subtotal is checked against the one Pax8 printed. *"Every line accounted for"* means they all match.
    - Re-importing the same file is a no-op.
-2. **Import the customer crosswalk.** This is the Pax8 company report (PSA admin → Mappings → **Download company report**). It is Pax8's own Pax8-company → Autotask-company mapping, which is not always the same name. For example, *Cathy Sell Real Estate Services, LLC* → **Ben Carter Enterprises**.
+2. **Import the customer crosswalk.** This is the Pax8 company report (PSA admin → Mappings → **Download company report**). It is Pax8's own Pax8-company → Autotask-company mapping, which is not always the same name. For example, a Pax8 company named after the billing contact can map to the customer's legal entity in Autotask.
 3. **Customers.** Run `autotask_reconcile_resolve_mapping kind=customers action=propose`.
    - The crosswalk gives `high` confidence. A crosswalk company that is **inactive** in Autotask drops to `medium`, with a warning.
    - Your own company (id 0) is proposed as `internal`.

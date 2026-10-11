@@ -1,14 +1,19 @@
-// Contract pricing change plan (requirements §8): proposed corrections from a
+// Contract change plan (requirements §8): proposed corrections from a
 // reconciliation run, frozen for row-level approval. Nothing here writes.
 //
-// In Autotask a contract service's PRICE and QUANTITY are changed with a
-// ContractServiceAdjustment (effective date, unit change, adjusted unit price /
-// cost) — ContractServices.unitPrice itself is read-only. Its COST
-// (ContractServices.unitCost) is writable. So:
-//   cost rows      → update ContractServices.unitCost            (cost-only, separate)
-//   price rows     → create a ContractServiceAdjustment           (customer price change)
-//   quantity rows  → create a ContractServiceAdjustment           (unit change)
-//   missing line   → create a ContractService on the customer's licence contract
+// In Autotask a contract line's PRICE and UNITS change only through an
+// adjustment (effective date, unit change, adjusted unit price / cost) —
+// ContractServices.unitPrice and .serviceID are read-only. Its COST
+// (ContractServices.unitCost) is writable. An adjustment that names a
+// contract + service but no line ADDS that service to the running contract
+// from the effective date. So:
+//   cost rows        → update ContractServices.unitCost                 (cost-only, separate)
+//   price rows       → ContractServiceAdjustment / ContractServiceBundleAdjustment, unit change 0
+//   quantity rows    → adjustment with the unit change (up when the vendor bills more, DOWN when less)
+//   missing line     → an adjustment adding the standard service to the licence contract, with its units
+//   extra seats      → beyond a bundle's units: the standard service added next to the bundle
+//   term move        → add the line for the vendor's term, THEN end the old line (row depends on the first)
+//   end line         → units to 0 on a line the vendor no longer charges for
 // Defaults are prospective: effective the 1st of next month. A row is blocked
 // when the effective date is outside the contract, the period is already
 // invoiced, the price is negotiated, or the target contract is ambiguous.
@@ -18,20 +23,29 @@
 import type { ReconRow } from './reconcile.js';
 import type { PlanRowInput } from '../change-plans/store.js';
 
-export type ChangeKind = 'cost' | 'price' | 'quantity' | 'missing_line';
+export type ChangeKind = 'cost' | 'price' | 'quantity' | 'missing_line' | 'term' | 'end_line';
+export const CHANGE_KINDS: ChangeKind[] = ['cost', 'price', 'quantity', 'missing_line', 'term', 'end_line'];
+
+export interface ContractInfo { contractName: string; companyID: number; startDate: string | null; endDate: string | null; contractType?: number | null }
 
 export interface ContractPlanInput {
   rows: ReconRow[];
   include: ChangeKind[];
   effectiveDate: string; // YYYY-MM-DD
   /** Contract id/name/dates by id (for date validation and labels). */
-  contracts: Map<number, { contractName: string; companyID: number; startDate: string | null; endDate: string | null }>;
+  contracts: Map<number, ContractInfo>;
   /** Latest posted billing item date per contract service (an invoiced period can't be re-priced here). */
   lastPostedThrough: Map<number, string>;
-  /** For a missing line: the customer's active contracts holding other services of the same manufacturer. */
+  /** …and per contract service BUNDLE line. */
+  lastPostedBundle?: Map<number, string>;
+  /** For a missing line: the customer's Recurring Service contracts in effect on the effective date holding other services of the same manufacturer. */
   licenceContracts: Map<number, number[]>;
   /** The standard Autotask service for (offering, cadence). */
   standardService: (offeringId: number, cadence: string) => number | null;
+  /** Service names (labels). */
+  serviceName?: (serviceId: number) => string | null;
+  /** Lines already on each contract: contractId → serviceID → contract service id (units go onto an existing line, never a second one). */
+  contractLines?: Map<number, Map<number, number>>;
   /** Rows by number to include (default: every actionable row). */
   rowNos?: number[];
   /** Override the target contract for a missing line, per exception key. */
@@ -39,37 +53,71 @@ export interface ContractPlanInput {
 }
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
-/** Report amounts are per the VENDOR term basis; write them in the contract service's own basis (a yearly service holds per-year amounts). */
+/** Report amounts are per the VENDOR term basis; write them in the contract line's own basis (a yearly service holds per-year amounts). */
 const nativeOf = (r: ReconRow, v: number | null): number | null => {
   if (v == null) return null;
   const to = r.serviceBasis ?? r.basis;
   return r4(r.basis === to ? v : r.basis === 'year' ? v / 12 : v * 12);
 };
+const isBundlePriceRow = (r: ReconRow) => r.lineKind === 'bundle' && r.serviceSku.startsWith('bundle:');
+
+/** Moving units from one contract line to another service: add (or top up) the new line, then end the old one. */
+export interface MoveSpec {
+  contractId: number; label: string; customer: string | null; contractName: string;
+  fromLineId: number; fromName: string; units: number; oldUnitPrice: number | null;
+  toServiceId: number; toName: string; toLineId: number | null; newUnits: number; unitPrice: number | null; unitCost: number | null;
+  effectiveDate: string; blocked: string | null; reason: string; meta: Record<string, unknown>;
+}
+export function moveRows(m: MoveSpec, firstRowNo: number): PlanRowInput[] {
+  const add: PlanRowInput = {
+    meta: { ...m.meta, move: 'add' }, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
+    label: `MOVE 1/2 ${m.customer} / ${m.contractName}: ${m.toLineId ? `add ${m.newUnits} unit(s) to` : `add`} ${m.toName}${m.toLineId ? '' : ` with ${m.newUnits} unit(s)`}${m.unitPrice != null ? ` at ${m.unitPrice}` : ''} from ${m.effectiveDate} (${m.label})`,
+    before: m.toLineId ? null : { units: 0 },
+    after: { contractID: m.contractId, ...(m.toLineId ? { contractServiceID: m.toLineId } : {}), serviceID: m.toServiceId, effectiveDate: m.effectiveDate, unitChange: m.newUnits, ...(m.unitPrice != null ? { adjustedUnitPrice: m.unitPrice } : {}), ...(m.unitCost != null ? { adjustedUnitCost: m.unitCost } : {}) },
+    reason: m.reason, blocked: m.blocked,
+  };
+  const end: PlanRowInput = {
+    meta: { ...m.meta, move: 'end', dependsOn: [firstRowNo] }, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
+    label: `MOVE 2/2 ${m.customer} / ${m.contractName}: end ${m.fromName} (${m.units} → 0) from ${m.effectiveDate} — runs only after row ${firstRowNo}`,
+    before: { units: m.units, ...(m.oldUnitPrice != null ? { unitPrice: m.oldUnitPrice } : {}) },
+    after: { contractID: m.contractId, contractServiceID: m.fromLineId, effectiveDate: m.effectiveDate, unitChange: -m.units },
+    reason: `${m.reason} The old line ends only after row ${firstRowNo} is in, so the customer is never left without the service.`, blocked: m.blocked,
+  };
+  return [add, end];
+}
 
 export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[]; summary: Record<string, number> } {
   const out: PlanRowInput[] = [];
-  const sum: Record<string, number> = { cost: 0, price: 0, quantity: 0, missing_line: 0, blocked: 0 };
+  const sum: Record<string, number> = { cost: 0, price: 0, quantity: 0, missing_line: 0, term: 0, end_line: 0, blocked: 0 };
   const want = (k: ChangeKind) => i.include.includes(k);
   const pick = i.rowNos?.length ? i.rows.filter((r) => i.rowNos!.includes(r.rowNo)) : i.rows;
+  const nameOf = (sid: number | null) => (sid == null ? '?' : i.serviceName?.(sid) ?? `service ${sid}`);
+  const lineOf = (contractId: number | null, serviceId: number | null) => (contractId != null && serviceId != null ? i.contractLines?.get(contractId)?.get(serviceId) ?? null : null);
+  const push = (kind: keyof typeof sum, row: PlanRowInput) => { sum[kind] = (sum[kind] ?? 0) + 1; if (row.blocked) sum.blocked++; out.push(row); };
+
+  const dateBlock = (lineId: number | null, contractId: number | null, bundle = false): string | null => {
+    const c = contractId != null ? i.contracts.get(contractId) : undefined;
+    if (contractId != null && !c) return `contract ${contractId} is not an active contract`;
+    if (c?.contractType != null && c.contractType !== 7) return `${c.contractName} is not a Recurring Service contract — it can't hold services`;
+    if (c?.startDate && i.effectiveDate < c.startDate.slice(0, 10)) return `effective ${i.effectiveDate} is before the contract starts (${c.startDate.slice(0, 10)})`;
+    if (c?.endDate && i.effectiveDate > c.endDate.slice(0, 10)) return `effective ${i.effectiveDate} is after the contract ends (${c.endDate.slice(0, 10)}) — renew the contract first`;
+    const posted = lineId != null ? (bundle ? i.lastPostedBundle : i.lastPostedThrough)?.get(lineId) : undefined;
+    if (posted && posted.slice(0, 10) >= i.effectiveDate) return `already invoiced through ${posted.slice(0, 10)} — historical credits / rebills need a separate approval`;
+    return null;
+  };
 
   for (const r of pick) {
-    const meta = { reconRow: r.rowNo, exceptionKey: r.exceptionKey, customer: r.customerName, contractServiceId: r.contractServiceId, offeringId: r.offeringId, cadence: r.cadence };
-    const contract = r.contractId != null ? i.contracts.get(r.contractId) : undefined;
-    const dateBlock = (csId: number | null, contractId: number | null): string | null => {
-      const c = contractId != null ? i.contracts.get(contractId) : undefined;
-      if (c?.startDate && i.effectiveDate < c.startDate.slice(0, 10)) return `effective ${i.effectiveDate} is before the contract starts (${c.startDate.slice(0, 10)})`;
-      if (c?.endDate && i.effectiveDate > c.endDate.slice(0, 10)) return `effective ${i.effectiveDate} is after the contract ends (${c.endDate.slice(0, 10)}) — renew the contract first`;
-      const posted = csId != null ? i.lastPostedThrough.get(csId) : undefined;
-      if (posted && posted.slice(0, 10) >= i.effectiveDate) return `already invoiced through ${posted.slice(0, 10)} — historical credits / rebills need a separate approval`;
-      return null;
-    };
+    const meta = { reconRow: r.rowNo, exceptionKey: r.exceptionKey, customer: r.customerName, contractServiceId: r.contractServiceId, contractServiceBundleId: r.contractServiceBundleId, offeringId: r.offeringId, cadence: r.cadence };
+    const where = `${r.customerName} / ${r.autotaskContract} / ${r.serviceName}`;
+    const serviceLine = r.lineKind === 'service' && r.contractServiceId != null;
+    const delta = r.primary && r.quantity != null ? r4(r.quantity - (r.contractQuantityTotal ?? r.contractQuantity ?? 0)) : 0;
+    let quantityFolded = false;
 
     // Cost: the contract's unit cost behind the vendor's landed cost.
-    if (want('cost') && r.contractServiceId != null && r.landedCost != null && r.currentCost != null && Math.abs(r.landedCost - r.currentCost) > 0.005) {
-      sum.cost++;
-      out.push({
+    if (want('cost') && serviceLine && r.landedCost != null && r.currentCost != null && Math.abs(r.landedCost - r.currentCost) > 0.005) {
+      push('cost', {
         meta, action: 'update', entity: 'ContractServices', targetId: r.contractServiceId,
-        label: `Cost ${r.customerName} / ${r.autotaskContract} / ${r.serviceName}: ${r.currentCost} → ${r.landedCost} per ${r.basis}`,
+        label: `Cost ${where}: ${r.currentCost} → ${r.landedCost} per ${r.basis}`,
         before: { unitCost: nativeOf(r, r.currentCost) }, after: { unitCost: nativeOf(r, r.landedCost) },
         reason: `Vendor landed cost (${r.sourceInvoice}). Cost only — the customer price does not change.`, blocked: null,
       });
@@ -77,60 +125,108 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
 
     // Price: below landed cost / target. Never when negotiated; never a decrease.
     const priceIssue = r.exceptions.some((e) => e === 'below_cost' || e === 'below_target' || e === 'margin_below_policy');
-    if (want('price') && priceIssue && r.contractServiceId != null && r.priceShouldBe != null && r.currentPrice != null && r.priceShouldBe > r.currentPrice + 0.005) {
-      sum.price++;
+    if (want('price') && priceIssue && r.priceShouldBe != null && r.currentPrice != null && r.priceShouldBe > r.currentPrice + 0.005 && (serviceLine || isBundlePriceRow(r))) {
       const pct = r.currentPrice > 0 ? Math.round(((r.priceShouldBe - r.currentPrice) / r.currentPrice) * 1000) / 10 : null;
-      const blocked = r.exceptions.includes('negotiated') ? 'a negotiated price applies — change it in the pricing policy first' : dateBlock(r.contractServiceId, r.contractId);
-      if (blocked) sum.blocked++;
-      out.push({
-        meta, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
-        label: `PRICE ${r.customerName} / ${r.autotaskContract} / ${r.serviceName}: ${r.currentPrice} → ${r.priceShouldBe} per ${r.basis}${pct != null ? ` (+${pct}%)` : ''} from ${i.effectiveDate} — customer price increase`,
+      const bundle = isBundlePriceRow(r);
+      const blocked = r.exceptions.includes('negotiated') ? 'a negotiated price applies — change it in the pricing policy first' : dateBlock(bundle ? r.contractServiceBundleId : r.contractServiceId, r.contractId, bundle);
+      push('price', {
+        meta, action: 'create', entity: bundle ? 'ContractServiceBundleAdjustments' : 'ContractServiceAdjustments', targetId: null,
+        label: `PRICE ${where}: ${r.currentPrice} → ${r.priceShouldBe} per ${r.basis}${pct != null ? ` (+${pct}%)` : ''} from ${i.effectiveDate} — customer price increase`,
         before: { unitPrice: nativeOf(r, r.currentPrice), units: r.contractQuantity },
-        after: { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe), ...(r.landedCost != null ? { adjustedUnitCost: nativeOf(r, r.landedCost) } : {}) },
+        after: bundle
+          ? { contractID: r.contractId, contractServiceBundleID: r.contractServiceBundleId, serviceBundleID: r.serviceBundleId, effectiveDate: i.effectiveDate, unitChange: 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe) }
+          : { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe), ...(r.landedCost != null ? { adjustedUnitCost: nativeOf(r, r.landedCost) } : {}) },
         reason: `${r.exceptions.join(', ')}: ${r.reason}. Target ${r.priceRule}. Monthly exposure ${r.monthlyExposure}.`, blocked,
       });
     }
 
-    // Quantity: the vendor bills more units than the contract.
-    if (want('quantity') && r.exceptions.includes('qty_short') && r.contractServiceId != null && r.quantity != null && r.contractQuantity != null) {
-      sum.quantity++;
-      const delta = r4(r.quantity - r.contractQuantity);
-      const blocked = dateBlock(r.contractServiceId, r.contractId);
-      if (blocked) sum.blocked++;
-      out.push({
-        meta, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
-        label: `QUANTITY ${r.customerName} / ${r.autotaskContract} / ${r.serviceName}: ${r.contractQuantity} → ${r.quantity} (+${delta}) from ${i.effectiveDate}`,
-        before: { unitPrice: nativeOf(r, r.currentPrice), units: r.contractQuantity },
-        after: { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: delta, ...(r.currentPrice != null ? { adjustedUnitPrice: nativeOf(r, r.currentPrice) } : {}), ...(r.currentCost != null ? { adjustedUnitCost: nativeOf(r, r.currentCost) } : {}) },
-        reason: `The vendor bills ${r.quantity}; the contract bills ${r.contractQuantity} (${r.sourceInvoice}). Price unchanged.`, blocked,
-      });
+    // Term: the customer is on a different term than the vendor sells → move the line to the vendor's term.
+    if (want('term') && r.exceptions.includes('term_mismatch')) {
+      const std = r.offeringId != null ? i.standardService(r.offeringId, r.cadence) : null;
+      if (!serviceLine || std == null || !r.contractQuantity || r.contractId == null) {
+        out.push({ meta, action: 'info', entity: 'ContractServices', targetId: r.contractServiceId, label: `TERM ${where}: contract ${r.contractCadence}, vendor ${r.cadence}`, before: null, after: null,
+          reason: 'The contract term differs from what the vendor sells.', blocked: !serviceLine ? 'inside a bundle — change the bundle (its other parts may differ)' : std == null ? `no standard ${r.cadence} service for ${r.offering} — run the catalog plan first` : 'no units on the line this period — nothing to move' });
+      } else {
+        const newUnits = r.primary && delta ? r4(r.contractQuantity + delta) : r.contractQuantity;
+        quantityFolded = r.primary && !!delta;
+        const c = i.contracts.get(r.contractId);
+        const rows = moveRows({
+          contractId: r.contractId, label: `term ${r.contractCadence} → ${r.cadence}`, customer: r.customerName, contractName: c?.contractName ?? r.autotaskContract ?? String(r.contractId),
+          fromLineId: r.contractServiceId!, fromName: r.serviceName ?? nameOf(r.serviceId), units: r.contractQuantity, oldUnitPrice: nativeOf(r, r.currentPrice),
+          toServiceId: std, toName: nameOf(std), toLineId: lineOf(r.contractId, std), newUnits, unitPrice: r.priceShouldBe != null ? r4(r.priceShouldBe) : null, unitCost: r.landedCost != null ? r4(r.landedCost) : null,
+          effectiveDate: i.effectiveDate, blocked: r.exceptions.includes('negotiated') ? 'a negotiated price applies — agree the new term price first' : dateBlock(r.contractServiceId, r.contractId),
+          reason: `The vendor sells this as ${r.cadence}; the customer is on ${r.contractCadence} — this changes the customer's commitment, so it needs the customer's agreement.${quantityFolded ? ` The new line carries the vendor quantity (${r.quantity}).` : ''}`,
+          meta,
+        }, out.length + 1);
+        sum.term++; if (rows[0]!.blocked) sum.blocked += 2;
+        out.push(...rows);
+      }
     }
 
-    // Missing line: nothing on any active contract bills this product.
+    // Quantity: the primary line follows the vendor's quantity (up or down).
+    if (want('quantity') && !quantityFolded && r.primary && delta && r.contractId != null && (r.exceptions.includes('qty_short') || r.exceptions.includes('qty_over'))) {
+      if (serviceLine) {
+        const change = delta > 0 ? delta : -Math.min(r.contractQuantity ?? 0, -delta);
+        if (change) push('quantity', {
+          meta, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
+          label: `QUANTITY ${where}: ${r.contractQuantity} → ${r4((r.contractQuantity ?? 0) + change)} (${change > 0 ? '+' : ''}${change}) from ${i.effectiveDate}${change < 0 ? ' — the customer is billed for seats the vendor no longer charges' : ''}`,
+          before: { unitPrice: nativeOf(r, r.currentPrice), units: r.contractQuantity },
+          after: { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: change, ...(r.currentPrice != null ? { adjustedUnitPrice: nativeOf(r, r.currentPrice) } : {}), ...(r.currentCost != null ? { adjustedUnitCost: nativeOf(r, r.currentCost) } : {}) },
+          reason: `The vendor bills ${r.quantity}; the contract line(s) bill ${r.contractQuantityTotal ?? r.contractQuantity} (${r.sourceInvoice}). Price unchanged.`, blocked: dateBlock(r.contractServiceId, r.contractId),
+        });
+      } else if (delta > 0) {
+        // Beyond the bundle's units: the extra seats go on a standalone line next to the bundle.
+        const std = r.offeringId != null ? i.standardService(r.offeringId, r.cadence) : null;
+        const existing = lineOf(r.contractId, std);
+        push('quantity', {
+          meta, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
+          label: `EXTRA SEATS ${r.customerName} / ${r.autotaskContract}: ${delta} × ${std != null ? nameOf(std) : r.offering} beyond bundle ${r.bundleName} (${r.contractQuantityTotal} in contract, vendor ${r.quantity}) from ${i.effectiveDate}${r.priceShouldBe != null ? ` at ${r.priceShouldBe}` : ''}`,
+          before: existing ? null : { units: 0 },
+          after: { contractID: r.contractId, ...(existing ? { contractServiceID: existing } : {}), serviceID: std, effectiveDate: i.effectiveDate, unitChange: delta, ...(r.priceShouldBe != null ? { adjustedUnitPrice: r4(r.priceShouldBe) } : {}), ...(r.landedCost != null ? { adjustedUnitCost: r4(r.landedCost) } : {}) },
+          reason: `The vendor bills ${r.quantity}; the bundle covers ${r.contractQuantityTotal}. Raising the bundle's units would add every other part of it too, so the extra seats are billed standalone.`,
+          blocked: std == null ? `no standard ${r.cadence} service for ${r.offering} — run the catalog plan first` : dateBlock(existing, r.contractId),
+        });
+      } else {
+        out.push({ meta, action: 'info', entity: 'ContractServiceBundles', targetId: r.contractServiceBundleId, label: `QUANTITY ${where}: bundle has ${r.contractQuantityTotal}, vendor ${r.quantity}`, before: null, after: null,
+          reason: 'Fewer vendor seats than bundle units.', blocked: 'reducing a bundle changes every part of it — decide with the customer (build a bundle change by hand)' });
+      }
+    }
+
+    // Missing line: nothing in effect bills this product → add the standard service, with its units, in one row.
     if (want('missing_line') && r.exceptions.includes('not_billed') && r.autotaskCompanyId != null && r.offeringId != null) {
-      sum.missing_line++;
       const chosen = i.contractChoices?.[r.exceptionKey];
       const options = i.licenceContracts.get(r.autotaskCompanyId) ?? [];
       const contractId = chosen ?? (options.length === 1 ? options[0]! : null);
       const serviceId = i.standardService(r.offeringId, r.cadence);
+      const existing = lineOf(contractId, serviceId);
       const blocked = r.companyActive === false ? 'the Autotask company is inactive'
         : serviceId == null ? `no standard ${r.cadence} service for ${r.offering} — run the catalog plan first`
-        : contractId == null ? (options.length ? `the customer has ${options.length} licence contracts (${options.join(', ')}) — choose one (contractChoices)` : 'no active contract to add it to — choose one (contractChoices)')
-        : dateBlock(null, contractId);
-      if (blocked) sum.blocked++;
-      out.push({
-        meta: { ...meta, followUp: 'set the quantity with the next plan (the new line starts with no units)' }, action: 'create', entity: 'ContractServices', targetId: null,
-        label: `ADD ${r.offering} (${r.cadence}) to ${contractId != null ? i.contracts.get(contractId)?.contractName ?? contractId : '(choose a contract)'} for ${r.customerName} — ${r.quantity ?? '?'} unit(s) at ${r.priceShouldBe ?? '?'}`,
-        before: null,
-        after: { contractID: contractId, serviceID: serviceId, unitPrice: r.priceShouldBe, ...(r.landedCost != null ? { unitCost: r.landedCost } : {}) },
-        reason: `${r.reason}. Monthly exposure ${r.monthlyExposure}. After it is added, rebuild the plan to set its quantity.`, blocked,
+        : contractId == null ? (options.length ? `the customer has ${options.length} licence contracts (${options.join(', ')}) — choose one (contractChoices)` : 'no Recurring Service contract in effect to add it to — choose one (contractChoices) or create the contract first')
+        : !r.quantity ? 'the vendor quantity is unknown'
+        : dateBlock(existing, contractId);
+      push('missing_line', {
+        meta, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
+        label: `ADD ${r.offering} (${r.cadence}) to ${contractId != null ? i.contracts.get(contractId)?.contractName ?? contractId : '(choose a contract)'} for ${r.customerName} — ${r.quantity ?? '?'} unit(s) at ${r.priceShouldBe ?? '?'} from ${i.effectiveDate}`,
+        before: existing ? null : { units: 0 },
+        after: { contractID: contractId, ...(existing ? { contractServiceID: existing } : {}), serviceID: serviceId, effectiveDate: i.effectiveDate, unitChange: r.quantity, ...(r.priceShouldBe != null ? { adjustedUnitPrice: r4(r.priceShouldBe) } : {}), ...(r.landedCost != null ? { adjustedUnitCost: r4(r.landedCost) } : {}) },
+        reason: `${r.reason}. Monthly exposure ${r.monthlyExposure}. Added from the effective date — earlier months are not back-billed (that needs a separate approval).`, blocked,
       });
     }
 
-    if (r.exceptions.includes('term_mismatch') && r.contractServiceId != null) {
-      out.push({ meta, action: 'info', entity: 'ContractServices', targetId: r.contractServiceId, label: `TERM ${r.customerName} / ${r.autotaskContract} / ${r.serviceName}: contract ${r.contractCadence}, vendor ${r.cadence}`, before: null, after: null, reason: 'Move the customer to the service for the matching term (end this line, add the other) — not automated: it changes what the customer is committed to.', blocked: 'term change needs a person' });
+    // End line: billed to the customer, no longer charged by the vendor.
+    if (want('end_line') && r.exceptions.includes('not_purchased')) {
+      if (serviceLine && r.contractQuantity) {
+        push('end_line', {
+          meta, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
+          label: `END ${where}: ${r.contractQuantity} → 0 from ${i.effectiveDate} — no ${r.vendor} charge for it any more`,
+          before: { units: r.contractQuantity, ...(r.currentPrice != null ? { unitPrice: nativeOf(r, r.currentPrice) } : {}) },
+          after: { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: -r.contractQuantity },
+          reason: `${r.reason}. Only approve once you know it was cancelled (not bought elsewhere).`, blocked: dateBlock(r.contractServiceId, r.contractId),
+        });
+      } else {
+        out.push({ meta, action: 'info', entity: 'ContractServiceBundles', targetId: r.contractServiceBundleId, label: `NOT PURCHASED ${where}`, before: null, after: null, reason: r.reason, blocked: 'inside a bundle — review the bundle with the customer' });
+      }
     }
-    void contract;
   }
   return { rows: out, summary: sum };
 }

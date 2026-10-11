@@ -69,7 +69,7 @@ describe('reconcile', () => {
     const primary = r.find((x) => x.contractServiceId === 4000)!; // same term (AM) wins
     const other = r.find((x) => x.contractServiceId === 3482)!;
     expect(primary.exceptions).toContain('qty_short');
-    expect(primary.reason).toMatch(/vendor bills 6 but the contract\(s\) bill 4/);
+    expect(primary.reason).toMatch(/vendor bills 6 but the contract line\(s\) bill 4/);
     expect(other.exceptions).toEqual(expect.arrayContaining(['billed_on_multiple_lines', 'term_mismatch']));
   });
 
@@ -137,7 +137,9 @@ describe('contract change plan', () => {
     const two = buildContractPlan({ ...base, rows: nb, include: ['missing_line'], licenceContracts: new Map([[100, [1, 2]]]) }).rows[0]!;
     expect(two.blocked).toMatch(/2 licence contracts/);
     const one = buildContractPlan({ ...base, rows: nb, include: ['missing_line'], licenceContracts: new Map([[100, [1]]]) }).rows[0]!;
-    expect(one).toMatchObject({ entity: 'ContractServices', action: 'create', blocked: null, after: { contractID: 1, serviceID: 297 } });
+    // One row: an adjustment that ADDS the service to the contract with its units and price.
+    expect(one).toMatchObject({ entity: 'ContractServiceAdjustments', action: 'create', blocked: null, before: { units: 0 }, after: { contractID: 1, serviceID: 297, effectiveDate: '2026-11-01', unitChange: 5 } });
+    expect(one.after).not.toHaveProperty('contractServiceID');
   });
 });
 

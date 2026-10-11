@@ -9,6 +9,7 @@
 
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
 import { startNotifyWatch } from '../services/notify-watch.js';
+import { startVendorMonitor } from '../vendors/monitor.js';
 import { ingestAutotaskWebhook } from '../db/webhook-ingest.js';
 import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
 import { initAuthBlockStore } from '../db/auth-block-store.js';
@@ -319,6 +320,8 @@ export class AutotaskMcpServer {
       const tenant = this.envConfig?.auth?.mode === 'gateway' ? undefined : this.envConfig?.autotask?.username;
       if (tenant) {
         startNotifyWatch({ tenant, lastRun: () => getShadowRuntime()?.lastRun() ?? null, lastVerify: () => getShadowRuntime()?.lastVerify() ?? null });
+        // Vendor monitor (stale imports, renewals, contracts ending, sync drift) — daily at MCP_VENDOR_MONITOR_HOUR_UTC; off when unset.
+        if (isPgEnabled()) startVendorMonitor(this.autotaskService, () => getPool(this.logger), this.logger);
       }
     } else {
       await this.startStdioTransport();

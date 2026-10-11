@@ -67,6 +67,7 @@ import { vendorToolHandlers } from '../vendors/tools.js';
 import { catalogToolHandlers } from '../vendors/catalog-tools.js';
 import { reconToolHandlers } from '../vendors/recon-tools.js';
 import { pax8ToolHandlers } from '../vendors/pax8-tools.js';
+import { contractToolHandlers } from '../vendors/contract-tools.js';
 import {
   FunctionalRole,
   parseRoleMap,
@@ -1148,6 +1149,7 @@ export class AutotaskToolHandler {
       ...catalogToolHandlers(s, () => getPool(this.logger)),
       ...reconToolHandlers(s, () => getPool(this.logger)),
       ...pax8ToolHandlers(() => getPool(this.logger)),
+      ...contractToolHandlers(s, () => getPool(this.logger)),
       // Connection
       ['autotask_get_api_usage', async () => {
         const r = await s.getApiUsage();

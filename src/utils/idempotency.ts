@@ -53,6 +53,10 @@ const NON_MUTATING_TOOLS = new Set<string>([
   'autotask_pricing_build_change_plan', // builds a new plan each time
   'autotask_reconcile_check_sync_drift', // read-only toward Autotask
   'autotask_vendor_sync', // Postgres only; idempotent per invoice / price point
+  'autotask_contract_plan_move_lines', // builds a new plan each time (read-only toward Autotask)
+  'autotask_contract_plan_wording', // builds a new plan each time
+  'autotask_change_plan_revert', // builds a new plan each time
+  'autotask_vendor_monitor', // read-only toward Autotask; notifications are deduplicated
   'autotask_change_plan_execute', // per-row idempotent (applied rows never re-run); a second call must run the remaining rows, not replay
   'autotask_raw_request', // admin escape hatch — gated separately (§3.4); a raw GET must never be replayed
 ]);

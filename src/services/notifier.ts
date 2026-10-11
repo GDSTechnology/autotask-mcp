@@ -19,7 +19,8 @@ export type NotifyEventType =
   | 'shadow.sync_error' | 'shadow.verify_failed'
   | 'operation.partial'
   | 'tool.errors'
-  | 'sync.drift' | 'reconcile.critical';
+  | 'sync.drift' | 'reconcile.critical'
+  | 'vendor.import_stale' | 'vendor.renewal' | 'vendor.contract_ending';
 
 export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; label: string; severity: NotifySeverity }> = [
   { type: 'auth.held', label: 'Autotask login HELD (needs Retry now)', severity: 'critical' },
@@ -34,6 +35,9 @@ export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; labe
   { type: 'tool.errors', label: 'Burst of tool errors (5+ in 5 min)', severity: 'warning' },
   { type: 'sync.drift', label: 'An approved price / catalog change was overwritten (sync drift)', severity: 'critical' },
   { type: 'reconcile.critical', label: 'Vendor reconciliation found critical exceptions (below cost / not billed)', severity: 'warning' },
+  { type: 'vendor.import_stale', label: 'No vendor invoice imported for over a month', severity: 'warning' },
+  { type: 'vendor.renewal', label: 'Vendor subscriptions renewing within 30 days', severity: 'info' },
+  { type: 'vendor.contract_ending', label: 'A contract holding vendor products ends within 45 days', severity: 'warning' },
 ];
 
 export type NotifySeverity = 'info' | 'warning' | 'critical';

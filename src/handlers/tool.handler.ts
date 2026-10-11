@@ -63,6 +63,10 @@ import { argsDigest, mayWrite, operationClaimResult, operationSummary, withOpera
 import { OperationStore, type ClaimResult, type OperationInput } from '../db/operation-store.js';
 import { getPool } from '../db/pool.js';
 import { notify } from '../services/notifier.js';
+import { vendorToolHandlers } from '../vendors/tools.js';
+import { catalogToolHandlers } from '../vendors/catalog-tools.js';
+import { reconToolHandlers } from '../vendors/recon-tools.js';
+import { pax8ToolHandlers } from '../vendors/pax8-tools.js';
 import {
   FunctionalRole,
   parseRoleMap,
@@ -1139,6 +1143,11 @@ export class AutotaskToolHandler {
       return { roleName: null, roleSource: a.roleID != null ? 'explicit_unverified' : null };
     };
     return new Map<string, H>([
+      // Vendor purchasing & billing reconciliation (P0, Postgres only — read-only toward Autotask).
+      ...vendorToolHandlers(s, () => getPool(this.logger)),
+      ...catalogToolHandlers(s, () => getPool(this.logger)),
+      ...reconToolHandlers(s, () => getPool(this.logger)),
+      ...pax8ToolHandlers(() => getPool(this.logger)),
       // Connection
       ['autotask_get_api_usage', async () => {
         const r = await s.getApiUsage();

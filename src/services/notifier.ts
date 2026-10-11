@@ -18,7 +18,8 @@ export type NotifyEventType =
   | 'ratelimit.hit'
   | 'shadow.sync_error' | 'shadow.verify_failed'
   | 'operation.partial'
-  | 'tool.errors';
+  | 'tool.errors'
+  | 'sync.drift' | 'reconcile.critical';
 
 export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; label: string; severity: NotifySeverity }> = [
   { type: 'auth.held', label: 'Autotask login HELD (needs Retry now)', severity: 'critical' },
@@ -31,6 +32,8 @@ export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; labe
   { type: 'shadow.verify_failed', label: 'Mirror consistency check failed', severity: 'warning' },
   { type: 'operation.partial', label: 'A write failed after writing (partial)', severity: 'critical' },
   { type: 'tool.errors', label: 'Burst of tool errors (5+ in 5 min)', severity: 'warning' },
+  { type: 'sync.drift', label: 'An approved price / catalog change was overwritten (sync drift)', severity: 'critical' },
+  { type: 'reconcile.critical', label: 'Vendor reconciliation found critical exceptions (below cost / not billed)', severity: 'warning' },
 ];
 
 export type NotifySeverity = 'info' | 'warning' | 'critical';

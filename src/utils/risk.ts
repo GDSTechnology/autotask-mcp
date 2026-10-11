@@ -32,6 +32,7 @@ export const FINANCIAL_TOOLS = new Set<string>([
   'autotask_set_ticket_contract',
   'autotask_create_expense_report',
   'autotask_create_expense_item',
+  'autotask_change_plan_execute', // writes approved catalog / pricing plan rows
 ]);
 
 /** Client-visible external communication — show visibility/recipients (§4.3, populated in §15). */

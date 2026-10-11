@@ -44,6 +44,130 @@ const CONTRACT_SHELL_PROPERTIES = {
 const CONTRACT_SHELL_REQUIRED = ['companyID', 'contractName', 'contractType', 'contractCategory', 'startDate', 'endDate'];
 
 export const TOOL_DEFINITIONS: McpTool[] = [
+  // Vendor purchasing & billing reconciliation (P0, read-only toward Autotask)
+  {
+    name: 'autotask_vendor_list_sources',
+    description: 'READ-ONLY. Vendor billing sources: the supported vendor adapters and file formats, every imported invoice (vendor, invoice number/date, lines, total, warnings, who imported it) and mapping coverage — vendor customers mapped to Autotask companies, vendor SKUs mapped to manufacturer offerings, Autotask services linked to offerings. Start here before a reconciliation. Needs the Postgres store (migration 0010).',
+    annotations: { title: 'Vendor billing sources', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { vendor: { type: 'string', description: 'Only this vendor (e.g. pax8)' } }, required: [] }
+  },
+  {
+    name: 'autotask_vendor_import_invoice',
+    description: 'Import a vendor billing file into the reconciliation store (Postgres only — nothing in Autotask changes). Accepts the Pax8 invoice CSV export (Pax8 → Billing → Invoices → export CSV: every line is kept — Microsoft and non-Microsoft products, prorations, arrears, minimum-commitment charges, surcharges, credits, NFR, zero-quantity rows — each classified by charge type and term MM / AM / AA / monthly / one-time) and the Pax8 company report (PSA admin → Mappings → Download company report: the vendor\'s own customer ↔ Autotask company crosswalk). Idempotent: the same file (SHA-256) is never imported twice. Verifies every line is accounted for: per-customer subtotals printed by the vendor vs the sum of the imported lines. Pass the file text in content.',
+    annotations: { title: 'Import vendor invoice / crosswalk', readOnlyHint: false, idempotentHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fileName: { type: 'string', description: 'Original file name (Pax8: csv-p<account>-<invoice>-<date>.csv — the invoice number comes from it)' },
+        content: { type: 'string', description: 'The file contents (CSV text). Max 10 MB.' },
+        contentBase64: { type: 'string', description: 'Alternative to content: base64 of the file' },
+        invoiceNumber: { type: 'string', description: 'Override when the file name does not carry it' }
+      },
+      required: ['fileName']
+    }
+  },
+  {
+    name: 'autotask_vendor_get_lines',
+    description: 'READ-ONLY. Imported vendor invoice lines with filters, plus totals by charge class, cadence and customer. Each line: vendor customer, subscription id, SKU, description, charge class (recurring / usage / one_time / proration / credit / minimum_commitment / vendor_fee / nfr_internal), cadence, unit, quantity, unit cost, total, the vendor\'s suggested price (reference only — never GDS revenue), service period, renewal, and the customer / offering mapping it resolves to (or "unmapped").',
+    annotations: { title: 'Vendor invoice lines', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vendor: { type: 'string' }, invoiceDate: { type: 'string', description: 'YYYY-MM-DD (the invoice date)' }, documentId: { type: 'number' },
+        vendorCustomerId: { type: 'string' }, sku: { type: 'string' },
+        chargeClass: { type: 'string', description: 'Only this charge class' }, unmappedOnly: { type: 'boolean', description: 'Only lines whose customer or SKU is not mapped yet' },
+        limit: { type: 'number', description: 'Lines to return (default 200, max 5000; totals always cover all matching lines)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_reconcile_resolve_mapping',
+    description: 'Review and decide the durable identity mappings reconciliation runs on (stored in the MCP\'s Postgres; nothing in Autotask changes). kind: customers (vendor customer → Autotask company, or internal / ignore), offerings (vendor SKU → manufacturer offering — the PRODUCT, not the sales channel, so a distributor change is only a remap), catalog (Autotask Service → offering + the term it sells, MM / AM / AA / monthly / annual). action: propose (suggestions with confidence and reason — nothing saved; customers come from the vendor crosswalk first, then exact Autotask names; an unmatched one is shown, never guessed), list (current decisions), set (decide specific items), accept (save every current proposal at or above minConfidence — an explicit decision by the caller). Every change keeps the previous decision (versioned).',
+    annotations: { title: 'Resolve vendor mappings', readOnlyHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['customers', 'offerings', 'catalog'] },
+        action: { type: 'string', enum: ['propose', 'list', 'set', 'accept'] },
+        vendor: { type: 'string', description: 'Vendor (default pax8)' },
+        minConfidence: { type: 'string', enum: ['high', 'medium'], description: 'accept: lowest confidence to save (default high)' },
+        includeMapped: { type: 'boolean', description: 'propose: also re-propose already-decided items' },
+        items: {
+          type: 'array',
+          description: 'set: customers [{ vendorCustomerId, status: mapped|internal|ignore, autotaskCompanyId?, note? }]; offerings [{ sku, status: mapped|not_billable|ignore, offeringId? | offering: { manufacturer, name, unit?, kind? }, note? }]; catalog [{ autotaskId, offeringId, cadence, autotaskEntity? (default Services), note? }]',
+          items: { type: 'object', additionalProperties: true }
+        }
+      },
+      required: ['kind', 'action']
+    }
+  },
+  {
+    name: 'autotask_reconcile_vendor_to_autotask',
+    description: 'READ-ONLY. Reconcile one imported vendor invoice (default: the latest) against what customers are actually billed: each vendor line → its mapped Autotask company → EVERY active contract → the contract services whose service is the same PRODUCT (offering) → the unit period for the invoice month and the POSTED recurring billing items. Per (customer, product, term) row: quantity, cost should be (landed vendor cost), price should be (pricing policy, with its rule), current contract cost / price, billed rate, differences, monthly / annual exposure, margin, confidence. Exceptions by severity — critical: below landed cost, vendor charge not billed back; high: quantity short, term mismatch, cost not updated, inactive company; review: below target / margin floor, negotiated price, billed on several lines, quantity over, unmapped customer / SKU, prorations / credits; info: internal, NFR, vendor fees. A loss is "confirmed" only when a posted invoice shows the billed rate; unknown quantities are "unverified", never zero. Saves the run (exceptions keep their status / owner across runs). Nothing in Autotask changes.',
+    annotations: { title: 'Reconcile vendor invoice vs contracts', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { vendor: { type: 'string', description: 'Default pax8' }, invoiceNumber: { type: 'string' }, documentId: { type: 'number' }, limit: { type: 'number', description: 'Rows returned (default 50; the run keeps all)' }, includeOk: { type: 'boolean', description: 'Also return matching / informational rows' } }, required: [] }
+  },
+  {
+    name: 'autotask_reconcile_get_exceptions',
+    description: 'Work the reconciliation exceptions. action=list (default): rows of a run (default the latest) filtered by severity (default critical / high / review), customer, exceptionType (below_cost, not_billed, qty_short, term_mismatch, cost_stale, below_target, …), sku, minExposure, status (open / acknowledged / resolved / accepted), with each exception’s owner and status. action=update: set status / owner / add a note on rows by exceptionKey — appended to the exception’s history, kept across monthly runs (a resolved one that reappears reopens). Postgres only.',
+    annotations: { title: 'Reconciliation exceptions', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'update'] }, runId: { type: 'string' }, vendor: { type: 'string' }, severity: { type: 'array', items: { type: 'string', enum: ['critical', 'high', 'review', 'info', 'ok'] } }, customer: { type: 'string' }, exceptionType: { type: 'string' }, sku: { type: 'string' }, minExposure: { type: 'number' }, status: { type: 'string', enum: ['open', 'acknowledged', 'resolved', 'accepted'] }, owner: { type: 'string' }, note: { type: 'string' }, keys: { type: 'array', items: { type: 'string' }, description: 'update: exceptionKey values' }, includeHistory: { type: 'boolean' }, limit: { type: 'number' } }, required: [] }
+  },
+  {
+    name: 'autotask_vendor_pricing_policy',
+    description: 'How "Price Should Be" is set (requirements §5). action=list; action=set { scope: "*" | manufacturer (e.g. "Microsoft") | "offering:<id>", mode: vendor_suggested | margin (price = cost / (1 − pct)) | markup (price = cost × (1 + pct)), pct, marginFloor (never propose below this margin), feePolicy: overhead | allocate (vendor fees such as the card surcharge added into landed cost) }; action=set_negotiated / remove_negotiated { companyId, offeringId, cadence?, price, reason, expiresOn? } — a negotiated customer price is honoured as the target and never flagged as below target. Default until set: the vendor’s suggested price, never below cost, fees as overhead. Postgres only.',
+    annotations: { title: 'Pricing policy', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'set', 'set_negotiated', 'remove_negotiated'] }, scope: { type: 'string' }, mode: { type: 'string', enum: ['vendor_suggested', 'margin', 'markup'] }, pct: { type: 'number' }, marginFloor: { type: 'number' }, feePolicy: { type: 'string', enum: ['overhead', 'allocate'] }, note: { type: 'string' }, companyId: { type: 'number' }, offeringId: { type: 'number' }, cadence: { type: 'string' }, price: { type: 'number' }, reason: { type: 'string' }, expiresOn: { type: 'string' } }, required: [] }
+  },
+  {
+    name: 'autotask_reconcile_export_workbook',
+    description: 'READ-ONLY. The reconciliation workbook (.xlsx, base64 in contentBase64) for a run (default the latest): Executive Summary, Exceptions, All Vendor Lines, Customer Contracts, Unmatched / Internal / NFR, Approved Changes, Execution Audit, Pricing Policy. Required columns first, in order: Customer Name | Autotask Contract | Vendor | Service / SKU | Commitment / Billing Term | Unit | Quantity | Cost Should Be | Price Should Be | Current Cost | Current Price | Difference on Cost | Difference on Price — then IDs, billed quantity / price, landed cost, exposure, margin, source invoice, confidence, reason, proposed action, status, owner.',
+    annotations: { title: 'Export reconciliation workbook', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { runId: { type: 'string' }, vendor: { type: 'string' } }, required: [] }
+  },
+  {
+    name: 'autotask_pricing_build_change_plan',
+    description: 'Build (nothing is written) a frozen, numbered CONTRACT change plan from a reconciliation run: cost rows (ContractServices.unitCost → landed cost; cost only), customer PRICE rows (a ContractServiceAdjustment with the target price — Autotask contract-service prices change only through adjustments), QUANTITY rows (an adjustment with the unit change), and missing-line rows (add the standard service to the customer’s licence contract). include picks the kinds; rows picks report rows. Prospective by default: effective the 1st of next month. Blocked: effective date outside the contract, a period already invoiced (credits / rebills need separate approval), a negotiated price, an ambiguous target contract (pass contractChoices { exceptionKey: contractId }), no standard service. Vendor cost rising never raises a customer price by itself — every price row is a proposal a person approves (autotask_change_plan_review), then autotask_change_plan_execute re-reads each line first and skips it if its price / units changed since the plan.',
+    annotations: { title: 'Plan: contract pricing changes', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { runId: { type: 'string' }, vendor: { type: 'string' }, include: { type: 'array', items: { type: 'string', enum: ['cost', 'price', 'quantity', 'missing_line'] } }, rows: { type: 'array', items: { type: 'number' }, description: 'Report row numbers (default all)' }, effectiveDate: { type: 'string', description: 'YYYY-MM-DD (default the 1st of next month)' }, contractChoices: { type: 'object', additionalProperties: { type: 'number' }, description: 'For missing lines: { exceptionKey: contractId }' } }, required: [] }
+  },
+  {
+    name: 'autotask_reconcile_check_sync_drift',
+    description: 'READ-ONLY toward Autotask. Re-check every APPLIED catalog / contract plan row (last N days, default 120) against Autotask: a field that no longer holds the approved value — or a price adjustment whose effect (price / units from its effective date) was overwritten, e.g. by the Pax8 PSA sync — is recorded once and raised as a "sync.drift" notification. Nothing is re-applied automatically: decide which system owns the field first. Run it daily (n8n).',
+    annotations: { title: 'Check sync drift', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { days: { type: 'number' } }, required: [] }
+  },
+  {
+    name: 'autotask_vendor_sync',
+    description: 'Pax8 Partner API (needs PAX8_CLIENT_ID / PAX8_CLIENT_SECRET in the server env; otherwise says how to set it up). what=status; what=invoices (import every Pax8 invoice since a date — same parser and checks as the CSV import, so API and CSV imports are identical); what=pricing (partner cost + suggested retail price for every mapped SKU and term MM / AM / AA / monthly, and the manufacturer’s own SKU recorded on the offering). A rejected key or a 429 is not retried. Writes to the MCP’s Postgres only.',
+    annotations: { title: 'Sync from the Pax8 API', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { what: { type: 'string', enum: ['status', 'invoices', 'pricing'] }, since: { type: 'string', description: 'invoices: YYYY-MM-DD (default 120 days ago)' }, vendorName: { type: 'string', description: 'pricing: limit the product scan to one manufacturer (e.g. Microsoft)' }, maxPages: { type: 'number' } }, required: [] }
+  },
+  {
+    name: 'autotask_vendor_prices',
+    description: 'The vendor price reference reconciliation and catalog plans price from: partner cost and the vendor’s suggested price per SKU and term (MM / AM / monthly per month; AA / annual per year), each with its source and date. action: list (current price per SKU + term), refresh (record what the imported invoices show), set (add prices for terms not on an invoice yet — e.g. from the Pax8 catalog; items [{ sku, cadence, unitCost, suggestedPrice, effectiveDate? }]). Stored in the MCP’s Postgres only.',
+    annotations: { title: 'Vendor price reference', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'refresh', 'set'] }, vendor: { type: 'string', description: 'Default pax8' }, items: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: [] }
+  },
+  {
+    name: 'autotask_catalog_plan_standardize',
+    description: 'Build (read-only) a plan that brings the Autotask service catalog to one standard service per product and term, for the products we sell (on the vendor invoices or already in the catalog). Microsoft NCE products get MM / AM / AA; month-to-month products (e.g. NinjaOne SaaS Backup) get Monthly. Standard name "<Product> [NCE] - AM"; the description and invoice description spell the term out. Per product + term: KEEP the service most active contracts use and rename it; deactivate unused duplicates (an in-use duplicate is listed, never touched); CREATE missing terms with the vendor cost + suggested price and a sibling’s work type (blocked when a price is missing); optional catalog-price rows (reference only — customer contract prices never change here). Nothing is written: returns a frozen, numbered plan (id + hash) to approve with autotask_change_plan_review and apply with autotask_change_plan_execute.',
+    annotations: { title: 'Plan: standardize service catalog', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { vendor: { type: 'string', description: 'Default pax8' }, offeringIds: { type: 'array', items: { type: 'number' }, description: 'Only these offerings' } }, required: [] }
+  },
+  {
+    name: 'autotask_change_plan_review',
+    description: 'Review and approve change plans (catalog standardization; contract pricing later). action: list (recent plans with row counts), get (every numbered row: action, before → after, reason, blocked, status), approve / exclude (rows "all", "3-15", "1,4,7-9" — with the plan hash you reviewed; blocked and information rows are never approvable). Approval is recorded with who and when. Nothing is written to Autotask here.',
+    annotations: { title: 'Review / approve change plan', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'get', 'approve', 'exclude'] }, planId: { type: 'string' }, hash: { type: 'string', description: 'approve / exclude: the plan hash you reviewed' }, rows: { description: '"all", "3-15", "1,4,7-9" or [row numbers]' }, actionableOnly: { type: 'boolean', description: 'get: only rows that can be approved' }, limit: { type: 'number' } }, required: [] }
+  },
+  {
+    name: 'autotask_change_plan_execute',
+    description: 'FINANCIAL — apply the APPROVED rows of a change plan to Autotask (confirm:true required). Each target is re-read first: a row whose record changed since the plan was built is skipped as STALE (rebuild the plan), never written over. Only that row’s fields are written, then read back and verified; failures are reported per row and re-running is safe (applied rows never run again; a create checks the record isn’t already there). An Autotask 401 / 429 stops the run. At most maxRows (default 25) per call — call again for the rest.',
+    annotations: { title: 'Execute approved change plan rows', readOnlyHint: false, destructiveHint: false },
+    inputSchema: { type: 'object', properties: { planId: { type: 'string' }, maxRows: { type: 'number', description: 'Rows per call (default 25, max 100)' }, confirm: { type: 'boolean', description: 'Must be true' } }, required: ['planId'] }
+  },
   // Connection testing
   {
     name: 'autotask_test_connection',
@@ -5884,18 +6008,18 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_update_contract_service',
-    description: 'Update an existing ContractService line on a Contract. Pass only fields you want to change.',
+    description: 'Update an existing ContractService line on a Contract. Pass only fields you want to change. Writable in Autotask: unitCost, invoiceDescription, internalDescription. unitPrice / internalCurrencyUnitPrice / adjustedPrice and serviceID are READ-ONLY on ContractServices (Autotask ignores them) — change a customer price or quantity with a ContractServiceAdjustment via autotask_pricing_build_change_plan.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'number', description: 'ContractService record ID to update' },
         contractID: { type: 'number', description: 'Parent Contract ID' },
-        serviceID: { type: 'number', description: 'Service catalog ID' },
-        unitPrice: { type: 'number', description: 'Unit price for the service line' },
-        unitCost: { type: 'number', description: 'Unit cost for the service line' },
-        quoteItemID: { type: 'number', description: 'Originating quote item ID' },
-        internalCurrencyUnitPrice: { type: 'number', description: 'Unit price in internal currency' },
-        adjustedPrice: { type: 'number', description: 'Adjusted price' },
+        serviceID: { type: 'number', description: 'Read-only in Autotask (ignored)' },
+        unitPrice: { type: 'number', description: 'Read-only in Autotask (ignored) — use autotask_pricing_build_change_plan' },
+        unitCost: { type: 'number', description: 'Unit cost for the service line (writable)' },
+        quoteItemID: { type: 'number', description: 'Read-only in Autotask (ignored)' },
+        internalCurrencyUnitPrice: { type: 'number', description: 'Read-only in Autotask (ignored)' },
+        adjustedPrice: { type: 'number', description: 'Read-only in Autotask (ignored) — use autotask_pricing_build_change_plan' },
         invoiceDescription: { type: 'string', description: 'Override invoice description for this line' }
       },
       required: ['id', 'contractID']
@@ -6172,6 +6296,10 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 ];
 
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
+  vendor_billing: {
+    description: 'Vendor purchasing & billing reconciliation (Pax8 first): import every invoice line, map vendor customers and SKUs to Autotask companies and manufacturer offerings',
+    tools: ['autotask_vendor_list_sources', 'autotask_vendor_import_invoice', 'autotask_vendor_get_lines', 'autotask_reconcile_resolve_mapping', 'autotask_vendor_prices', 'autotask_catalog_plan_standardize', 'autotask_change_plan_review', 'autotask_change_plan_execute', 'autotask_reconcile_vendor_to_autotask', 'autotask_reconcile_get_exceptions', 'autotask_vendor_pricing_policy', 'autotask_reconcile_export_workbook', 'autotask_pricing_build_change_plan', 'autotask_reconcile_check_sync_drift', 'autotask_vendor_sync']
+  },
   utility: {
     description: 'Connection testing and field/picklist discovery',
     tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_get_actor_roster', 'autotask_get_operations', 'autotask_get_backpressure', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']

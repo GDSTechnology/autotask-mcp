@@ -23,8 +23,8 @@
 import type { ReconRow } from './reconcile.js';
 import type { PlanRowInput } from '../change-plans/store.js';
 
-export type ChangeKind = 'cost' | 'price' | 'quantity' | 'missing_line' | 'term' | 'end_line';
-export const CHANGE_KINDS: ChangeKind[] = ['cost', 'price', 'quantity', 'missing_line', 'term', 'end_line'];
+export type ChangeKind = 'cost' | 'price' | 'quantity' | 'missing_line' | 'term' | 'end_line' | 'backbill';
+export const CHANGE_KINDS: ChangeKind[] = ['cost', 'price', 'quantity', 'missing_line', 'term', 'end_line', 'backbill'];
 
 export interface ContractInfo { contractName: string; companyID: number; startDate: string | null; endDate: string | null; contractType?: number | null }
 
@@ -50,6 +50,14 @@ export interface ContractPlanInput {
   rowNos?: number[];
   /** Override the target contract for a missing line, per exception key. */
   contractChoices?: Record<string, number>;
+  /** Back-bill from this month (YYYY-MM-01) up to the effective date: a one-time charge for the units the vendor charged but the customer was not billed. */
+  backbillFrom?: string;
+  /** Price the back-bill at the contract price (default — what the customer agreed) or the target price. */
+  backbillPrice?: 'contract' | 'target';
+  /** Latest billing item per contract service on / after backbillFrom (billing inside the window means those months need a look first). */
+  lastPostedFrom?: Map<number, string>;
+  /** A service's billing code (work type), for the charge. */
+  billingCode?: (serviceId: number) => number | null;
 }
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000;
@@ -59,6 +67,8 @@ const nativeOf = (r: ReconRow, v: number | null): number | null => {
   const to = r.serviceBasis ?? r.basis;
   return r4(r.basis === to ? v : r.basis === 'year' ? v / 12 : v * 12);
 };
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const monthName = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1] ?? ym} ${ym.slice(0, 4)}`;
 const isBundlePriceRow = (r: ReconRow) => r.lineKind === 'bundle' && r.serviceSku.startsWith('bundle:');
 
 /** Moving units from one contract line to another service: add (or top up) the new line, then end the old one. */
@@ -88,7 +98,7 @@ export function moveRows(m: MoveSpec, firstRowNo: number): PlanRowInput[] {
 
 export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[]; summary: Record<string, number> } {
   const out: PlanRowInput[] = [];
-  const sum: Record<string, number> = { cost: 0, price: 0, quantity: 0, missing_line: 0, term: 0, end_line: 0, blocked: 0 };
+  const sum: Record<string, number> = { cost: 0, price: 0, quantity: 0, missing_line: 0, term: 0, end_line: 0, backbill: 0, blocked: 0 };
   const want = (k: ChangeKind) => i.include.includes(k);
   const pick = i.rowNos?.length ? i.rows.filter((r) => i.rowNos!.includes(r.rowNo)) : i.rows;
   const nameOf = (sid: number | null) => (sid == null ? '?' : i.serviceName?.(sid) ?? `service ${sid}`);
@@ -111,7 +121,6 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
     const where = `${r.customerName} / ${r.autotaskContract} / ${r.serviceName}`;
     const serviceLine = r.lineKind === 'service' && r.contractServiceId != null;
     const delta = r.primary && r.quantity != null ? r4(r.quantity - (r.contractQuantityTotal ?? r.contractQuantity ?? 0)) : 0;
-    let quantityFolded = false;
 
     // Cost: the contract's unit cost behind the vendor's landed cost.
     if (want('cost') && serviceLine && r.landedCost != null && r.currentCost != null && Math.abs(r.landedCost - r.currentCost) > 0.005) {
@@ -123,24 +132,9 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
       });
     }
 
-    // Price: below landed cost / target. Never when negotiated; never a decrease.
-    const priceIssue = r.exceptions.some((e) => e === 'below_cost' || e === 'below_target' || e === 'margin_below_policy');
-    if (want('price') && priceIssue && r.priceShouldBe != null && r.currentPrice != null && r.priceShouldBe > r.currentPrice + 0.005 && (serviceLine || isBundlePriceRow(r))) {
-      const pct = r.currentPrice > 0 ? Math.round(((r.priceShouldBe - r.currentPrice) / r.currentPrice) * 1000) / 10 : null;
-      const bundle = isBundlePriceRow(r);
-      const blocked = r.exceptions.includes('negotiated') ? 'a negotiated price applies — change it in the pricing policy first' : dateBlock(bundle ? r.contractServiceBundleId : r.contractServiceId, r.contractId, bundle);
-      push('price', {
-        meta, action: 'create', entity: bundle ? 'ContractServiceBundleAdjustments' : 'ContractServiceAdjustments', targetId: null,
-        label: `PRICE ${where}: ${r.currentPrice} → ${r.priceShouldBe} per ${r.basis}${pct != null ? ` (+${pct}%)` : ''} from ${i.effectiveDate} — customer price increase`,
-        before: { unitPrice: nativeOf(r, r.currentPrice), units: r.contractQuantity },
-        after: bundle
-          ? { contractID: r.contractId, contractServiceBundleID: r.contractServiceBundleId, serviceBundleID: r.serviceBundleId, effectiveDate: i.effectiveDate, unitChange: 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe) }
-          : { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe), ...(r.landedCost != null ? { adjustedUnitCost: nativeOf(r, r.landedCost) } : {}) },
-        reason: `${r.exceptions.join(', ')}: ${r.reason}. Target ${r.priceRule}. Monthly exposure ${r.monthlyExposure}.`, blocked,
-      });
-    }
-
-    // Term: the customer is on a different term than the vendor sells → move the line to the vendor's term.
+    // Term: the customer is on a different term than the vendor sells → move the line to the vendor's term
+    // (the move carries the target price and the vendor quantity, so no separate price / quantity row).
+    let termMoved = false;
     if (want('term') && r.exceptions.includes('term_mismatch')) {
       const std = r.offeringId != null ? i.standardService(r.offeringId, r.cadence) : null;
       if (!serviceLine || std == null || !r.contractQuantity || r.contractId == null) {
@@ -148,7 +142,7 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
           reason: 'The contract term differs from what the vendor sells.', blocked: !serviceLine ? 'inside a bundle — change the bundle (its other parts may differ)' : std == null ? `no standard ${r.cadence} service for ${r.offering} — run the catalog plan first` : 'no units on the line this period — nothing to move' });
       } else {
         const newUnits = r.primary && delta ? r4(r.contractQuantity + delta) : r.contractQuantity;
-        quantityFolded = r.primary && !!delta;
+        const quantityFolded = r.primary && !!delta;
         const c = i.contracts.get(r.contractId);
         const rows = moveRows({
           contractId: r.contractId, label: `term ${r.contractCadence} → ${r.cadence}`, customer: r.customerName, contractName: c?.contractName ?? r.autotaskContract ?? String(r.contractId),
@@ -160,17 +154,45 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
         }, out.length + 1);
         sum.term++; if (rows[0]!.blocked) sum.blocked += 2;
         out.push(...rows);
+        termMoved = true;
       }
     }
 
+    // A line's state the day before the change: units, and the unit price only when it bills units (an empty line has none).
+    const lineBefore = () => ({ units: r.contractQuantity, ...(r.contractQuantity ? { unitPrice: nativeOf(r, r.currentPrice) } : {}) });
+    const qtyWanted = want('quantity') && !termMoved && r.primary && !!delta && r.contractId != null && (r.exceptions.includes('qty_short') || r.exceptions.includes('qty_over'));
+    const lineChange = serviceLine ? (delta > 0 ? delta : -Math.min(r.contractQuantity ?? 0, -delta)) : 0;
+
+    // Price: below landed cost / target. Never when negotiated; never a decrease.
+    // On a line whose quantity changes too, ONE adjustment carries both — two adjustments on the same
+    // line and date would leave whichever price came last.
+    const priceIssue = r.exceptions.some((e) => e === 'below_cost' || e === 'below_target' || e === 'margin_below_policy');
+    let quantityDone = false;
+    if (!termMoved && want('price') && priceIssue && r.priceShouldBe != null && r.currentPrice != null && r.priceShouldBe > r.currentPrice + 0.005 && (serviceLine || isBundlePriceRow(r))) {
+      const pct = r.currentPrice > 0 ? Math.round(((r.priceShouldBe - r.currentPrice) / r.currentPrice) * 1000) / 10 : null;
+      const bundle = isBundlePriceRow(r);
+      const blocked = r.exceptions.includes('negotiated') ? 'a negotiated price applies — change it in the pricing policy first' : dateBlock(bundle ? r.contractServiceBundleId : r.contractServiceId, r.contractId, bundle);
+      const withQty = !bundle && qtyWanted && lineChange !== 0;
+      if (withQty) { quantityDone = true; sum.quantity++; }
+      push('price', {
+        meta, action: 'create', entity: bundle ? 'ContractServiceBundleAdjustments' : 'ContractServiceAdjustments', targetId: null,
+        label: `PRICE${withQty ? ' + QUANTITY' : ''} ${where}: ${r.currentPrice} → ${r.priceShouldBe} per ${r.basis}${pct != null ? ` (+${pct}%)` : ''}${withQty ? `, units ${r.contractQuantity} → ${r4((r.contractQuantity ?? 0) + lineChange)}` : ''} from ${i.effectiveDate} — customer price increase`,
+        before: bundle ? { unitPrice: nativeOf(r, r.currentPrice), units: r.contractQuantity } : lineBefore(),
+        after: bundle
+          ? { contractID: r.contractId, contractServiceBundleID: r.contractServiceBundleId, serviceBundleID: r.serviceBundleId, effectiveDate: i.effectiveDate, unitChange: 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe) }
+          : { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: withQty ? lineChange : 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe), ...(r.landedCost != null ? { adjustedUnitCost: nativeOf(r, r.landedCost) } : {}) },
+        reason: `${r.exceptions.join(', ')}: ${r.reason}. Target ${r.priceRule}. Monthly exposure ${r.monthlyExposure}.${withQty ? ` Quantity follows the vendor (${r.quantity}) in the same adjustment — build with include=["quantity"] for the quantity alone at the current price.` : ''}`, blocked,
+      });
+    }
+
     // Quantity: the primary line follows the vendor's quantity (up or down).
-    if (want('quantity') && !quantityFolded && r.primary && delta && r.contractId != null && (r.exceptions.includes('qty_short') || r.exceptions.includes('qty_over'))) {
+    if (qtyWanted && !quantityDone) {
       if (serviceLine) {
-        const change = delta > 0 ? delta : -Math.min(r.contractQuantity ?? 0, -delta);
+        const change = lineChange;
         if (change) push('quantity', {
           meta, action: 'create', entity: 'ContractServiceAdjustments', targetId: null,
           label: `QUANTITY ${where}: ${r.contractQuantity} → ${r4((r.contractQuantity ?? 0) + change)} (${change > 0 ? '+' : ''}${change}) from ${i.effectiveDate}${change < 0 ? ' — the customer is billed for seats the vendor no longer charges' : ''}`,
-          before: { unitPrice: nativeOf(r, r.currentPrice), units: r.contractQuantity },
+          before: lineBefore(),
           after: { contractID: r.contractId, contractServiceID: r.contractServiceId, serviceID: r.serviceId, effectiveDate: i.effectiveDate, unitChange: change, ...(r.currentPrice != null ? { adjustedUnitPrice: nativeOf(r, r.currentPrice) } : {}), ...(r.currentCost != null ? { adjustedUnitCost: nativeOf(r, r.currentCost) } : {}) },
           reason: `The vendor bills ${r.quantity}; the contract line(s) bill ${r.contractQuantityTotal ?? r.contractQuantity} (${r.sourceInvoice}). Price unchanged.`, blocked: dateBlock(r.contractServiceId, r.contractId),
         });
@@ -211,6 +233,39 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
         after: { contractID: contractId, ...(existing ? { contractServiceID: existing } : {}), serviceID: serviceId, effectiveDate: i.effectiveDate, unitChange: r.quantity, ...(r.priceShouldBe != null ? { adjustedUnitPrice: r4(r.priceShouldBe) } : {}), ...(r.landedCost != null ? { adjustedUnitCost: r4(r.landedCost) } : {}) },
         reason: `${r.reason}. Monthly exposure ${r.monthlyExposure}. Added from the effective date — earlier months are not back-billed (that needs a separate approval).`, blocked,
       });
+    }
+
+    // Back-bill: the months before the effective date that the vendor charged and the customer was not billed —
+    // a one-time contract charge (the forward fix is the quantity / missing-line row from the effective date).
+    if (want('backbill') && i.backbillFrom && (r.exceptions.includes('not_billed') || (r.primary && r.exceptions.includes('qty_short')))) {
+      const missing = r.exceptions.includes('not_billed') ? r.quantity ?? 0 : delta > 0 ? delta : 0;
+      const from = i.backbillFrom.slice(0, 7), to = i.effectiveDate.slice(0, 7);
+      const months = (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7));
+      const notBilled = r.exceptions.includes('not_billed');
+      const contractId = notBilled ? (i.contractChoices?.[r.exceptionKey] ?? ((i.licenceContracts.get(r.autotaskCompanyId ?? -1) ?? []).length === 1 ? i.licenceContracts.get(r.autotaskCompanyId!)![0]! : null)) : r.contractId;
+      const serviceId = notBilled ? (r.offeringId != null ? i.standardService(r.offeringId, r.cadence) : null) : r.serviceId;
+      const price = i.backbillPrice === 'target' ? r.priceShouldBe : r.currentPrice ?? r.priceShouldBe;
+      const code = serviceId != null ? i.billingCode?.(serviceId) ?? null : null;
+      const last = new Date(`${i.effectiveDate}T00:00:00Z`); last.setUTCDate(last.getUTCDate() - 1);
+      const lastDay = last.toISOString().slice(0, 10);
+      const window = `${monthName(from)}${months > 1 ? ` – ${monthName(lastDay.slice(0, 7))}` : ''}`;
+      const posted = !notBilled && r.contractServiceId != null ? i.lastPostedFrom?.get(r.contractServiceId) : undefined;
+      if (missing > 0) {
+        const blocked = months <= 0 ? `back-bill from ${i.backbillFrom} is not before the effective date ${i.effectiveDate}`
+          : r.basis === 'year' ? 'billed yearly — back-bill an annual term by hand'
+          : serviceId == null ? `no standard ${r.cadence} service for ${r.offering} — run the catalog plan first` : price == null ? 'no price to back-bill at' : contractId == null ? 'choose the contract to charge (contractChoices)'
+          : !i.contracts.has(contractId) ? `contract ${contractId} is not active — reactivate it first`
+          : code == null ? 'the service has no billing code' : null;
+        const qty = r4(missing * Math.max(months, 0));
+        push('backbill', {
+          meta, action: 'create', entity: 'ContractCharges', targetId: null,
+          label: `BACK-BILL ${r.customerName} / ${contractId != null ? i.contracts.get(contractId)?.contractName ?? contractId : '(choose a contract)'}: ${missing} × ${serviceId != null ? nameOf(serviceId) : r.offering} for ${window} (${qty} × ${price ?? '?'} = ${price != null ? r4(qty * price) : '?'}) — one-time charge`,
+          before: null,
+          after: { contractID: contractId, ...(!notBilled && r.contractServiceId != null ? { contractServiceID: r.contractServiceId } : {}), name: `${serviceId != null ? nameOf(serviceId) : r.offering ?? 'Service'} — back-bill ${window}`.slice(0, 100), description: `${missing} unit(s) × ${months} month(s) (${window}) charged by ${r.vendor} but not billed. ${r.sourceInvoice}.`.slice(0, 2000), chargeType: 1, datePurchased: lastDay, unitQuantity: qty, unitPrice: price, ...(r.landedCost != null ? { unitCost: r4(r.landedCost) } : {}), billingCodeID: code, isBillableToCompany: true },
+          reason: `The vendor charged ${r.quantity} this month and the customer was billed ${notBilled ? 'none' : r.contractQuantityTotal ?? r.contractQuantity}. Assumes the same shortfall for each month from ${i.backbillFrom} — check against the vendor invoices for those months. Priced at the ${i.backbillPrice === 'target' ? 'target' : 'contract'} price. The charge bills at the next Approve & Post.${posted && posted.slice(0, 10) >= i.backbillFrom ? ` Billing was posted on this line on ${posted.slice(0, 10)} (inside the window) — the charge covers only the ${missing} missing unit(s) a month; check those invoices showed the lower quantity.` : ''}`,
+          blocked,
+        });
+      }
     }
 
     // End line: billed to the customer, no longer charged by the vendor.

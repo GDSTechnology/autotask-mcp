@@ -133,6 +133,25 @@ This needs migration `0012_reconciliation.sql`. Every step below reads Autotask 
      - fewer vendor seats than a bundle's units (change the bundle by hand).
 6. `autotask_reconcile_check_sync_drift` re-reads what executed plans wrote. Only the latest approved write to a field or line has to hold; a later plan, or an undo, supersedes an earlier one. If something changed a value back (for example the Pax8 PSA sync), the tool records the drift and sends the `sync.drift` notification.
 
+## Billing that stopped, and back-billing
+
+A contract line that is still on a contract in effect but has **no billing period** for the month bills nothing. This happens when a line was ended, or its contract was set inactive while the vendor kept charging. Reconciliation counts such a line as 0 units ("the line has no billing period for this month"), so it shows as `qty_short`.
+
+To fix it in one plan:
+1. If the contract carrying the line was set inactive by mistake, reactivate it (`autotask_update_contract status=1`). Contracts that aren't active are not considered.
+2. Re-run `autotask_reconcile_vendor_to_autotask`.
+3. Run `autotask_pricing_build_change_plan backbillFrom=YYYY-MM rows=[…]`. Pass the report rows of that customer so other customers' unbilled rows don't come along.
+
+The plan then holds:
+- **from the effective date:** the units are restored. When the price is also below cost or target, a single **PRICE + QUANTITY** adjustment carries both. Two adjustments on the same line and date would leave whichever price came last.
+- **for the months before:** a **BACK-BILL** row, a one-time contract charge (`ContractCharges`) linked to the line and on the service's billing code. It charges units missing × months × the contract price (`backbillPrice=target` for the new price) and bills at the next Approve & Post.
+  - The charge assumes the same shortfall each month; check it against the vendor invoices for those months.
+  - When the line did bill inside the window, the charge still covers only the missing units, and the row says so.
+  - A re-run never charges twice: a charge with the same name on the contract counts as done.
+  - The undo plan can't remove a charge; delete it in Autotask before it is billed.
+
+To make a price above cost stick, set the price first: `autotask_vendor_pricing_policy` with a margin, or `set_negotiated` for that customer. Then build the plan.
+
 ## Contract lines: moves, invoice wording, undo
 
 Autotask can't change a contract line's service, and contract price and unit changes exist only as adjustments. These tools build plans; nothing is written until rows are approved and executed.

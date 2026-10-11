@@ -157,6 +157,57 @@ describe('contract plan rows', () => {
   });
 });
 
+describe('billing that stopped (a line with no billing period) — restore, re-price and back-bill', () => {
+  // The customer moved from annual to monthly; the monthly line's billing stopped after August
+  // while the vendor kept charging 10.08 a month. Contract price 9.96 is also below cost.
+  const stopped = () => input({
+    lines: [line({ sku: 'APPS', description: 'Microsoft 365 Apps for Business', quantity: 1, unitCost: 10.08, costTotal: 10.08, vendorSuggestedUnitPrice: 9.96 })],
+    offeringMappings: [map('APPS', 9)],
+    offerings: [{ id: 9, manufacturer: 'Microsoft', name: 'Microsoft 365 Apps for Business', manufacturerProductId: null, unit: null, kind: 'recurring', notes: null }],
+    links: [link(3358, 9, 'MM', 'standardized')],
+    services: [{ id: 3358, name: 'Microsoft 365 Apps for Business [NCE] - Monthly', periodType: 2, unitCost: 8.37, unitPrice: 9.96 }],
+    contractServices: [{ id: 33, contractID: 1, serviceID: 3358, unitCost: 8.37, unitPrice: 9.96 }],
+    units: [], billed: [],
+  });
+  const plan = (o: Partial<Parameters<typeof buildContractPlan>[0]> = {}) => buildContractPlan({
+    rows: reconcile(stopped()).rows, include: ['cost', 'price', 'quantity', 'backbill'], effectiveDate: '2026-11-01',
+    contracts: new Map([[1, { contractName: 'Monthly - Managed services - 2026', companyID: 100, startDate: '2026-05-01', endDate: '2027-04-30', contractType: 7 }]]),
+    lastPostedThrough: new Map(), licenceContracts: new Map(), standardService: () => 3358, serviceName: () => 'Microsoft 365 Apps for Business [NCE] - Monthly', billingCode: () => 29683360,
+    backbillFrom: '2026-09-01', ...o,
+  }).rows;
+
+  test('the line counts as 0 units → short by 1, below cost', () => {
+    const r = reconcile(stopped()).rows[0]!;
+    expect(r).toMatchObject({ contractServiceId: 33, contractQuantity: 0, quantity: 1, currentPrice: 9.96, landedCost: 10.08 });
+    expect(r.exceptions).toEqual(expect.arrayContaining(['qty_short', 'below_cost']));
+    expect(r.reason).toMatch(/no billing period for this month/);
+  });
+
+  test('ONE adjustment restores the seat at the new price (never a second one putting the old price back); a one-time charge back-bills Sep–Oct', () => {
+    const rows = plan();
+    const adj = rows.filter((x) => x.entity === 'ContractServiceAdjustments');
+    expect(adj).toHaveLength(1);
+    expect(adj[0]).toMatchObject({ before: { units: 0 }, after: { contractServiceID: 33, effectiveDate: '2026-11-01', unitChange: 1, adjustedUnitPrice: 10.08 } });
+    expect(adj[0]!.before).not.toHaveProperty('unitPrice'); // an empty line has no current unit price to be stale against
+    expect(adj[0]!.label).toMatch(/^PRICE \+ QUANTITY/);
+    const bb = rows.find((x) => x.entity === 'ContractCharges')!;
+    expect(bb).toMatchObject({ action: 'create', blocked: null, after: { contractID: 1, contractServiceID: 33, chargeType: 1, datePurchased: '2026-10-31', unitQuantity: 2, unitPrice: 9.96, unitCost: 10.08, billingCodeID: 29683360, isBillableToCompany: true, name: 'Microsoft 365 Apps for Business [NCE] - Monthly — back-bill Sep 2026 – Oct 2026' } });
+    expect(plan({ backbillPrice: 'target' }).find((x) => x.entity === 'ContractCharges')!.after).toMatchObject({ unitPrice: 10.08 });
+  });
+
+  test('billing inside the window is noted (the charge covers only the shortfall); an inactive contract blocks', () => {
+    const noted = plan({ lastPostedFrom: new Map([[33, '2026-09-01']]) }).find((x) => x.entity === 'ContractCharges')!;
+    expect(noted.blocked).toBeNull();
+    expect(noted.reason).toMatch(/covers only the 1 missing unit/);
+    expect(plan({ contracts: new Map() }).find((x) => x.entity === 'ContractCharges')!.blocked).toMatch(/not active — reactivate it first/);
+  });
+
+  test('quantity alone (no price row) keeps the current price', () => {
+    const q = plan({ include: ['quantity'] }).find((x) => x.entity === 'ContractServiceAdjustments')!;
+    expect(q).toMatchObject({ after: { unitChange: 1, adjustedUnitPrice: 9.96 } });
+  });
+});
+
 /** A fake Autotask query over unit periods and lines. */
 function fakeQuery(t: { lines?: Array<Record<string, unknown>>; units: Array<Record<string, unknown>> }): QueryFn {
   return (async (entity: string, filters: Array<{ op: string; field: string; value: unknown }>) => {

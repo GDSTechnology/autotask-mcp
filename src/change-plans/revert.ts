@@ -65,6 +65,7 @@ export function buildRevertRows(plan: Plan, o: { effectiveDate: string; rowNos?:
       rows.push({ meta, action: 'update', entity: r.entity, targetId: r.targetId, label: `REVERT row ${r.rowNo}: ${r.label}`, before: r.after, after: back, reason: `Puts back the values plan ${plan.id} row ${r.rowNo} replaced. Stale (skipped) if they were changed again since.`, blocked: null });
       continue;
     }
+    if (r.action === 'create' && r.entity === 'ContractCharges') { skipped.push({ row: r.rowNo, why: `a one-time charge (#${String(r.result?.id ?? '?')}) — delete it in Autotask before it is billed, or credit it after` }); continue; }
     skipped.push({ row: r.rowNo, why: `no automatic undo for ${r.action} ${r.entity}` });
   }
   // Flip dependencies: if B depended on A, undoing A waits for undoing B.

@@ -46,7 +46,8 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
       unitsOn: (lineId, date, kind = 'service') => unitsOn(query, kind, lineId, date),
       get: byId,
       update: async (entity, id, fields) => { await http.update(entity, id, fields); },
-      create: (entity, fields) => http.create(entity, fields),
+      // A contract charge is created under its contract (POST /Contracts/{id}/Charges).
+      create: (entity, fields) => (entity === 'ContractCharges' ? http.childCreate('Contracts', Number(fields.contractID), 'Charges', fields) : http.create(entity, fields)),
       findExisting: async (entity, fields, snap, row) => {
         // A re-run must not create the same thing twice.
         if (entity === 'Services' && typeof fields.name === 'string') {
@@ -54,6 +55,10 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
         }
         // Adjustments can't be queried: "already done" = the line already shows the planned effect.
         if (ADJUSTMENTS[entity]) return adjustmentAlreadyApplied(query, { entity, after: fields, meta: row?.meta ?? null }, snap ?? null);
+        // A back-bill charge is unique by contract + name ("… — back-bill Sep 2026 – Oct 2026"): never charge it twice.
+        if (entity === 'ContractCharges' && fields.contractID != null && typeof fields.name === 'string') {
+          return (await http.query<{ id: number }>('ContractCharges', [{ op: 'eq', field: 'contractID', value: fields.contractID }, { op: 'eq', field: 'name', value: fields.name }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
+        }
         if (entity === 'ContractServices' && fields.contractID != null && fields.serviceID != null) {
           return (await http.query<{ id: number }>('ContractServices', [{ op: 'eq', field: 'contractID', value: fields.contractID }, { op: 'eq', field: 'serviceID', value: fields.serviceID }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
         }

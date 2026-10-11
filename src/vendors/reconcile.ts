@@ -106,11 +106,16 @@ export function contractCovers(c: Pick<ContractRow, 'status' | 'startDate' | 'en
   return (!s || s <= periodEnd) && (!e || e >= periodStart);
 }
 
+/** A line on a contract in effect with no unit period covering the month bills nothing this month. */
+const NO_UNITS = { units: 0, price: null, cost: null } as const;
+
 type OfferingRef = { offeringId: number; cadence: string; method: 'link' | 'name' };
 interface Cand {
   kind: 'service' | 'bundle'; lineId: number; contractID: number; serviceID: number; o: OfferingRef;
   cs: ContractServiceRow | null; cb: BundleLineRow | null; bundle: BundleRow | null;
   u: { units: number; price: number | null; cost: number | null } | null;
+  /** The line has no unit period for the month at all (ended, or never started) — it bills 0. */
+  noPeriod?: boolean;
 }
 
 export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<string, unknown> } {
@@ -153,7 +158,7 @@ export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<st
     const c = contracts.get(cs.contractID); if (!c) continue;
     const o = offeringOfService(cs.serviceID); if (!o) continue;
     if (!contractCovers(c, periodStart, periodEnd)) { if (c.status === 1) (outOfPeriod.get(c.companyID) ?? outOfPeriod.set(c.companyID, []).get(c.companyID)!).push({ contract: c, offeringId: o.offeringId }); continue; }
-    addCand(c.companyID, { kind: 'service', lineId: cs.id, contractID: c.id, serviceID: cs.serviceID, o, cs, cb: null, bundle: null, u: units.get(cs.id) ?? null });
+    addCand(c.companyID, { kind: 'service', lineId: cs.id, contractID: c.id, serviceID: cs.serviceID, o, cs, cb: null, bundle: null, u: units.get(cs.id) ?? NO_UNITS, noPeriod: !units.has(cs.id) });
   }
   for (const cb of i.bundleLines ?? []) {
     const c = contracts.get(cb.contractID); const b = bundles.get(cb.serviceBundleID);
@@ -162,7 +167,7 @@ export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<st
     for (const sid of b.serviceIds) {
       const o = offeringOfService(sid); if (!o) continue;
       if (!covers) { if (c.status === 1) (outOfPeriod.get(c.companyID) ?? outOfPeriod.set(c.companyID, []).get(c.companyID)!).push({ contract: c, offeringId: o.offeringId }); continue; }
-      addCand(c.companyID, { kind: 'bundle', lineId: cb.id, contractID: c.id, serviceID: sid, o, cs: null, cb, bundle: b, u: bundleUnits.get(cb.id) ?? null });
+      addCand(c.companyID, { kind: 'bundle', lineId: cb.id, contractID: c.id, serviceID: sid, o, cs: null, cb, bundle: b, u: bundleUnits.get(cb.id) ?? NO_UNITS, noPeriod: !bundleUnits.has(cb.id) });
     }
   }
 
@@ -282,6 +287,7 @@ export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<st
       const marginPct = effPrice && landed != null ? (effPrice - landed) / effPrice : null;
       if (policy.marginFloor && marginPct != null && marginPct < policy.marginFloor && !exc.includes('below_cost')) raise('review', 'margin_below_policy', `margin ${Math.round(marginPct * 100)}% is below the ${Math.round(policy.marginFloor * 100)}% floor`, 'review price');
       if (inBundle) why.push(`inside bundle ${x.bundle!.name} (bundle line #${x.lineId}) — priced as a whole on the bundle's own row`);
+      if (x.noPeriod) why.push('the line has no billing period for this month — it bills nothing (ended or not started)');
       if (!b) why.push('no billing item for this period yet — actual billing unverified');
       const conf: ReconRow['confidence'] = x.o.method === 'name' ? 'inferred' : !unitsKnown || !b?.posted ? 'unverified' : 'verified';
       push({

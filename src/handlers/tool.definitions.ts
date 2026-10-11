@@ -44,6 +44,64 @@ const CONTRACT_SHELL_PROPERTIES = {
 const CONTRACT_SHELL_REQUIRED = ['companyID', 'contractName', 'contractType', 'contractCategory', 'startDate', 'endDate'];
 
 export const TOOL_DEFINITIONS: McpTool[] = [
+  // Vendor purchasing & billing reconciliation (P0, read-only toward Autotask)
+  {
+    name: 'autotask_vendor_list_sources',
+    description: 'READ-ONLY. Vendor billing sources: the supported vendor adapters and file formats, every imported invoice (vendor, invoice number/date, lines, total, warnings, who imported it) and mapping coverage — vendor customers mapped to Autotask companies, vendor SKUs mapped to manufacturer offerings, Autotask services linked to offerings. Start here before a reconciliation. Needs the Postgres store (migration 0010).',
+    annotations: { title: 'Vendor billing sources', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { vendor: { type: 'string', description: 'Only this vendor (e.g. pax8)' } }, required: [] }
+  },
+  {
+    name: 'autotask_vendor_import_invoice',
+    description: 'Import a vendor billing file into the reconciliation store (Postgres only — nothing in Autotask changes). Accepts the Pax8 invoice CSV export (Pax8 → Billing → Invoices → export CSV: every line is kept — Microsoft and non-Microsoft products, prorations, arrears, minimum-commitment charges, surcharges, credits, NFR, zero-quantity rows — each classified by charge type and term MM / AM / AA / monthly / one-time) and the Pax8 company report (PSA admin → Mappings → Download company report: the vendor\'s own customer ↔ Autotask company crosswalk). Idempotent: the same file (SHA-256) is never imported twice. Verifies every line is accounted for: per-customer subtotals printed by the vendor vs the sum of the imported lines. Pass the file text in content.',
+    annotations: { title: 'Import vendor invoice / crosswalk', readOnlyHint: false, idempotentHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fileName: { type: 'string', description: 'Original file name (Pax8: csv-p<account>-<invoice>-<date>.csv — the invoice number comes from it)' },
+        content: { type: 'string', description: 'The file contents (CSV text). Max 10 MB.' },
+        contentBase64: { type: 'string', description: 'Alternative to content: base64 of the file' },
+        invoiceNumber: { type: 'string', description: 'Override when the file name does not carry it' }
+      },
+      required: ['fileName']
+    }
+  },
+  {
+    name: 'autotask_vendor_get_lines',
+    description: 'READ-ONLY. Imported vendor invoice lines with filters, plus totals by charge class, cadence and customer. Each line: vendor customer, subscription id, SKU, description, charge class (recurring / usage / one_time / proration / credit / minimum_commitment / vendor_fee / nfr_internal), cadence, unit, quantity, unit cost, total, the vendor\'s suggested price (reference only — never GDS revenue), service period, renewal, and the customer / offering mapping it resolves to (or "unmapped").',
+    annotations: { title: 'Vendor invoice lines', readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vendor: { type: 'string' }, invoiceDate: { type: 'string', description: 'YYYY-MM-DD (the invoice date)' }, documentId: { type: 'number' },
+        vendorCustomerId: { type: 'string' }, sku: { type: 'string' },
+        chargeClass: { type: 'string', description: 'Only this charge class' }, unmappedOnly: { type: 'boolean', description: 'Only lines whose customer or SKU is not mapped yet' },
+        limit: { type: 'number', description: 'Lines to return (default 200, max 5000; totals always cover all matching lines)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'autotask_reconcile_resolve_mapping',
+    description: 'Review and decide the durable identity mappings reconciliation runs on (stored in the MCP\'s Postgres; nothing in Autotask changes). kind: customers (vendor customer → Autotask company, or internal / ignore), offerings (vendor SKU → manufacturer offering — the PRODUCT, not the sales channel, so a distributor change is only a remap), catalog (Autotask Service → offering + the term it sells, MM / AM / AA / monthly / annual). action: propose (suggestions with confidence and reason — nothing saved; customers come from the vendor crosswalk first, then exact Autotask names; an unmatched one is shown, never guessed), list (current decisions), set (decide specific items), accept (save every current proposal at or above minConfidence — an explicit decision by the caller). Every change keeps the previous decision (versioned).',
+    annotations: { title: 'Resolve vendor mappings', readOnlyHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['customers', 'offerings', 'catalog'] },
+        action: { type: 'string', enum: ['propose', 'list', 'set', 'accept'] },
+        vendor: { type: 'string', description: 'Vendor (default pax8)' },
+        minConfidence: { type: 'string', enum: ['high', 'medium'], description: 'accept: lowest confidence to save (default high)' },
+        includeMapped: { type: 'boolean', description: 'propose: also re-propose already-decided items' },
+        items: {
+          type: 'array',
+          description: 'set: customers [{ vendorCustomerId, status: mapped|internal|ignore, autotaskCompanyId?, note? }]; offerings [{ sku, status: mapped|not_billable|ignore, offeringId? | offering: { manufacturer, name, unit?, kind? }, note? }]; catalog [{ autotaskId, offeringId, cadence, autotaskEntity? (default Services), note? }]',
+          items: { type: 'object', additionalProperties: true }
+        }
+      },
+      required: ['kind', 'action']
+    }
+  },
   // Connection testing
   {
     name: 'autotask_test_connection',
@@ -6172,6 +6230,10 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 ];
 
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
+  vendor_billing: {
+    description: 'Vendor purchasing & billing reconciliation (Pax8 first): import every invoice line, map vendor customers and SKUs to Autotask companies and manufacturer offerings',
+    tools: ['autotask_vendor_list_sources', 'autotask_vendor_import_invoice', 'autotask_vendor_get_lines', 'autotask_reconcile_resolve_mapping']
+  },
   utility: {
     description: 'Connection testing and field/picklist discovery',
     tools: ['autotask_test_connection', 'autotask_get_api_usage', 'autotask_get_actor_roster', 'autotask_get_operations', 'autotask_get_backpressure', 'autotask_shadow_status', 'autotask_shadow_query', 'autotask_shadow_aggregate', 'autotask_shadow_sync', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_get_picklists', 'autotask_resolve_picklist_value', 'autotask_resolve_record_reference', 'autotask_whoami']

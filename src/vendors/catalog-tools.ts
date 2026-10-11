@@ -9,8 +9,8 @@ import type { CallerContext } from '../types/context.js';
 import { VendorStore } from './store.js';
 import { PriceStore, perOf, pricesFromInvoices } from './prices.js';
 import { buildStandardizePlan, type AutotaskServiceRow } from './catalog-standard.js';
-import { PlanStore, parseRows, type Plan } from '../plans/store.js';
-import { executePlan, type EntityIO } from '../plans/execute.js';
+import { PlanStore, parseRows, type Plan } from '../change-plans/store.js';
+import { executePlan, type EntityIO } from '../change-plans/execute.js';
 
 type Result = { result: unknown; message: string };
 type H = (a: Record<string, any>, ctx: CallerContext) => Promise<Result>;

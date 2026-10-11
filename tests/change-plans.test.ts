@@ -4,8 +4,8 @@
 // per product + term, never deactivates an in-use service, never prices below
 // cost, and blocks what it can't price.
 
-import { parseRows, type Plan, type PlanRow } from '../src/plans/store';
-import { executePlan, type EntityIO } from '../src/plans/execute';
+import { parseRows, type Plan, type PlanRow } from '../src/change-plans/store';
+import { executePlan, type EntityIO } from '../src/change-plans/execute';
 import { buildStandardizePlan, standardService } from '../src/vendors/catalog-standard';
 
 describe('row selection', () => {

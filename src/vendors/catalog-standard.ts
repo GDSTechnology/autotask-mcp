@@ -13,7 +13,7 @@
 import { productKey, serviceCadence } from './offerings.js';
 import type { CatalogLink, Offering, OfferingMapping } from './store.js';
 import type { VendorPrice } from './prices.js';
-import type { PlanRowInput } from '../plans/store.js';
+import type { PlanRowInput } from '../change-plans/store.js';
 
 export type Term = 'MM' | 'AM' | 'AA' | 'monthly';
 

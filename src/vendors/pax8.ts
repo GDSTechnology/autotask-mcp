@@ -6,7 +6,7 @@
 // interpreted is reported as a warning on the document.
 
 import { parse } from 'csv-parse/sync';
-import type { Cadence, ChargeClass, VendorAdapter, VendorLine } from './types.js';
+import type { Cadence, ChargeClass, ParsedDocument, VendorAdapter, VendorLine } from './types.js';
 
 const num = (v: unknown): number | null => {
   const s = String(v ?? '').trim();
@@ -62,12 +62,19 @@ export const pax8Adapter: VendorAdapter = {
   parse(content, meta) {
     const rows = parse(content, { columns: true, bom: true, skip_empty_lines: true, relax_column_count: true, trim: false }) as Array<Record<string, string>>;
     const fm = pax8FileMeta(meta.fileName);
+    const doc = pax8RowsToDocument(rows, { account: fm.account, invoiceNumber: meta.invoiceNumber ?? fm.invoice, invoiceDate: fm.date });
+    if (rows.length && !('record_id' in rows[0]!)) doc.warnings.unshift('not the Pax8 invoice CSV layout (no record_id column)');
+    return doc;
+  },
+};
+
+/** Pax8 invoice rows (CSV columns, or API items mapped to them) → a normalized document. Every row becomes a line. */
+export function pax8RowsToDocument(rows: Array<Record<string, string>>, fm: { account: string | null; invoiceNumber: string | null; invoiceDate: string | null }): ParsedDocument {
     const warnings: string[] = [];
-    const invoiceDate = str(rows[0]?.invoice_date) ?? fm.date;
-    const invoiceNumber = meta.invoiceNumber ?? fm.invoice;
+    const invoiceDate = str(rows[0]?.invoice_date) ?? fm.invoiceDate;
+    const invoiceNumber = fm.invoiceNumber;
     const currency = str(rows[0]?.currency_code) ?? 'USD';
     if (!rows.length) warnings.push('the file has no rows');
-    if (rows.length && !('record_id' in rows[0]!)) warnings.push('not the Pax8 invoice CSV layout (no record_id column)');
     const seen = new Map<string, number>();
     const lines: VendorLine[] = rows.map((r, i) => {
       const { chargeClass, cadence, flags } = pax8Classify(r);
@@ -96,5 +103,4 @@ export const pax8Adapter: VendorAdapter = {
     });
     const lineTotal = Math.round(lines.reduce((s, l) => s + (l.costTotal ?? 0), 0) * 100) / 100;
     return { vendor: 'pax8', vendorAccountId: fm.account, invoiceNumber, invoiceDate, currency, lines, lineTotal, warnings };
-  },
-};
+}

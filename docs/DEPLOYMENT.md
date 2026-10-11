@@ -63,6 +63,8 @@ Do not assume a flag accepts `on` / `1` / `yes` — the accepted truthy value
 | `MCP_PERMISSIONS_ENABLED` | `true` **only** | off | Enforce role→risk permission intersection on mutating tools. Needs `AUTOTASK_ROLE_MAP`. |
 | `MCP_PG_ENABLED` | `true` **only** | off | Master switch for the PostgreSQL layer. Every `MCP_PG_*` capability flag below is inert unless this is on. |
 | `MCP_PG_AUDIT_ENABLED` | `true` **only** (and `MCP_PG_ENABLED=true`) | off | Persist audit records to Postgres in addition to the log. |
+| `PAX8_CLIENT_ID` / `PAX8_CLIENT_SECRET` | Pax8 Partner API credentials | empty = `autotask_vendor_sync` off | Optional. Enables Pax8 invoice and pricing sync (docs/VENDOR_BILLING.md). Needs `MCP_PG_ENABLED=true`. |
+| `PAX8_TOKEN_URL` / `PAX8_AUDIENCE` / `PAX8_API_URL` | URLs | `https://login.pax8.com/oauth/token`, `api://p8p.client`, `https://api.pax8.com/v1` | Override only if Pax8 changes them. |
 
 Note the inconsistency deliberately called out above: impersonation accepts
 several truthy spellings, but `LAZY_LOADING`, `MCP_PERMISSIONS_ENABLED`, and all

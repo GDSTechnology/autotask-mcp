@@ -4,6 +4,19 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-11
+
+- **`ContractServices.unitPrice` is READ-ONLY** (and `serviceID`, `quoteItemID`,
+  `internalCurrencyUnitPrice`). Only `unitCost`, `invoiceDescription` and
+  `internalDescription` are writable. Customer price and quantity changes go
+  through `ContractServiceAdjustments` (`adjustedUnitPrice`, `unitChange`,
+  `effectiveDate`); the per-period `ContractServiceUnits` row shows the result.
+- A vendor loss is only "confirmed" when a posted recurring BillingItem
+  (`billingItemType` 6) exists for the month; the contract price alone is a guess.
+- Contracts have no `createDate` field — asking for it in includeFields fails the query.
+- `.gitignore`'s `plans/` also ignores `src/plans/` — the change-plan engine lives
+  in `src/change-plans/` for that reason. Check `git status` shows new dirs.
+
 ## Learnings - 2026-10-09
 
 - **`PUT` replaces the whole record; fields left out are BLANKED** (confirmed

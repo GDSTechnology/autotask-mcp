@@ -29,22 +29,53 @@ export function planView(p: Plan, opts: { rows?: 'all' | 'actionable' } = {}): R
   };
 }
 
-export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | null): Array<[string, H]> {
-  const stores = () => { const p = getPool(); return p ? { vendor: new VendorStore(p), prices: new PriceStore(p), plans: new PlanStore(p) } : null; };
-
-  const io = async (): Promise<EntityIO> => {
+/** Autotask reads / writes the change-plan executor and the drift check use. */
+export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { unitsOn(contractServiceId: number, date: string): Promise<{ units: number; unitPrice: number | null } | null> }> {
     const http = await s.httpClient();
+    const byId = async (entity: string, id: number) => {
+      const got = await http.get<Record<string, unknown>>(entity, id).catch(() => null);
+      if (got) return got;
+      // Some entities (ContractServiceAdjustments) are query-only.
+      return (await http.query<Record<string, unknown>>(entity, [{ op: 'eq', field: 'id', value: id }], { maxRecords: 1, noCache: true }))[0] ?? null;
+    };
+    const unitsOn = async (contractServiceId: number, date: string) => {
+      const u = (await http.query<{ units: number; price: number | null }>('ContractServiceUnits', [{ op: 'eq', field: 'contractServiceID', value: contractServiceId }, { op: 'lte', field: 'startDate', value: `${date}T00:00:00` }, { op: 'gte', field: 'endDate', value: `${date}T00:00:00` }], { maxRecords: 1, includeFields: ['id', 'units', 'price'], noCache: true }))[0];
+      return u ? { units: Number(u.units ?? 0), unitPrice: u.units ? Number(u.price ?? 0) / Number(u.units) : null } : null;
+    };
     return {
-      get: (entity, id) => http.get<Record<string, unknown>>(entity, id) as Promise<Record<string, unknown> | null>,
+      unitsOn,
+      get: byId,
       update: async (entity, id, fields) => { await http.update(entity, id, fields); },
       create: (entity, fields) => http.create(entity, fields),
       findExisting: async (entity, fields) => {
-        if (entity !== 'Services' || typeof fields.name !== 'string') return null;
-        const hit = await http.query<{ id: number }>('Services', [{ op: 'eq', field: 'name', value: fields.name }], { maxRecords: 2, includeFields: ['id'], noCache: true });
-        return hit[0]?.id ?? null;
+        // A re-run must not create the same thing twice.
+        if (entity === 'Services' && typeof fields.name === 'string') {
+          return (await http.query<{ id: number }>('Services', [{ op: 'eq', field: 'name', value: fields.name }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
+        }
+        if (entity === 'ContractServiceAdjustments' && fields.contractServiceID != null && fields.effectiveDate) {
+          const hits = await http.query<{ id: number; unitChange: number; adjustedUnitPrice: number | null }>('ContractServiceAdjustments', [{ op: 'eq', field: 'contractServiceID', value: fields.contractServiceID }, { op: 'eq', field: 'effectiveDate', value: `${String(fields.effectiveDate).slice(0, 10)}T00:00:00` }], { maxRecords: 20, noCache: true });
+          return hits.find((h) => Number(h.unitChange ?? 0) === Number(fields.unitChange ?? 0) && (fields.adjustedUnitPrice == null || Math.abs(Number(h.adjustedUnitPrice ?? 0) - Number(fields.adjustedUnitPrice)) < 1e-4))?.id ?? null;
+        }
+        if (entity === 'ContractServices' && fields.contractID != null && fields.serviceID != null) {
+          return (await http.query<{ id: number }>('ContractServices', [{ op: 'eq', field: 'contractID', value: fields.contractID }, { op: 'eq', field: 'serviceID', value: fields.serviceID }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
+        }
+        return null;
+      },
+      snapshot: async (row) => {
+        // A price / quantity adjustment depends on the line's CURRENT price and units (the period before it takes effect).
+        if (row.entity !== 'ContractServiceAdjustments') return null;
+        const a = row.after as { contractServiceID?: number; effectiveDate?: string };
+        if (!a?.contractServiceID || !a.effectiveDate) return null;
+        const d = new Date(`${a.effectiveDate.slice(0, 10)}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1);
+        const u = await unitsOn(a.contractServiceID, d.toISOString().slice(0, 10));
+        return u ? { unitPrice: u.unitPrice == null ? null : Math.round(u.unitPrice * 10000) / 10000, units: u.units } : null;
       },
     };
-  };
+}
+
+export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | null): Array<[string, H]> {
+  const stores = () => { const p = getPool(); return p ? { vendor: new VendorStore(p), prices: new PriceStore(p), plans: new PlanStore(p) } : null; };
+  const io = () => createEntityIO(s);
 
   return [
     ['autotask_vendor_prices', async (a, ctx) => {

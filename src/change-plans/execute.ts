@@ -14,6 +14,12 @@ export interface EntityIO {
   create(entity: string, fields: Record<string, unknown>): Promise<number>;
   /** For creates: an existing record that already IS this row (e.g. same Service name) — makes a re-run safe. */
   findExisting(entity: string, fields: Record<string, unknown>): Promise<number | null>;
+  /**
+   * For a create that depends on another record's state (e.g. a contract price
+   * adjustment depends on the contract service's current price / units): the
+   * current values of the row's `before` fields, so a changed target is STALE.
+   */
+  snapshot?(row: PlanRow): Promise<Record<string, unknown> | null>;
 }
 
 export interface ExecuteReport {
@@ -21,9 +27,12 @@ export interface ExecuteReport {
   stoppedBy?: string; rows: Array<{ row: number; label: string; status: string; detail?: string; id?: number | null }>;
 }
 
+const DATE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/;
 const same = (a: unknown, b: unknown): boolean => {
   const na = a === '' || a === undefined ? null : a, nb = b === '' || b === undefined ? null : b;
   if (na === null || nb === null) return na === nb;
+  // "2026-11-01" and "2026-11-01T00:00:00Z" are the same date
+  if (typeof na === 'string' && typeof nb === 'string' && DATE.test(na) && DATE.test(nb)) return na.slice(0, 10) === nb.slice(0, 10);
   if (typeof na === 'number' || typeof nb === 'number') return Math.abs(Number(na) - Number(nb)) < 1e-6;
   if (typeof na === 'boolean' || typeof nb === 'boolean') return String(na) === String(nb);
   return String(na).trim() === String(nb).trim();
@@ -43,6 +52,11 @@ export async function executePlan(plans: PlanStore, plan: Plan, io: EntityIO, o:
     };
     try {
       if (r.action === 'create') {
+        if (r.before && io.snapshot) {
+          const cur = await io.snapshot(r);
+          const moved = cur ? Object.keys(r.before).filter((k) => !same(cur[k], r.before![k])) : ['(target not found)'];
+          if (moved.length) { await done('stale', { changedSincePlan: moved, current: cur }, `changed since the plan was built (${moved.join(', ')}) — rebuild the plan`); continue; }
+        }
         const existing = await io.findExisting(r.entity, r.after ?? {});
         if (existing != null) { await done('skipped', { existingId: existing }, `already exists as ${existing}`, existing); if (o.onApplied) await o.onApplied(r, existing); continue; }
         const id = await io.create(r.entity, r.after ?? {});

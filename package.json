@@ -46,6 +46,7 @@
     "@modelcontextprotocol/node": "^2.0.0-beta.5",
     "@modelcontextprotocol/server": "^2.0.0-beta.5",
     "csv-parse": "^7.0.3",
+    "exceljs": "^4.4.0",
     "pg": "^8.23.0",
     "winston": "^3.11.0",
     "zod": "^4.4.3"

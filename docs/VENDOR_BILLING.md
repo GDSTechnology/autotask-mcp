@@ -87,3 +87,52 @@ The goal is **one Autotask Service per product and term**, named to one standard
 **Renames** (e.g. Dropsuite → NinjaOne SaaS Backup) work the same way. Link the old services to the new offering (`resolve_mapping kind=catalog action=set`), and the plan renames them to the approved name.
 
 Autotask can't change a service's period (monthly / yearly) after creation, so an AA service must be created as Yearly. A monthly-billed service is never renamed into an AA one.
+
+## Reconciling vendor lines to customer contracts
+
+This needs migration `0012_reconciliation.sql`. Every step below reads Autotask only; nothing changes until a person approves the rows of a change plan.
+
+1. `autotask_reconcile_vendor_to_autotask invoiceNumber=…` matches each vendor line to the customer's contract service for the same product and term, across **all** of that customer's active contracts. Lines are matched by the manufacturer offering, never the sales channel.
+   - **Cost Should Be** is the vendor's landed unit cost (quantity-weighted, plus processing fees when the policy allocates them).
+   - **Price Should Be** comes from the pricing policy.
+   - **Billed** is the posted recurring BillingItem for that month. A loss counts as *confirmed* only when an invoice was posted; otherwise it is *unverified*.
+   - The run is saved, and a run with critical rows sends the `reconcile.critical` notification.
+2. Exceptions, by severity:
+
+   | Severity | Exceptions |
+   |---|---|
+   | critical | `below_cost`, `not_billed` |
+   | high | `qty_short`, `term_mismatch`, `cost_stale`, `inactive_company` |
+   | review | `below_target`, `margin_below_policy`, `negotiated`, `qty_over`, `billed_on_multiple_lines`, `unmapped_customer`, `unmapped_sku`, `proration_credit` |
+   | info | `not_customer_billable` (internal / NFR) |
+
+   `autotask_reconcile_get_exceptions` lists them and can update one (status `open` | `acknowledged` | `resolved` | `accepted`, plus an owner and a note). Each update is kept in the exception's history. An exception that comes back in a later run reopens.
+3. `autotask_vendor_pricing_policy` sets the policy and is versioned. Policy can be set globally, per manufacturer or per offering:
+   - **Modes:** `vendor_suggested`, `margin`, `markup`.
+   - **Margin floor:** the lowest margin allowed.
+   - **Fees:** `overhead` or `allocate` (allocated fees are spread into the landed cost).
+   - **Negotiated prices:** `set_negotiated` records one per customer. A negotiated price always wins and is never changed by a plan.
+   - Price Should Be is never below cost.
+4. `autotask_reconcile_export_workbook` returns the Excel workbook (`contentBase64`). Its sheets are Executive Summary, Exceptions, All Vendor Lines, Customer Contracts, Unmatched Internal NFR, Approved Changes, Execution Audit and Pricing Policy.
+5. `autotask_pricing_build_change_plan` builds a frozen contract plan from the run. The effective date defaults to the 1st of next month. Then use `autotask_change_plan_review` and `autotask_change_plan_execute`, the same as for the catalog. Row types:
+   - **Cost:** updates `ContractServices.unitCost`.
+   - **Price:** creates a `ContractServiceAdjustments` row with the new unit price. `ContractServices.unitPrice` is read-only in the API.
+   - **Quantity:** creates an adjustment with the unit change.
+   - **Missing line:** adds the contract service.
+   - **Blocked rows:**
+     - a negotiated price;
+     - the effective date is outside the contract dates;
+     - the period has already been invoiced;
+     - no standard service exists yet (run the catalog plan first);
+     - the customer has no contract to add it to, or more than one (pass `contractChoices`).
+   - **Term mismatches** are information only: a person changes the term.
+6. `autotask_reconcile_check_sync_drift` re-reads what an executed plan wrote. If something changed it back (for example the Pax8 PSA sync), it records the drift and sends the `sync.drift` notification.
+
+## Pax8 API (optional)
+
+`autotask_vendor_sync` is off until the Pax8 API credentials are set. To set them up, generate an API key in Pax8 under Integrations → Credentials, then set `PAX8_CLIENT_ID` and `PAX8_CLIENT_SECRET` in the server env. The tool then supports three actions:
+- `what=invoices` imports invoices through the same parser as the CSV export.
+- `what=pricing` records the cost and suggested price for every mapped SKU and term.
+- `what=status` shows the configuration.
+
+The CSV export path keeps working without credentials.

@@ -147,6 +147,12 @@ export class VendorStore {
     return { id: Number(x.id), manufacturer: x.manufacturer, name: x.name, manufacturerProductId: x.manufacturer_product_id, unit: x.unit, kind: x.kind, notes: x.notes };
   }
 
+  /** Record the manufacturer's own product id (e.g. from Pax8's vendorSku) on an offering — only when not set yet. */
+  async setManufacturerProductId(offeringId: number, productId: string): Promise<boolean> {
+    const r = await this.pool.query('UPDATE canonical_offering SET manufacturer_product_id = $2 WHERE id = $1 AND manufacturer_product_id IS NULL', [offeringId, productId]);
+    return (r.rowCount ?? 0) > 0;
+  }
+
   async offeringMappings(vendor?: string): Promise<OfferingMapping[]> {
     const r = await this.pool.query(`SELECT * FROM vendor_offering_mapping WHERE superseded_at IS NULL ${vendor ? 'AND vendor = $1' : ''} ORDER BY sku`, vendor ? [vendor] : []);
     return r.rows.map((x) => ({ vendor: x.vendor, sku: x.sku, status: x.status, offeringId: n(x.offering_id), method: x.method, confidence: x.confidence, note: x.note, decidedBy: x.decided_by, decidedAt: iso(x.decided_at)! }));

@@ -47,7 +47,10 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
       get: byId,
       update: async (entity, id, fields) => { await http.update(entity, id, fields); },
       // A contract charge is created under its contract (POST /Contracts/{id}/Charges).
-      create: (entity, fields) => (entity === 'ContractCharges' ? http.childCreate('Contracts', Number(fields.contractID), 'Charges', fields) : http.create(entity, fields)),
+      // An adjustment's create answers without an itemId (verified live): it is verified by its effect, so 0 = "no id".
+      create: async (entity, fields) => (entity === 'ContractCharges' ? http.childCreate('Contracts', Number(fields.contractID), 'Charges', fields)
+        : ADJUSTMENTS[entity] ? (await http.createWithoutId(entity, fields)).id ?? 0
+        : http.create(entity, fields)),
       findExisting: async (entity, fields, snap, row) => {
         // A re-run must not create the same thing twice.
         if (entity === 'Services' && typeof fields.name === 'string') {

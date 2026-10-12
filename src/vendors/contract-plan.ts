@@ -16,7 +16,7 @@
 //   end line         → units to 0 on a line the vendor no longer charges for
 // Defaults are prospective: effective the 1st of next month. A row is blocked
 // when the effective date is outside the contract, the period is already
-// invoiced, the price is negotiated, or the target contract is ambiguous.
+// invoiced, or the target contract is ambiguous. A negotiated customer price is the target itself.
 // Vendor cost going up NEVER raises a customer price by itself — the price row
 // is a separate proposal a person approves.
 
@@ -163,20 +163,21 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
     const qtyWanted = want('quantity') && !termMoved && r.primary && !!delta && r.contractId != null && (r.exceptions.includes('qty_short') || r.exceptions.includes('qty_over'));
     const lineChange = serviceLine ? (delta > 0 ? delta : -Math.min(r.contractQuantity ?? 0, -delta)) : 0;
 
-    // Price: below landed cost / target. Never when negotiated; never a decrease.
+    // Price: below landed cost / target, or not yet at the customer's negotiated price (the target then IS
+    // the negotiated price — policy never overrides it). Never a decrease.
     // On a line whose quantity changes too, ONE adjustment carries both — two adjustments on the same
     // line and date would leave whichever price came last.
-    const priceIssue = r.exceptions.some((e) => e === 'below_cost' || e === 'below_target' || e === 'margin_below_policy');
+    const priceIssue = r.exceptions.some((e) => e === 'below_cost' || e === 'below_target' || e === 'margin_below_policy' || e === 'negotiated');
     let quantityDone = false;
     if (!termMoved && want('price') && priceIssue && r.priceShouldBe != null && r.currentPrice != null && r.priceShouldBe > r.currentPrice + 0.005 && (serviceLine || isBundlePriceRow(r))) {
       const pct = r.currentPrice > 0 ? Math.round(((r.priceShouldBe - r.currentPrice) / r.currentPrice) * 1000) / 10 : null;
       const bundle = isBundlePriceRow(r);
-      const blocked = r.exceptions.includes('negotiated') ? 'a negotiated price applies — change it in the pricing policy first' : dateBlock(bundle ? r.contractServiceBundleId : r.contractServiceId, r.contractId, bundle);
+      const blocked = dateBlock(bundle ? r.contractServiceBundleId : r.contractServiceId, r.contractId, bundle);
       const withQty = !bundle && qtyWanted && lineChange !== 0;
       if (withQty) { quantityDone = true; sum.quantity++; }
       push('price', {
         meta, action: 'create', entity: bundle ? 'ContractServiceBundleAdjustments' : 'ContractServiceAdjustments', targetId: null,
-        label: `PRICE${withQty ? ' + QUANTITY' : ''} ${where}: ${r.currentPrice} → ${r.priceShouldBe} per ${r.basis}${pct != null ? ` (+${pct}%)` : ''}${withQty ? `, units ${r.contractQuantity} → ${r4((r.contractQuantity ?? 0) + lineChange)}` : ''} from ${i.effectiveDate} — customer price increase`,
+        label: `PRICE${withQty ? ' + QUANTITY' : ''} ${where}: ${r.currentPrice} → ${r.priceShouldBe} per ${r.basis}${pct != null ? ` (+${pct}%)` : ''}${withQty ? `, units ${r.contractQuantity} → ${r4((r.contractQuantity ?? 0) + lineChange)}` : ''} from ${i.effectiveDate} — customer price increase${r.exceptions.includes('negotiated') ? ' to the negotiated price' : ''}`,
         before: bundle ? { unitPrice: nativeOf(r, r.currentPrice), units: r.contractQuantity } : lineBefore(),
         after: bundle
           ? { contractID: r.contractId, contractServiceBundleID: r.contractServiceBundleId, serviceBundleID: r.serviceBundleId, effectiveDate: i.effectiveDate, unitChange: 0, adjustedUnitPrice: nativeOf(r, r.priceShouldBe) }

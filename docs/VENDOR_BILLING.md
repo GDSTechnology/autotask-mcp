@@ -114,7 +114,7 @@ This needs migration `0012_reconciliation.sql`. Every step below reads Autotask 
    - **Modes:** `vendor_suggested`, `margin`, `markup`.
    - **Margin floor:** the lowest margin allowed. Bundles use the global floor.
    - **Fees:** `overhead` or `allocate` (allocated fees are spread into the landed cost).
-   - **Negotiated prices:** `set_negotiated` records one per customer. A negotiated price always wins and is never changed by a plan.
+   - **Negotiated prices:** `set_negotiated` records one per customer. A negotiated price always wins: it becomes the target, and a plan moves billing up to it, never past it or away from it.
    - Price Should Be is never below cost.
 4. `autotask_reconcile_export_workbook` returns the Excel workbook (`contentBase64`). Its sheets are Executive Summary, Exceptions, All Vendor Lines, Customer Contracts, Unmatched Internal NFR, Approved Changes, Execution Audit and Pricing Policy.
 5. `autotask_pricing_build_change_plan` builds a frozen contract plan from the run. The effective date defaults to the 1st of next month; earlier months are never back-billed. Then use `autotask_change_plan_review` and `autotask_change_plan_execute`, the same as for the catalog. Row kinds (`include`):
@@ -125,7 +125,6 @@ This needs migration `0012_reconciliation.sql`. Every step below reads Autotask 
    - **term:** a line on a different term than the vendor sells moves to the standard service for the vendor's term. This takes two rows: add the new line, then end the old one. The second row runs only after the first is in. The move changes the customer's commitment, so agree it with them first.
    - **end_line:** sets units to 0 on a `not_purchased` line. Approve it only once you know the subscription was cancelled.
    - **Blocked rows:**
-     - a negotiated price;
      - the contract isn't a Recurring Service contract in effect on the effective date (renew it first);
      - the period has already been invoiced;
      - no standard service exists yet (run the catalog plan first);

@@ -119,11 +119,13 @@ describe('contract change plan', () => {
     expect(price.label).toMatch(/customer price increase/);
   });
 
-  test('blocked: already invoiced, outside the contract, negotiated', () => {
+  test('blocked: already invoiced, outside the contract; a negotiated price is moved TO, never blocked', () => {
     expect(buildContractPlan({ ...base, include: ['price'], lastPostedThrough: new Map([[3482, '2026-11-01T00:00:00Z']]) }).rows[0]!.blocked).toMatch(/already invoiced/);
     expect(buildContractPlan({ ...base, include: ['price'], effectiveDate: '2028-09-01' }).rows[0]!.blocked).toMatch(/after the contract ends/);
     const neg = rows.map((r) => ({ ...r, exceptions: [...r.exceptions, 'negotiated'] }));
-    expect(buildContractPlan({ ...base, rows: neg, include: ['price'] }).rows[0]!.blocked).toMatch(/negotiated/);
+    const n = buildContractPlan({ ...base, rows: neg, include: ['price'] }).rows[0]!;
+    expect(n.blocked).toBeNull();
+    expect(n.label).toMatch(/to the negotiated price/);
   });
 
   test('a yearly service is written in per-year amounts', () => {

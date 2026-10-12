@@ -1020,6 +1020,19 @@ export class AutotaskHttpClient {
   }
 
   /**
+   * POST /{Entity} for entities whose create answers 2xx WITHOUT an itemId —
+   * ContractServiceAdjustments / ContractServiceBundleAdjustments (verified live
+   * 2026-10-11: the adjustment is applied, the response carries no id; nothing on
+   * them is queryable either). Returns the id when there is one, else null; the
+   * caller verifies the write by its effect. Errors still throw.
+   */
+  async createWithoutId(entity: string, body: any): Promise<{ id: number | null; response: unknown }> {
+    const res = await this.request<{ itemId?: number | null; item?: { id?: number }; id?: number }>('POST', `/${entity}`, body, false, { allowEmptyBody: true });
+    const id = res?.itemId ?? res?.item?.id ?? res?.id;
+    return { id: typeof id === 'number' ? id : null, response: res ?? null };
+  }
+
+  /**
    * PATCH /{Entity} with body `{id, ...fields}`. This is the Autotask update
    * pattern — there is NO PATCH /{Entity}/{id} route (the SDK's default
    * generates one and gets 405 Method Not Allowed for every update).

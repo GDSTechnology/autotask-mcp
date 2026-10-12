@@ -53,10 +53,10 @@ export interface ContractPlanInput {
   /** Back-bill from this month (YYYY-MM-01) up to the effective date: a one-time charge for the units the vendor charged but the customer was not billed. */
   backbillFrom?: string;
   /** Price the back-bill at the contract price (default — what the customer agreed) or the target price. */
-  backbillPrice?: 'contract' | 'target';
+  backbillPrice?: 'contract' | 'target' | number;
   /** Latest billing item per contract service on / after backbillFrom (billing inside the window means those months need a look first). */
   lastPostedFrom?: Map<number, string>;
-  /** A service's billing code (work type), for the charge. */
+  /** The MATERIAL COST billing code for a back-bill charge of this service (a contract charge refuses a recurring-service code). */
   billingCode?: (serviceId: number) => number | null;
 }
 
@@ -245,7 +245,7 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
       const notBilled = r.exceptions.includes('not_billed');
       const contractId = notBilled ? (i.contractChoices?.[r.exceptionKey] ?? ((i.licenceContracts.get(r.autotaskCompanyId ?? -1) ?? []).length === 1 ? i.licenceContracts.get(r.autotaskCompanyId!)![0]! : null)) : r.contractId;
       const serviceId = notBilled ? (r.offeringId != null ? i.standardService(r.offeringId, r.cadence) : null) : r.serviceId;
-      const price = i.backbillPrice === 'target' ? r.priceShouldBe : r.currentPrice ?? r.priceShouldBe;
+      const price = typeof i.backbillPrice === 'number' ? i.backbillPrice : i.backbillPrice === 'target' ? r.priceShouldBe : r.currentPrice ?? r.priceShouldBe;
       const code = serviceId != null ? i.billingCode?.(serviceId) ?? null : null;
       const last = new Date(`${i.effectiveDate}T00:00:00Z`); last.setUTCDate(last.getUTCDate() - 1);
       const lastDay = last.toISOString().slice(0, 10);
@@ -256,14 +256,14 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
           : r.basis === 'year' ? 'billed yearly — back-bill an annual term by hand'
           : serviceId == null ? `no standard ${r.cadence} service for ${r.offering} — run the catalog plan first` : price == null ? 'no price to back-bill at' : contractId == null ? 'choose the contract to charge (contractChoices)'
           : !i.contracts.has(contractId) ? `contract ${contractId} is not active — reactivate it first`
-          : code == null ? 'the service has no billing code' : null;
+          : code == null ? 'no material cost code for the charge — pass backbillBillingCodeId (a BillingCodes id with useType 4, e.g. Software)' : null;
         const qty = r4(missing * Math.max(months, 0));
         push('backbill', {
           meta, action: 'create', entity: 'ContractCharges', targetId: null,
           label: `BACK-BILL ${r.customerName} / ${contractId != null ? i.contracts.get(contractId)?.contractName ?? contractId : '(choose a contract)'}: ${missing} × ${serviceId != null ? nameOf(serviceId) : r.offering} for ${window} (${qty} × ${price ?? '?'} = ${price != null ? r4(qty * price) : '?'}) — one-time charge`,
           before: null,
           after: { contractID: contractId, ...(!notBilled && r.contractServiceId != null ? { contractServiceID: r.contractServiceId } : {}), name: `${serviceId != null ? nameOf(serviceId) : r.offering ?? 'Service'} — back-bill ${window}`.slice(0, 100), description: `${missing} unit(s) × ${months} month(s) (${window}) charged by ${r.vendor} but not billed. ${r.sourceInvoice}.`.slice(0, 2000), chargeType: 1, datePurchased: lastDay, unitQuantity: qty, unitPrice: price, ...(r.landedCost != null ? { unitCost: r4(r.landedCost) } : {}), billingCodeID: code, isBillableToCompany: true },
-          reason: `The vendor charged ${r.quantity} this month and the customer was billed ${notBilled ? 'none' : r.contractQuantityTotal ?? r.contractQuantity}. Assumes the same shortfall for each month from ${i.backbillFrom} — check against the vendor invoices for those months. Priced at the ${i.backbillPrice === 'target' ? 'target' : 'contract'} price. The charge bills at the next Approve & Post.${posted && posted.slice(0, 10) >= i.backbillFrom ? ` Billing was posted on this line on ${posted.slice(0, 10)} (inside the window) — the charge covers only the ${missing} missing unit(s) a month; check those invoices showed the lower quantity.` : ''}`,
+          reason: `The vendor charged ${r.quantity} this month and the customer was billed ${notBilled ? 'none' : r.contractQuantityTotal ?? r.contractQuantity}. Assumes the same shortfall for each month from ${i.backbillFrom} — check against the vendor invoices for those months. Priced at ${typeof i.backbillPrice === 'number' ? `${i.backbillPrice} (given)` : `the ${i.backbillPrice === 'target' ? 'target' : 'contract'} price`}. The charge bills at the next Approve & Post.${posted && posted.slice(0, 10) >= i.backbillFrom ? ` Billing was posted on this line on ${posted.slice(0, 10)} (inside the window) — the charge covers only the ${missing} missing unit(s) a month; check those invoices showed the lower quantity.` : ''}`,
           blocked,
         });
       }

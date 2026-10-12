@@ -154,14 +154,32 @@ export function reconToolHandlers(s: AutotaskService, getPool: () => Pool | null
       const stdIds = [...new Set(rows.filter((r) => r.offeringId != null).map((r) => standard(r.offeringId!, r.cadence)).filter((x): x is number => x != null))];
       const svcRows = await inChunks<{ id: number; name: string; billingCodeID: number | null }>(io.query, 'Services', 'id', [...stdIds, ...rows.map((r) => r.serviceId).filter((x): x is number => x != null)], [], ['id', 'name', 'billingCodeID']);
       const names = new Map(svcRows.map((x) => [Number(x.id), String(x.name)]));
-      const codes = new Map(svcRows.map((x) => [Number(x.id), x.billingCodeID == null ? null : Number(x.billingCodeID)]));
+      // A contract charge needs a MATERIAL COST code (BillingCodes.useType 4) — a service's recurring code (useType 5)
+      // is refused ("billingCodeID is not a material cost code"). Use backbillBillingCodeId, else the active
+      // material code with the same tax category as the service's code, preferring one named like "Software".
+      const serviceCode = new Map(svcRows.map((x) => [Number(x.id), x.billingCodeID == null ? null : Number(x.billingCodeID)]));
+      const codes = new Map<number, number | null>();
+      if (a.backbillFrom) {
+        const override = a.backbillBillingCodeId != null ? Number(a.backbillBillingCodeId) : null;
+        const all = await io.query<{ id: number; name: string; useType: number; isActive: boolean; taxCategoryID: number | null }>('BillingCodes', [{ op: 'gte', field: 'id', value: 0 }], { maxRecords: 2000, includeFields: ['id', 'name', 'useType', 'isActive', 'taxCategoryID'] });
+        const byId = new Map(all.map((c) => [Number(c.id), c]));
+        const material = all.filter((c) => Number(c.useType) === 4 && c.isActive);
+        for (const [sid, code] of serviceCode) {
+          if (override != null) { codes.set(sid, override); continue; }
+          const own = code != null ? byId.get(code) : undefined;
+          if (own && Number(own.useType) === 4) { codes.set(sid, code); continue; }
+          const sameTax = material.filter((c) => (c.taxCategoryID ?? null) === (own?.taxCategoryID ?? null));
+          const pick = sameTax.find((c) => /software/i.test(c.name)) ?? (sameTax.length === 1 ? sameTax[0] : undefined);
+          codes.set(sid, pick ? Number(pick.id) : null);
+        }
+      }
       // Back-bill: from a month (YYYY-MM or YYYY-MM-DD → the 1st) up to the effective date.
       const backbillFrom = a.backbillFrom ? `${String(a.backbillFrom).slice(0, 7)}-01` : undefined;
       if (backbillFrom && !/^\d{4}-\d{2}-01$/.test(backbillFrom)) return { result: { status: 'invalid_value', field: 'backbillFrom' }, message: 'backbillFrom: YYYY-MM (the first month to back-bill).' };
       const inWindow = backbillFrom ? (await lastPostedFrom(io.query, rows.map((r) => r.contractServiceId).filter((x): x is number => x != null), [], backbillFrom)).service : undefined;
       const rowNos = Array.isArray(a.rows) ? a.rows.map(Number) : undefined;
       const plan = buildContractPlan({ rows, include, effectiveDate, contracts: cc.contracts, lastPostedThrough: posted.service, lastPostedBundle: posted.bundle, licenceContracts: licence, standardService: standard, serviceName: (id) => names.get(id) ?? null, billingCode: (id) => codes.get(id) ?? null, contractLines: cc.contractLines,
-        ...(backbillFrom ? { backbillFrom, backbillPrice: a.backbillPrice === 'target' ? 'target' as const : 'contract' as const, ...(inWindow ? { lastPostedFrom: inWindow } : {}) } : {}),
+        ...(backbillFrom ? { backbillFrom, backbillPrice: typeof a.backbillPrice === 'number' ? a.backbillPrice : a.backbillPrice === 'target' ? 'target' as const : 'contract' as const, ...(inWindow ? { lastPostedFrom: inWindow } : {}) } : {}),
         ...(rowNos ? { rowNos } : {}), ...(a.contractChoices && typeof a.contractChoices === 'object' ? { contractChoices: a.contractChoices } : {}) });
       if (!plan.rows.length) return { result: { summary: plan.summary }, message: 'Nothing to change for the selected rows.' };
       const saved = await st.plans.create({ kind: 'contract_pricing', title: `Contract changes from ${run.vendor} ${run.invoiceNumber ?? ''} (effective ${effectiveDate})`, params: { runId: run.id, include, effectiveDate, summary: plan.summary }, rows: plan.rows, by: who(ctx) });

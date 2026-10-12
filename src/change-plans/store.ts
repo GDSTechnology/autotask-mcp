@@ -92,7 +92,8 @@ export class PlanStore {
       if (!r) { refused.push({ row: n, why: 'no such row' }); continue; }
       if (r.blocked) { refused.push({ row: n, why: `blocked: ${r.blocked}` }); continue; }
       if (r.action === 'info') { refused.push({ row: n, why: 'information only' }); continue; }
-      if (!['pending', 'approved', 'excluded'].includes(r.status)) { refused.push({ row: n, why: `already ${r.status}` }); continue; }
+      // A failed row can be approved again: a re-run first checks whether the write is already in place.
+      if (!['pending', 'approved', 'excluded', 'failed'].includes(r.status)) { refused.push({ row: n, why: `already ${r.status}` }); continue; }
       await this.pool.query(`UPDATE change_plan_row SET status = $3, approved_by = $4, approved_at = CASE WHEN $3 = 'approved' THEN now() ELSE NULL END WHERE plan_id = $1 AND row_no = $2`, [id, n, approve ? 'approved' : 'excluded', by]);
       changed.push(n);
     }

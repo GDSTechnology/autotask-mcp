@@ -4,6 +4,20 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-11 (first live contract writes)
+
+- **Creating a `ContractServiceAdjustments` answers 2xx WITHOUT an itemId** — the
+  adjustment IS applied. `http.create` threw "response did not include an
+  itemId", so the row was marked failed after writing. Adjustments go through
+  `http.createWithoutId` and are verified by effect. The adjustment also set the
+  line's `unitPrice` / `unitCost` (ContractServices) to the adjusted values.
+- **`ContractCharges` need a MATERIAL COST billing code** (BillingCodes.useType 4);
+  a service's recurring code (useType 5) → HTTP 500 "billingCodeID is not a
+  material cost code". Created under the contract: POST /Contracts/{id}/Charges.
+  New charges come back status 6 "Ready to Deliver/Ship", isBilled false.
+- Reactivating an inactive contract (status 0 → 1) does NOT recreate the unit
+  periods a line lost — billing only resumes from an adjustment.
+
 ## Learnings - 2026-10-11 (contracts & services)
 
 - **`ContractServiceAdjustments` / `ContractServiceBundleAdjustments`: NOTHING is

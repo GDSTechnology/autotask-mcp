@@ -202,6 +202,11 @@ describe('billing that stopped (a line with no billing period) — restore, re-p
     expect(plan({ contracts: new Map() }).find((x) => x.entity === 'ContractCharges')!.blocked).toMatch(/not active — reactivate it first/);
   });
 
+  test('a given back-bill price (the price in effect then); no material cost code blocks the charge', () => {
+    expect(plan({ backbillPrice: 9.5 }).find((x) => x.entity === 'ContractCharges')!.after).toMatchObject({ unitPrice: 9.5 });
+    expect(plan({ billingCode: () => null }).find((x) => x.entity === 'ContractCharges')!.blocked).toMatch(/material cost code/);
+  });
+
   test('quantity alone (no price row) keeps the current price', () => {
     const q = plan({ include: ['quantity'] }).find((x) => x.entity === 'ContractServiceAdjustments')!;
     expect(q).toMatchObject({ after: { unitChange: 1, adjustedUnitPrice: 9.96 } });

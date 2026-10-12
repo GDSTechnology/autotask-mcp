@@ -4,6 +4,24 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-11 (contracts & services)
+
+- **`ContractServiceAdjustments` / `ContractServiceBundleAdjustments`: NOTHING is
+  queryable** (every field `isQueryable:false`, entityInformation/fields). They
+  can't be found again or read back — verify by EFFECT on
+  `ContractServiceUnits` / `ContractServiceBundleUnits` from the effective date
+  (`src/vendors/contract-io.ts`). The first version queried them for re-run
+  safety and would have failed on the first live write.
+- An adjustment with `contractID` + `serviceID` and no `contractServiceID` is the
+  API's way to ADD a service mid-contract (`allowRepeatService` exists for it).
+  Not yet exercised live — pilot one row first.
+- Bundles: `ServiceBundleServices` (serviceBundleID, serviceID; create-only) are
+  the components; `ServiceBundles.unitCost` is read-only (derived);
+  `ContractServiceBundles.unitPrice`/`adjustedPrice`/`invoiceDescription` writable;
+  BillingItems carry `contractServiceBundleID`.
+- Only `contractType` 7 (Recurring Service) contracts hold services. "Active"
+  (status 1) includes future renewals — match on dates overlapping the period.
+
 ## Learnings - 2026-10-11
 
 - **`ContractServices.unitPrice` is READ-ONLY** (and `serviceID`, `quoteItemID`,

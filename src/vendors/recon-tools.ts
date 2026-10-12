@@ -12,7 +12,9 @@ import { ReconStore } from './recon-store.js';
 import { loadReconInput } from './recon-data.js';
 import { reconcile, type ReconRow } from './reconcile.js';
 import { buildWorkbook } from './workbook.js';
-import { buildContractPlan, type ChangeKind } from './contract-plan.js';
+import { buildContractPlan, CHANGE_KINDS, type ChangeKind } from './contract-plan.js';
+import { inChunks, inEffect, lastPostedFrom, loadContractContext } from './contract-context.js';
+import { driftEvent, plansToCheck, PLAN_KINDS_WITH_WRITES } from './monitor.js';
 import { DriftStore, checkDrift } from './drift.js';
 import { createEntityIO, planView } from './catalog-tools.js';
 import { PlanStore } from '../change-plans/store.js';
@@ -118,7 +120,7 @@ export function reconToolHandlers(s: AutotaskService, getPool: () => Pool | null
       if (!run) return { result: { status: 'not_found' }, message: 'No reconciliation run yet.' };
       const rows = await st.recon.rows(run.id);
       const [states, lines, policies, exceptions, planList] = await Promise.all([st.recon.states(rows.map((r) => r.exceptionKey)), run.documentId ? st.vendor.lines({ documentId: run.documentId, limit: 20000 }) : Promise.resolve([]), st.policy.policies(), st.policy.exceptions(), st.plans.list(20)]);
-      const plans = (await Promise.all(planList.filter((p) => p.kind === 'contract_pricing' || p.kind === 'catalog_standardize').slice(0, 10).map((p) => st.plans.get(p.id)))).filter((p): p is NonNullable<typeof p> => !!p);
+      const plans = (await Promise.all(planList.filter((p) => PLAN_KINDS_WITH_WRITES.includes(p.kind)).slice(0, 10).map((p) => st.plans.get(p.id)))).filter((p): p is NonNullable<typeof p> => !!p);
       const buf = await buildWorkbook({ run, rows, states, lines, policies, customerExceptions: exceptions, plans });
       const fileName = `GDS_${run.vendor}_Autotask_Reconciliation_${run.invoiceNumber ?? run.periodStart}.xlsx`;
       return { result: { fileName, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes: buf.length, contentBase64: buf.toString('base64') }, message: `${fileName} (${Math.round(buf.length / 1024)} KB): Executive Summary, Exceptions, All Vendor Lines, Customer Contracts, Unmatched Internal NFR, Approved Changes, Execution Audit, Pricing Policy. contentBase64 holds the file.` };
@@ -129,56 +131,52 @@ export function reconToolHandlers(s: AutotaskService, getPool: () => Pool | null
       const run = await runOf(st, a);
       if (!run) return { result: { status: 'not_found' }, message: 'No reconciliation run yet — autotask_reconcile_vendor_to_autotask.' };
       const rows = await st.recon.rows(run.id);
-      const include = (Array.isArray(a.include) && a.include.length ? a.include.map(String) : ['cost', 'price', 'quantity', 'missing_line']).filter((k: string): k is ChangeKind => ['cost', 'price', 'quantity', 'missing_line'].includes(k));
+      const include = (Array.isArray(a.include) && a.include.length ? a.include.map(String) : CHANGE_KINDS).filter((k: string): k is ChangeKind => (CHANGE_KINDS as string[]).includes(k));
       const now = new Date();
       const effectiveDate = a.effectiveDate ? String(a.effectiveDate).slice(0, 10) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) return { result: { status: 'invalid_value', field: 'effectiveDate' }, message: 'effectiveDate: YYYY-MM-DD.' };
-      const http = await s.httpClient();
+      const io = await createEntityIO(s);
       const companyIds = [...new Set(rows.map((r) => r.autotaskCompanyId).filter((x): x is number => x != null))];
-      const contracts = new Map<number, { contractName: string; companyID: number; startDate: string | null; endDate: string | null }>();
-      const licence = new Map<number, number[]>();
-      const csRows: Array<{ id: number; contractID: number; serviceID: number }> = [];
-      for (let k = 0; k < companyIds.length; k += 200) {
-        const cs = await http.query<Record<string, any>>('Contracts', [{ op: 'in', field: 'companyID', value: companyIds.slice(k, k + 200) }, { op: 'eq', field: 'status', value: 1 }], { maxRecords: 5000, includeFields: ['id', 'companyID', 'contractName', 'startDate', 'endDate'] });
-        for (const c of cs) contracts.set(Number(c.id), { contractName: String(c.contractName ?? ''), companyID: Number(c.companyID), startDate: c.startDate ?? null, endDate: c.endDate ?? null });
-      }
-      const contractIds = [...contracts.keys()];
-      for (let k = 0; k < contractIds.length; k += 200) csRows.push(...(await http.query<{ id: number; contractID: number; serviceID: number }>('ContractServices', [{ op: 'in', field: 'contractID', value: contractIds.slice(k, k + 200) }], { maxRecords: 5000, includeFields: ['id', 'contractID', 'serviceID'] })));
+      const cc = await loadContractContext(io.query, { companyIds });
       const [links, offerings] = await Promise.all([st.vendor.catalogLinks(), st.vendor.offerings()]);
       const offeringOfService = new Map(links.filter((l) => l.autotaskEntity === 'Services').map((l) => [l.autotaskId, l.offeringId]));
       const manufacturerOf = new Map(offerings.map((o) => [o.id, o.manufacturer]));
-      // Licence contracts: the customer's active contracts already holding a service of the same manufacturer.
+      // Licence contracts: the customer's Recurring Service contracts in effect on the effective date that already hold a service of the same manufacturer.
+      const licence = new Map<number, number[]>();
       for (const r of rows.filter((x) => x.exceptions.includes('not_billed') && x.autotaskCompanyId != null && x.offeringId != null)) {
         const mfr = manufacturerOf.get(r.offeringId!);
-        const ids = [...new Set(csRows.filter((c) => contracts.get(c.contractID)?.companyID === r.autotaskCompanyId && manufacturerOf.get(offeringOfService.get(c.serviceID) ?? -1) === mfr).map((c) => c.contractID))];
+        const ids = [...new Set(cc.lines.filter((c) => { const k = cc.contracts.get(c.contractID); return k?.companyID === r.autotaskCompanyId && inEffect(k, effectiveDate) && manufacturerOf.get(offeringOfService.get(c.serviceID) ?? -1) === mfr; }).map((c) => c.contractID))];
         licence.set(r.autotaskCompanyId!, ids);
       }
       // Already invoiced at/after the effective date?
-      const lastPosted = new Map<number, string>();
-      const csIds = [...new Set(rows.map((r) => r.contractServiceId).filter((x): x is number => x != null))];
-      for (let k = 0; k < csIds.length; k += 200) {
-        const bi = await http.query<{ contractServiceID: number; itemDate: string }>('BillingItems', [{ op: 'in', field: 'contractServiceID', value: csIds.slice(k, k + 200) }, { op: 'eq', field: 'billingItemType', value: 6 }, { op: 'gte', field: 'itemDate', value: `${effectiveDate}T00:00:00` }], { maxRecords: 5000, includeFields: ['id', 'contractServiceID', 'itemDate'] });
-        for (const b of bi) { const cur = lastPosted.get(b.contractServiceID); if (!cur || b.itemDate > cur) lastPosted.set(b.contractServiceID, b.itemDate); }
-      }
+      const posted = await lastPostedFrom(io.query, rows.map((r) => r.contractServiceId).filter((x): x is number => x != null), rows.map((r) => r.contractServiceBundleId).filter((x): x is number => x != null), effectiveDate);
       const standard = (offeringId: number, cadence: string) => links.filter((l) => l.autotaskEntity === 'Services' && l.offeringId === offeringId && (l.cadence === cadence || (cadence === 'monthly' && l.cadence === 'MM'))).sort((x, y) => Number(y.method === 'standardized') - Number(x.method === 'standardized'))[0]?.autotaskId ?? null;
+      const stdIds = [...new Set(rows.filter((r) => r.offeringId != null).map((r) => standard(r.offeringId!, r.cadence)).filter((x): x is number => x != null))];
+      const svcRows = await inChunks<{ id: number; name: string; billingCodeID: number | null }>(io.query, 'Services', 'id', [...stdIds, ...rows.map((r) => r.serviceId).filter((x): x is number => x != null)], [], ['id', 'name', 'billingCodeID']);
+      const names = new Map(svcRows.map((x) => [Number(x.id), String(x.name)]));
+      const codes = new Map(svcRows.map((x) => [Number(x.id), x.billingCodeID == null ? null : Number(x.billingCodeID)]));
+      // Back-bill: from a month (YYYY-MM or YYYY-MM-DD → the 1st) up to the effective date.
+      const backbillFrom = a.backbillFrom ? `${String(a.backbillFrom).slice(0, 7)}-01` : undefined;
+      if (backbillFrom && !/^\d{4}-\d{2}-01$/.test(backbillFrom)) return { result: { status: 'invalid_value', field: 'backbillFrom' }, message: 'backbillFrom: YYYY-MM (the first month to back-bill).' };
+      const inWindow = backbillFrom ? (await lastPostedFrom(io.query, rows.map((r) => r.contractServiceId).filter((x): x is number => x != null), [], backbillFrom)).service : undefined;
       const rowNos = Array.isArray(a.rows) ? a.rows.map(Number) : undefined;
-      const plan = buildContractPlan({ rows, include, effectiveDate, contracts, lastPostedThrough: lastPosted, licenceContracts: licence, standardService: standard, ...(rowNos ? { rowNos } : {}), ...(a.contractChoices && typeof a.contractChoices === 'object' ? { contractChoices: a.contractChoices } : {}) });
+      const plan = buildContractPlan({ rows, include, effectiveDate, contracts: cc.contracts, lastPostedThrough: posted.service, lastPostedBundle: posted.bundle, licenceContracts: licence, standardService: standard, serviceName: (id) => names.get(id) ?? null, billingCode: (id) => codes.get(id) ?? null, contractLines: cc.contractLines,
+        ...(backbillFrom ? { backbillFrom, backbillPrice: a.backbillPrice === 'target' ? 'target' as const : 'contract' as const, ...(inWindow ? { lastPostedFrom: inWindow } : {}) } : {}),
+        ...(rowNos ? { rowNos } : {}), ...(a.contractChoices && typeof a.contractChoices === 'object' ? { contractChoices: a.contractChoices } : {}) });
       if (!plan.rows.length) return { result: { summary: plan.summary }, message: 'Nothing to change for the selected rows.' };
-      const saved = await st.plans.create({ kind: 'contract_pricing', title: `Contract pricing from ${run.vendor} ${run.invoiceNumber ?? ''} (effective ${effectiveDate})`, params: { runId: run.id, include, effectiveDate, summary: plan.summary }, rows: plan.rows, by: who(ctx) });
+      const saved = await st.plans.create({ kind: 'contract_pricing', title: `Contract changes from ${run.vendor} ${run.invoiceNumber ?? ''} (effective ${effectiveDate})`, params: { runId: run.id, include, effectiveDate, summary: plan.summary }, rows: plan.rows, by: who(ctx) });
       const sm = plan.summary;
-      return { result: { ...planView(saved), summary: sm }, message: `Plan ${saved.id} (hash ${saved.hash}), effective ${effectiveDate}: ${sm.cost} cost update(s), ${sm.price} customer price change(s), ${sm.quantity} quantity change(s), ${sm.missing_line} missing line(s)${sm.blocked ? `; ${sm.blocked} blocked` : ''}. Nothing written — customer prices change only for rows a person approves (autotask_change_plan_review action=approve), then autotask_change_plan_execute.` };
+      return { result: { ...planView(saved), summary: sm }, message: `Plan ${saved.id} (hash ${saved.hash}), effective ${effectiveDate}: ${sm.cost} cost update(s), ${sm.price} customer price change(s), ${sm.quantity} quantity change(s), ${sm.missing_line} missing line(s), ${sm.term} term move(s), ${sm.end_line} line(s) to end${sm.backbill ? `, ${sm.backbill} back-bill charge(s)` : ''}${sm.blocked ? `; ${sm.blocked} blocked` : ''}. Nothing written — customer prices change only for rows a person approves (autotask_change_plan_review action=approve), then autotask_change_plan_execute. A move's second row (end the old line) runs only after its first.` };
     }],
 
     ['autotask_reconcile_check_sync_drift', async (a) => {
       const st = stores(); if (!st) return unavailable;
       const days = Math.min(Math.max(Number(a.days) || 120, 1), 730);
-      const since = Date.now() - days * 86_400_000;
-      const list = (await st.plans.list(200)).filter((p) => Date.parse(p.createdAt) >= since && (p.kind === 'contract_pricing' || p.kind === 'catalog_standardize'));
-      const plans = (await Promise.all(list.map((p) => st.plans.get(p.id)))).filter((p): p is NonNullable<typeof p> => !!p);
+      const plans = await plansToCheck(st.plans, days);
       const io = await createEntityIO(s);
       const { checked, findings } = await checkDrift(plans, { get: io.get, unitsOn: io.unitsOn });
       const fresh = await st.drift.record(findings);
-      for (const f of fresh) notify({ type: 'sync.drift', severity: 'critical', title: `Approved change overwritten: ${f.label.slice(0, 120)}`, detail: `${f.entity} ${f.targetId ?? ''} ${f.field} is ${String(f.current)} but plan ${f.planId} row ${f.row} set it to ${String(f.approved)}. Not re-applied automatically — decide which system owns this field.`, fields: { plan: f.planId, row: String(f.row) }, dedupeKey: `sync.drift:${f.planId}:${f.row}:${f.field}:${String(f.current)}` });
+      for (const f of fresh) notify(driftEvent(f));
       return { result: { checked, drift: findings, newSinceLastCheck: fresh.length }, message: `${checked} applied change(s) checked: ${findings.length} drifted (${fresh.length} new). ${findings.length ? 'Nothing is re-applied automatically — decide which system owns each field.' : ''}` };
     }],
   ];

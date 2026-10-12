@@ -34,7 +34,7 @@ vendor line ──SKU──▶ offering ◀──link── Autotask Service (on
 1. **Import the invoices.** Use `autotask_vendor_import_invoice` with the Pax8 invoice CSV export (Billing → Invoices → export CSV), file name `csv-p<account>-<invoice>-<date>.csv`.
    - Every line is imported, and each customer's subtotal is checked against the one Pax8 printed. *"Every line accounted for"* means they all match.
    - Re-importing the same file is a no-op.
-2. **Import the customer crosswalk.** This is the Pax8 company report (PSA admin → Mappings → **Download company report**). It is Pax8's own Pax8-company → Autotask-company mapping, which is not always the same name. For example, *Cathy Sell Real Estate Services, LLC* → **Ben Carter Enterprises**.
+2. **Import the customer crosswalk.** This is the Pax8 company report (PSA admin → Mappings → **Download company report**). It is Pax8's own Pax8-company → Autotask-company mapping, which is not always the same name. For example, a Pax8 company named after the billing contact can map to the customer's legal entity in Autotask.
 3. **Customers.** Run `autotask_reconcile_resolve_mapping kind=customers action=propose`.
    - The crosswalk gives `high` confidence. A crosswalk company that is **inactive** in Autotask drops to `medium`, with a warning.
    - Your own company (id 0) is proposed as `internal`.
@@ -92,41 +92,100 @@ Autotask can't change a service's period (monthly / yearly) after creation, so a
 
 This needs migration `0012_reconciliation.sql`. Every step below reads Autotask only; nothing changes until a person approves the rows of a change plan.
 
-1. `autotask_reconcile_vendor_to_autotask invoiceNumber=…` matches each vendor line to the customer's contract service for the same product and term, across **all** of that customer's active contracts. Lines are matched by the manufacturer offering, never the sales channel.
+1. `autotask_reconcile_vendor_to_autotask invoiceNumber=…` matches each vendor line to the customer's contract lines for the same product and term. Lines are matched by the manufacturer offering, never the sales channel.
+   - **Which contracts:** every *Recurring Service* contract of the customer that is active and in effect for the invoice month. A matching line on a contract that starts later, ended earlier or is another type is named in the reason, not matched. For example, a renewal that starts next year means the current month is not billed.
+   - **Bundles:** a service bundle on a contract covers each of its component services. The components count toward quantity. The bundle gets its own row comparing its price with the landed cost of its parts: the vendor cost where this vendor supplies the part, otherwise the service's catalog cost.
    - **Cost Should Be** is the vendor's landed unit cost (quantity-weighted, plus processing fees when the policy allocates them).
    - **Price Should Be** comes from the pricing policy.
    - **Billed** is the posted recurring BillingItem for that month. A loss counts as *confirmed* only when an invoice was posted; otherwise it is *unverified*.
+   - **The other direction:** a contract line is `not_purchased` when it bills a product this vendor supplies but the vendor has no charge for that customer. This is usually a cancelled subscription still billed to the customer. Annual-billed (AA) subscriptions appear on one invoice a year, so those are checked against the last 13 months of imports.
    - The run is saved, and a run with critical rows sends the `reconcile.critical` notification.
 2. Exceptions, by severity:
 
    | Severity | Exceptions |
    |---|---|
    | critical | `below_cost`, `not_billed` |
-   | high | `qty_short`, `term_mismatch`, `cost_stale`, `inactive_company` |
+   | high | `qty_short`, `term_mismatch`, `cost_stale`, `inactive_company`, `not_purchased` |
    | review | `below_target`, `margin_below_policy`, `negotiated`, `qty_over`, `billed_on_multiple_lines`, `unmapped_customer`, `unmapped_sku`, `proration_credit` |
    | info | `not_customer_billable` (internal / NFR) |
 
-   `autotask_reconcile_get_exceptions` lists them and can update one (status `open` | `acknowledged` | `resolved` | `accepted`, plus an owner and a note). Each update is kept in the exception's history. An exception that comes back in a later run reopens.
+   `autotask_reconcile_get_exceptions` lists them and can update one (status `open` | `acknowledged` | `resolved` | `accepted`, plus an owner and a note). Each update is kept in the exception's history. An exception that comes back in a later run reopens. Mark a `not_purchased` line `accepted` when the customer buys that product from another vendor.
 3. `autotask_vendor_pricing_policy` sets the policy and is versioned. Policy can be set globally, per manufacturer or per offering:
    - **Modes:** `vendor_suggested`, `margin`, `markup`.
-   - **Margin floor:** the lowest margin allowed.
+   - **Margin floor:** the lowest margin allowed. Bundles use the global floor.
    - **Fees:** `overhead` or `allocate` (allocated fees are spread into the landed cost).
-   - **Negotiated prices:** `set_negotiated` records one per customer. A negotiated price always wins and is never changed by a plan.
+   - **Negotiated prices:** `set_negotiated` records one per customer. A negotiated price always wins: it becomes the target, and a plan moves billing up to it, never past it or away from it.
    - Price Should Be is never below cost.
 4. `autotask_reconcile_export_workbook` returns the Excel workbook (`contentBase64`). Its sheets are Executive Summary, Exceptions, All Vendor Lines, Customer Contracts, Unmatched Internal NFR, Approved Changes, Execution Audit and Pricing Policy.
-5. `autotask_pricing_build_change_plan` builds a frozen contract plan from the run. The effective date defaults to the 1st of next month. Then use `autotask_change_plan_review` and `autotask_change_plan_execute`, the same as for the catalog. Row types:
-   - **Cost:** updates `ContractServices.unitCost`.
-   - **Price:** creates a `ContractServiceAdjustments` row with the new unit price. `ContractServices.unitPrice` is read-only in the API.
-   - **Quantity:** creates an adjustment with the unit change.
-   - **Missing line:** adds the contract service.
+5. `autotask_pricing_build_change_plan` builds a frozen contract plan from the run. The effective date defaults to the 1st of next month; earlier months are never back-billed. Then use `autotask_change_plan_review` and `autotask_change_plan_execute`, the same as for the catalog. Row kinds (`include`):
+   - **cost:** updates `ContractServices.unitCost` (cost only).
+   - **price:** an adjustment with the new unit price, on a contract service or a bundle. `ContractServices.unitPrice` is read-only in the API.
+   - **quantity:** the primary line follows the vendor quantity, up *or down*. Seats beyond a bundle's units are added as a standalone line next to it. A bundle is never shrunk automatically.
+   - **missing_line:** one adjustment that adds the standard service to the customer's contract, with its units and price.
+   - **term:** a line on a different term than the vendor sells moves to the standard service for the vendor's term. This takes two rows: add the new line, then end the old one. The second row runs only after the first is in. The move changes the customer's commitment, so agree it with them first.
+   - **end_line:** sets units to 0 on a `not_purchased` line. Approve it only once you know the subscription was cancelled.
    - **Blocked rows:**
-     - a negotiated price;
-     - the effective date is outside the contract dates;
+     - the contract isn't a Recurring Service contract in effect on the effective date (renew it first);
      - the period has already been invoiced;
      - no standard service exists yet (run the catalog plan first);
-     - the customer has no contract to add it to, or more than one (pass `contractChoices`).
-   - **Term mismatches** are information only: a person changes the term.
-6. `autotask_reconcile_check_sync_drift` re-reads what an executed plan wrote. If something changed it back (for example the Pax8 PSA sync), it records the drift and sends the `sync.drift` notification.
+     - the customer has no contract to add it to, or more than one (pass `contractChoices`);
+     - fewer vendor seats than a bundle's units (change the bundle by hand).
+6. `autotask_reconcile_check_sync_drift` re-reads what executed plans wrote. Only the latest approved write to a field or line has to hold; a later plan, or an undo, supersedes an earlier one. If something changed a value back (for example the Pax8 PSA sync), the tool records the drift and sends the `sync.drift` notification.
+
+## Billing that stopped, and back-billing
+
+A contract line that is still on a contract in effect but has **no billing period** for the month bills nothing. This happens when a line was ended, or its contract was set inactive while the vendor kept charging. Reconciliation counts such a line as 0 units ("the line has no billing period for this month"), so it shows as `qty_short`.
+
+To fix it in one plan:
+1. If the contract carrying the line was set inactive by mistake, reactivate it (`autotask_update_contract status=1`). Contracts that aren't active are not considered.
+2. Re-run `autotask_reconcile_vendor_to_autotask`.
+3. Run `autotask_pricing_build_change_plan backbillFrom=YYYY-MM rows=[…]`. Pass the report rows of that customer so other customers' unbilled rows don't come along.
+
+The plan then holds:
+- **from the effective date:** the units are restored. When the price is also below cost or target, a single **PRICE + QUANTITY** adjustment carries both. Two adjustments on the same line and date would leave whichever price came last.
+- **for the months before:** a **BACK-BILL** row, a one-time contract charge (`ContractCharges`) linked to the line and on the service's billing code. It charges units missing × months × the contract price (`backbillPrice=target` for the new price) and bills at the next Approve & Post.
+  - The charge assumes the same shortfall each month; check it against the vendor invoices for those months.
+  - When the line did bill inside the window, the charge still covers only the missing units, and the row says so.
+  - A re-run never charges twice: a charge with the same name on the contract counts as done.
+  - The undo plan can't remove a charge; delete it in Autotask before it is billed.
+
+To make a price above cost stick, set the price first: `autotask_vendor_pricing_policy` with a margin, or `set_negotiated` for that customer. Then build the plan.
+
+## Contract lines: moves, invoice wording, undo
+
+Autotask can't change a contract line's service, and contract price and unit changes exist only as adjustments. These tools build plans; nothing is written until rows are approved and executed.
+
+- **`autotask_contract_plan_move_lines`** moves lines onto another service, keeping the customer's units and price. Each move is two rows: add (or top up) the target service on the same contract, then end the old line. The second row runs only after the first, so the customer is never without the service.
+  - `source=duplicates` (default) moves lines from a service that duplicates the standard service for its product and term onto the standard service. Run it after the catalog plan. Then rebuild the catalog plan, which can now deactivate the emptied duplicates: a line with no units from today on no longer counts as "in use".
+  - `source=lines` takes explicit `[{ contractServiceId, toServiceId }]`.
+- **`autotask_contract_plan_wording`** updates the invoice text of existing contract lines and contract bundles to the catalog's current wording. A contract line keeps the text it had when it was added, so after a rename (Dropsuite → NinjaOne) customers would still see the old name. `match` limits it to lines that mention a word. Exclude rows whose customer-specific wording is intended.
+- **`autotask_change_plan_revert planId`** builds an undo plan from the before-values an executed plan kept:
+  - fields go back (skipped if they were changed again since);
+  - created services are deactivated, because Autotask can't delete them;
+  - contract adjustments get a counter-adjustment from the revert date.
+
+  Months already invoiced stay invoiced; credits are a separate decision.
+
+**How writes are verified.** `ContractServiceAdjustments` and `ContractServiceBundleAdjustments` are create-only and nothing on them can be queried, so an adjustment can't be read back. The executor verifies it by its *effect*: the line's unit period from the effective date must show the planned units and price.
+- An adjustment written before Autotask shows that period is reported "not verifiable yet". The drift check confirms it later.
+- A re-run sees an applied adjustment by the same effect and doesn't create it twice.
+
+**Pilot first.** No contract adjustment has been written through this MCP yet. Before running a batch:
+1. Approve the plan.
+2. Run one row with `autotask_change_plan_execute rows="<n>"`.
+3. Check the line in Autotask.
+
+Good first pilots are one price row, then one missing-line row. A missing-line row adds a service through an adjustment that names the contract and the service but no line, which is the API's way to add a service mid-contract.
+
+## Monitoring
+
+`autotask_vendor_monitor` runs one pass and sends each finding once:
+- a vendor with no invoice imported for 35+ days;
+- subscriptions on the latest invoice renewing within 30 days (annual commitments can only be reduced at renewal);
+- contracts in the latest reconciliation that end within 45 days (plans are blocked past a contract's end);
+- sync drift on applied plan changes.
+
+Set `MCP_VENDOR_MONITOR_HOUR_UTC` (0–23) to run it daily at that hour. It is off when unset, and it only reads Autotask.
 
 ## Pax8 API (optional)
 

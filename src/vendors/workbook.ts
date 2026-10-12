@@ -20,7 +20,7 @@ const EXTRA_COLUMNS: Array<[string, keyof ReconRow]> = [
   ['Monthly Exposure', 'monthlyExposure'], ['Annual Exposure', 'annualExposure'], ['Gross Margin (monthly $)', 'grossMarginMonthly'], ['Gross Margin %', 'grossMarginPct'],
   ['Autotask Company ID', 'autotaskCompanyId'], ['Contract ID', 'contractId'], ['Contract Service ID', 'contractServiceId'], ['Autotask Service', 'serviceName'], ['Service ID', 'serviceId'],
   ['Offering', 'offering'], ['Vendor Customer', 'vendorCustomerName'], ['Vendor Subscription IDs', 'subscriptionIds'], ['Vendor Description', 'vendorDescription'],
-  ['Contract Term', 'contractCadence'], ['Contract Quantity', 'contractQuantity'], ['Billed Quantity', 'billedQuantity'], ['Billed Unit Price', 'billedRate'], ['Billed Invoice ID', 'billedInvoiceId'], ['Billing Posted', 'billingPosted'],
+  ['Contract Term', 'contractCadence'], ['Contract Quantity', 'contractQuantity'], ['Contract Quantity (all lines)', 'contractQuantityTotal'], ['Line Kind', 'lineKind'], ['Bundle', 'bundleName'], ['Contract Service Bundle ID', 'contractServiceBundleId'], ['Primary Line', 'primary'], ['Billed Quantity', 'billedQuantity'], ['Billed Unit Price', 'billedRate'], ['Billed Invoice ID', 'billedInvoiceId'], ['Billing Posted', 'billingPosted'],
   ['Catalog Cost', 'catalogCost'], ['Catalog Price', 'catalogPrice'], ['Vendor Unit Cost', 'vendorUnitCost'], ['Vendor Suggested Price', 'vendorSuggestedPrice'], ['Landed Cost', 'landedCost'], ['Price Rule', 'priceRule'],
   ['Amounts Per', 'basis'], ['Match', 'matchMethod'], ['Also Billed On', 'otherContractServices'], ['Source Invoice', 'sourceInvoice'], ['Period', 'period'], ['Exception Key', 'exceptionKey'],
 ];
@@ -67,7 +67,7 @@ export async function buildWorkbook(d: {
   sheet(wb, 'Exceptions', header, d.rows.filter((r) => r.severity === 'critical' || r.severity === 'high' || r.severity === 'review').map(withState));
   sheet(wb, 'All Vendor Lines', ['Invoice', 'Invoice Date', 'Vendor Customer', 'Subscription', 'SKU', 'Description', 'Charge Class', 'Term', 'Commitment', 'Billing Term', 'Unit', 'Quantity', 'Unit Cost', 'Total Cost', 'Vendor Suggested Price', 'Period Start', 'Period End', 'Renewal', 'Flags'],
     d.lines.map((l) => [d.run.invoiceNumber, (l as VendorLine & { invoiceDate?: string }).invoiceDate ?? '', l.vendorCustomerName, l.subscriptionId, l.sku, l.description, l.chargeClass, l.cadence, l.commitmentTerm, l.billingTerm, l.unit, l.quantity, l.unitCost, l.costTotal, l.vendorSuggestedUnitPrice, l.periodStart, l.periodEnd, l.renewalDate, l.flags]));
-  sheet(wb, 'Customer Contracts', header, d.rows.filter((r) => r.contractServiceId != null).map(withState));
+  sheet(wb, 'Customer Contracts', header, d.rows.filter((r) => r.contractServiceId != null || r.contractServiceBundleId != null).map(withState));
   sheet(wb, 'Unmatched Internal NFR', header, d.rows.filter((r) => r.exceptions.some((e) => ['unmapped_customer', 'unmapped_sku', 'not_billed', 'not_customer_billable', 'proration_credit'].includes(e))).map(withState));
   const planRows = d.plans.flatMap((p) => p.rows.map((r) => ({ p, r })));
   sheet(wb, 'Approved Changes', ['Plan', 'Kind', 'Row', 'Action', 'Change', 'Before', 'After', 'Reason', 'Status', 'Approved By', 'Approved At'],

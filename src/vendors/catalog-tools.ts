@@ -11,6 +11,8 @@ import { PriceStore, perOf, pricesFromInvoices } from './prices.js';
 import { buildStandardizePlan, type AutotaskServiceRow } from './catalog-standard.js';
 import { PlanStore, parseRows, type Plan } from '../change-plans/store.js';
 import { executePlan, type EntityIO } from '../change-plans/execute.js';
+import { inChunks } from './contract-context.js';
+import { ADJUSTMENTS, adjustmentAlreadyApplied, adjustmentReadBack, adjustmentSnapshot, unitsOn, type LineKind, type QueryFn, type UnitPeriod } from './contract-io.js';
 
 type Result = { result: unknown; message: string };
 type H = (a: Record<string, any>, ctx: CallerContext) => Promise<Result>;
@@ -30,46 +32,41 @@ export function planView(p: Plan, opts: { rows?: 'all' | 'actionable' } = {}): R
 }
 
 /** Autotask reads / writes the change-plan executor and the drift check use. */
-export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { unitsOn(contractServiceId: number, date: string): Promise<{ units: number; unitPrice: number | null } | null> }> {
+export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { unitsOn(lineId: number, date: string, kind?: LineKind): Promise<UnitPeriod | null>; query: QueryFn }> {
     const http = await s.httpClient();
+    const query: QueryFn = (entity, filters, opts) => http.query(entity, filters as never, opts);
     const byId = async (entity: string, id: number) => {
       const got = await http.get<Record<string, unknown>>(entity, id).catch(() => null);
       if (got) return got;
-      // Some entities (ContractServiceAdjustments) are query-only.
+      // Some entities are query-only.
       return (await http.query<Record<string, unknown>>(entity, [{ op: 'eq', field: 'id', value: id }], { maxRecords: 1, noCache: true }))[0] ?? null;
     };
-    const unitsOn = async (contractServiceId: number, date: string) => {
-      const u = (await http.query<{ units: number; price: number | null }>('ContractServiceUnits', [{ op: 'eq', field: 'contractServiceID', value: contractServiceId }, { op: 'lte', field: 'startDate', value: `${date}T00:00:00` }, { op: 'gte', field: 'endDate', value: `${date}T00:00:00` }], { maxRecords: 1, includeFields: ['id', 'units', 'price'], noCache: true }))[0];
-      return u ? { units: Number(u.units ?? 0), unitPrice: u.units ? Number(u.price ?? 0) / Number(u.units) : null } : null;
-    };
     return {
-      unitsOn,
+      query,
+      unitsOn: (lineId, date, kind = 'service') => unitsOn(query, kind, lineId, date),
       get: byId,
       update: async (entity, id, fields) => { await http.update(entity, id, fields); },
-      create: (entity, fields) => http.create(entity, fields),
-      findExisting: async (entity, fields) => {
+      // A contract charge is created under its contract (POST /Contracts/{id}/Charges).
+      create: (entity, fields) => (entity === 'ContractCharges' ? http.childCreate('Contracts', Number(fields.contractID), 'Charges', fields) : http.create(entity, fields)),
+      findExisting: async (entity, fields, snap, row) => {
         // A re-run must not create the same thing twice.
         if (entity === 'Services' && typeof fields.name === 'string') {
           return (await http.query<{ id: number }>('Services', [{ op: 'eq', field: 'name', value: fields.name }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
         }
-        if (entity === 'ContractServiceAdjustments' && fields.contractServiceID != null && fields.effectiveDate) {
-          const hits = await http.query<{ id: number; unitChange: number; adjustedUnitPrice: number | null }>('ContractServiceAdjustments', [{ op: 'eq', field: 'contractServiceID', value: fields.contractServiceID }, { op: 'eq', field: 'effectiveDate', value: `${String(fields.effectiveDate).slice(0, 10)}T00:00:00` }], { maxRecords: 20, noCache: true });
-          return hits.find((h) => Number(h.unitChange ?? 0) === Number(fields.unitChange ?? 0) && (fields.adjustedUnitPrice == null || Math.abs(Number(h.adjustedUnitPrice ?? 0) - Number(fields.adjustedUnitPrice)) < 1e-4))?.id ?? null;
+        // Adjustments can't be queried: "already done" = the line already shows the planned effect.
+        if (ADJUSTMENTS[entity]) return adjustmentAlreadyApplied(query, { entity, after: fields, meta: row?.meta ?? null }, snap ?? null);
+        // A back-bill charge is unique by contract + name ("… — back-bill Sep 2026 – Oct 2026"): never charge it twice.
+        if (entity === 'ContractCharges' && fields.contractID != null && typeof fields.name === 'string') {
+          return (await http.query<{ id: number }>('ContractCharges', [{ op: 'eq', field: 'contractID', value: fields.contractID }, { op: 'eq', field: 'name', value: fields.name }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
         }
         if (entity === 'ContractServices' && fields.contractID != null && fields.serviceID != null) {
           return (await http.query<{ id: number }>('ContractServices', [{ op: 'eq', field: 'contractID', value: fields.contractID }, { op: 'eq', field: 'serviceID', value: fields.serviceID }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
         }
         return null;
       },
-      snapshot: async (row) => {
-        // A price / quantity adjustment depends on the line's CURRENT price and units (the period before it takes effect).
-        if (row.entity !== 'ContractServiceAdjustments') return null;
-        const a = row.after as { contractServiceID?: number; effectiveDate?: string };
-        if (!a?.contractServiceID || !a.effectiveDate) return null;
-        const d = new Date(`${a.effectiveDate.slice(0, 10)}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1);
-        const u = await unitsOn(a.contractServiceID, d.toISOString().slice(0, 10));
-        return u ? { unitPrice: u.unitPrice == null ? null : Math.round(u.unitPrice * 10000) / 10000, units: u.units } : null;
-      },
+      // An adjustment depends on the line's CURRENT units and price (the period before it takes effect).
+      snapshot: async (row) => (ADJUSTMENTS[row.entity] ? adjustmentSnapshot(query, row) : null),
+      readBack: async (row, _id, snap) => (ADJUSTMENTS[row.entity] ? adjustmentReadBack(query, row, snap) : null),
     };
 }
 
@@ -109,15 +106,25 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
       const services = await http.query<AutotaskServiceRow>('Services', [{ op: 'gte', field: 'id', value: 0 }], { maxRecords: 2000, includeFields: ['id', 'name', 'description', 'invoiceDescription', 'periodType', 'unitCost', 'unitPrice', 'isActive', 'billingCodeID', 'manufacturerServiceProvider'], noCache: true });
       const activeContracts = new Set((await http.query<{ id: number }>('Contracts', [{ op: 'eq', field: 'status', value: 1 }], { maxRecords: 10000, includeFields: ['id'] })).map((c) => c.id));
       const cs = await http.query<{ contractID: number; serviceID: number }>('ContractServices', [{ op: 'gte', field: 'id', value: 0 }], { maxRecords: 20000, includeFields: ['id', 'contractID', 'serviceID'] });
+      // "In use" = a line on an active contract that still bills units from today on. A line emptied by a
+      // move (units → 0) no longer holds its service, so the duplicate can be deactivated.
+      const linked = new Set(links.filter((l) => l.autotaskEntity === 'Services').map((l) => l.autotaskId));
+      const linkedLines = cs.filter((x) => activeContracts.has(x.contractID) && linked.has(x.serviceID)) as Array<{ id: number; contractID: number; serviceID: number }>;
+      const today = new Date().toISOString().slice(0, 10);
+      const billing = new Set((await inChunks<{ contractServiceID: number }>((e, f, o) => http.query(e, f as never, o), 'ContractServiceUnits', 'contractServiceID', linkedLines.map((x) => Number(x.id)), [{ op: 'gte', field: 'endDate', value: `${today}T00:00:00` }, { op: 'gt', field: 'units', value: 0 }], ['id', 'contractServiceID'])).map((u) => Number(u.contractServiceID)));
       const activeUses = new Map<number, number>();
-      for (const x of cs) if (activeContracts.has(x.contractID)) activeUses.set(x.serviceID, (activeUses.get(x.serviceID) ?? 0) + 1);
+      for (const x of cs as Array<{ id: number; contractID: number; serviceID: number }>) {
+        if (!activeContracts.has(x.contractID)) continue;
+        if (linked.has(x.serviceID) && !billing.has(Number(x.id))) continue;
+        activeUses.set(x.serviceID, (activeUses.get(x.serviceID) ?? 0) + 1);
+      }
       const r = buildStandardizePlan({ vendor, offerings, offeringMappings, soldSkus, links, services, activeUses, prices, ...(Array.isArray(a.offeringIds) && a.offeringIds.length ? { offeringIds: a.offeringIds.map(Number) } : {}) });
       if (!r.rows.length) return { result: { summary: r.summary }, message: 'The catalog already matches the standard — nothing to change.' };
       const plan = await st.plans.create({ kind: 'catalog_standardize', title: `Standardize Autotask services (${vendor}: ${r.summary.products} product(s))`, params: { vendor, summary: r.summary }, rows: r.rows, by: who(ctx) });
       const sm = r.summary;
       return {
         result: { ...planView(plan), summary: sm },
-        message: `Plan ${plan.id} (hash ${plan.hash}): ${sm.products} product(s) — rename ${sm.rename}, catalog reprice ${sm.reprice}, create ${sm.create}${sm.blocked ? ` (${sm.blocked} blocked: missing price / work type)` : ''}, deactivate ${sm.deactivate} unused duplicate(s), ${sm.inUseDuplicates} in-use duplicate(s) kept, ${sm.unknownTerm} service(s) with an unstated term. Nothing written. Review the rows, then approve: autotask_change_plan_review action=approve planId hash rows="1-12" (or "all").`,
+        message: `Plan ${plan.id} (hash ${plan.hash}): ${sm.products} product(s) — rename ${sm.rename}, catalog reprice ${sm.reprice}, create ${sm.create}${sm.blocked ? ` (${sm.blocked} blocked: missing price / work type)` : ''}, deactivate ${sm.deactivate} unused duplicate(s), ${sm.inUseDuplicates} in-use duplicate(s) kept${sm.inUseDuplicates ? ' (move their contract lines with autotask_contract_plan_move_lines, then rebuild this plan to deactivate them)' : ''}, ${sm.unknownTerm} service(s) with an unstated term. Nothing written. Review the rows, then approve: autotask_change_plan_review action=approve planId hash rows="1-12" (or "all").`,
       };
     }],
 
@@ -145,8 +152,11 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
       if (plan.status !== 'open' && plan.status !== 'executing') return { result: { status: plan.status }, message: `Plan is ${plan.status} — build a new plan.` };
       if (!plan.rows.some((r) => r.status === 'approved')) return { result: { status: 'nothing_approved' }, message: 'No approved rows — approve rows first (autotask_change_plan_review action=approve).' };
       const by = who(ctx);
+      const rowNos = a.rows != null ? parseRows(a.rows, plan.rows.length) : undefined;
+      if (a.rows != null && !rowNos?.length) return { result: { status: 'invalid_value', field: 'rows' }, message: 'rows: "all", "3", "3-5" or [row numbers] — only these approved rows run (e.g. a one-row pilot).' };
       const rep = await executePlan(st.plans, plan, await io(), {
         maxRows: Number(a.maxRows) || 25,
+        ...(rowNos ? { rowNos } : {}),
         onApplied: async (row, id) => {
           const m = row.meta as { offeringId?: number; term?: string } | null;
           if (plan.kind === 'catalog_standardize' && id != null && m?.offeringId && row.action !== 'deactivate') {
@@ -155,7 +165,7 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
         },
       });
       const left = (await st.plans.get(plan.id))!.rows.filter((r) => r.status === 'approved').length;
-      return { result: rep, message: `Executed ${rep.attempted} row(s): ${rep.applied} applied and verified, ${rep.skipped} already as planned, ${rep.stale} stale (changed since the plan — rebuild), ${rep.failed} failed${rep.stoppedBy ? ` — STOPPED: ${rep.stoppedBy}` : ''}.${left ? ` ${left} approved row(s) left — call again.` : ''}` };
+      return { result: rep, message: `Executed ${rep.attempted} row(s): ${rep.applied} applied and verified, ${rep.skipped} already as planned, ${rep.stale} stale (changed since the plan — rebuild), ${rep.failed} failed${rep.waiting ? `, ${rep.waiting} waiting for a row they depend on` : ''}${rep.stoppedBy ? ` — STOPPED: ${rep.stoppedBy}` : ''}.${left ? ` ${left} approved row(s) left — call again.` : ''}${rep.rows.some((r) => r.detail?.includes('not verifiable yet')) ? ' Rows "not verifiable yet" were written; re-check them with autotask_reconcile_check_sync_drift once Autotask shows the new unit period.' : ''}` };
     }],
   ];
 }

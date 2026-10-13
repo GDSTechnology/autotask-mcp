@@ -74,8 +74,11 @@ export function writtenRow(path: string, body: unknown, response: unknown): { en
   if (!e) return null;
   const idFromPath = segs.length === 2 ? Number(segs[1]) : segs.length === 4 ? Number(segs[3]) : NaN;
   const b = body as { id?: unknown } | undefined, r = response as { itemId?: unknown } | undefined;
-  const id = Number.isFinite(idFromPath) ? idFromPath : Number(b?.id ?? r?.itemId);
-  return Number.isFinite(id) && id > 0 ? { entity: e.name, id } : null;
+  const rawId = b?.id ?? r?.itemId;
+  // Number(null) is 0 — and 0 is a real company — so a missing id must stay missing.
+  const id = Number.isFinite(idFromPath) ? idFromPath : rawId == null || rawId === '' ? NaN : Number(rawId);
+  // id 0 is real for Companies (the tenant's own company).
+  return Number.isInteger(id) && id >= 0 ? { entity: e.name, id } : null;
 }
 
 /** Start the shadow (no-op unless enabled). Safe to call once at server start. */

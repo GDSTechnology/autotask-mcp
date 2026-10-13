@@ -10,8 +10,9 @@
 
 /**
  * Company IDs that must never be renamed, reclassified, deactivated, or reused
- * by source parsing. Company 0 is always protected — Autotask's "no company"
- * sentinel, which a parser bug once overwrote. Extend per-tenant via the
+ * by source parsing. Company 0 is always protected — the tenant's OWN company
+ * (Autotask's owner account: internal tickets, contacts and contracts live on
+ * it), which a parser bug once overwrote. Extend per-tenant via the
  * comma-separated AUTOTASK_PROTECTED_COMPANY_IDS env var.
  */
 export function getProtectedCompanyIds(env: NodeJS.ProcessEnv = process.env): Set<number> {

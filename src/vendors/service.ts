@@ -115,7 +115,7 @@ export async function proposeCustomers(store: VendorStore, companies: CompanyLoo
       };
     }
     const hits = named.filter((c) => norm(c.companyName) === norm(name));
-    if (hits.length === 1) return { vendor, vendorCustomerId: id, vendorCustomerName: name, current: cur, proposed: { status: 'mapped', autotaskCompanyId: hits[0]!.id, autotaskCompanyName: hits[0]!.companyName, active: hits[0]!.isActive }, method: 'exact-name', confidence: 'medium', why: 'same company name in Autotask (not in the vendor crosswalk) — confirm' };
+    if (hits.length === 1) return { vendor, vendorCustomerId: id, vendorCustomerName: name, current: cur, proposed: { status: hits[0]!.id === 0 ? 'internal' : 'mapped', autotaskCompanyId: hits[0]!.id, autotaskCompanyName: hits[0]!.companyName, active: hits[0]!.isActive }, method: 'exact-name', confidence: 'medium', why: 'same company name in Autotask (not in the vendor crosswalk) — confirm' };
     return { vendor, vendorCustomerId: id, vendorCustomerName: name, current: cur, proposed: null, method: 'none', confidence: 'none', why: hits.length > 1 ? `${hits.length} Autotask companies share this name` : /\b(gds|demo|internal|test)\b/i.test(String(name)) ? 'not in the crosswalk; the name suggests internal / demo use — set it to internal if so' : 'not in the vendor crosswalk and no Autotask company has this name' };
   });
 }

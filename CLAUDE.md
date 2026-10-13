@@ -4,6 +4,15 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-13
+
+- **Company 0 is the tenant's OWN company** (Autotask's owner account): internal
+  tickets, contacts, contracts and quotes live on it. Never truthiness-check a
+  company id (`!a.companyID`, `if (options.companyId)`, `id > 0`, `Number(x) ||`):
+  use `!= null` / `>= 0`, and turn empty values into "missing" BEFORE `Number()`
+  (`Number(null)` is 0). 15 such spots were fixed (#192); `tests/company-zero.test.ts`
+  covers the main paths. Contact / ticket / resource ids are never 0.
+
 ## Learnings - 2026-10-11 (first live contract writes)
 
 - **Creating a `ContractServiceAdjustments` answers 2xx WITHOUT an itemId** — the

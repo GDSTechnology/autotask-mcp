@@ -471,7 +471,7 @@ export class AutotaskToolHandler {
         return null;
       }
 
-      if (companies.length === 1 && companies[0].id) {
+      if (companies.length === 1 && companies[0].id != null) {
         return companies[0].id;
       }
 
@@ -665,13 +665,13 @@ export class AutotaskToolHandler {
     if (/\b(?:tickets?|issues?|requests?)\b/.test(intent)) {
       if (/\b(?:create|open|new|submit)\b/.test(intent)) {
         const params: Record<string, any> = {};
-        if (numbers[0]) params.companyId = numbers[0];
+        if (numbers[0] !== undefined) params.companyId = numbers[0];
         if (quotedStrings[0]) params.title = quotedStrings[0];
         return {
           suggestedTool: 'autotask_create_ticket',
           suggestedParams: params,
           description: 'Create a new service ticket',
-          requiredParams: [...(!params.companyId ? ['companyId'] : []), ...(!params.title ? ['title'] : [])],
+          requiredParams: [...(params.companyId == null ? ['companyId'] : []), ...(!params.title ? ['title'] : [])],
         };
       }
       if (/\b(?:update|change|modify|edit|assign|reassign|close)\b/.test(intent)) {
@@ -719,7 +719,7 @@ export class AutotaskToolHandler {
         const match = intent.match(/for\s+(\w[\w\s]*?)(?:\.|$|,)/i);
         if (match) params.searchTerm = match[1].trim();
       }
-      if (numbers[0]) params.companyID = numbers[0];
+      if (numbers[0] !== undefined) params.companyID = numbers[0];
       return {
         suggestedTool: 'autotask_search_tickets',
         suggestedParams: params,
@@ -774,12 +774,12 @@ export class AutotaskToolHandler {
       }
       if (/\b(?:update|edit|modify)\b/.test(intent)) {
         const params: Record<string, any> = {};
-        if (numbers[0]) params.id = numbers[0];
+        if (numbers[0] !== undefined) params.id = numbers[0];
         return {
           suggestedTool: 'autotask_update_company',
           suggestedParams: params,
           description: 'Update company details',
-          requiredParams: !params.id ? ['id'] : [],
+          requiredParams: params.id == null ? ['id'] : [],
         };
       }
       const params: Record<string, any> = {};
@@ -1425,8 +1425,9 @@ export class AutotaskToolHandler {
         return { result: r, message: identityMessage('compan(ies)', r) };
       }],
       ['autotask_get_company', async (a) => {
-        const id = Number(a.companyID ?? a.companyId ?? a.id);
-        if (!Number.isInteger(id) || id <= 0) return { result: null, message: 'companyID (a positive integer) is required.' };
+        const raw = a.companyID ?? a.companyId ?? a.id;
+        const id = raw == null || raw === '' ? NaN : Number(raw); // 0 = your own company
+        if (!Number.isInteger(id) || id < 0) return { result: null, message: 'companyID is required (a whole number; 0 is your own company).' };
         const r = await s.getCompanyFull(id);
         if (!r) return { result: null, message: `Company ${id} not found.` };
         const c = r.company as Record<string, unknown>, l = r.labels as Record<string, string>, n = r.names as Record<string, { name?: string | null }>;
@@ -1449,8 +1450,9 @@ export class AutotaskToolHandler {
         return { result: r, message: `READ-ONLY, nothing created. Contact: ${side(r.contact as never)}. Company: ${side(r.company as never)}.${(r.notes as string[]).length ? ` ${(r.notes as string[]).join(' ')}` : ''}` };
       }],
       ['autotask_find_duplicate_companies', async (a) => {
-        const id = Number(a.companyID ?? a.companyId ?? a.id);
-        if (!Number.isInteger(id) || id <= 0) return { result: null, message: 'companyID (a positive integer) is required.' };
+        const raw = a.companyID ?? a.companyId ?? a.id;
+        const id = raw == null || raw === '' ? NaN : Number(raw); // 0 = your own company
+        if (!Number.isInteger(id) || id < 0) return { result: null, message: 'companyID is required (a whole number; 0 is your own company).' };
         const r = await s.findDuplicateCompanies(id);
         if (r.status === 'not_found') return { result: r, message: `Company ${id} not found.` };
         return { result: r, message: identityMessage(`possible duplicate(s) of company ${id}`, r) };
@@ -1505,7 +1507,7 @@ export class AutotaskToolHandler {
       // Tickets
       ['autotask_search_tickets', async (a) => {
         // Elicitation for zero-filter ticket searches
-        const hasFilters = a.searchTerm || a.title || a.companyID || a.contactID || a.status !== undefined ||
+        const hasFilters = a.searchTerm || a.title || a.companyID != null || a.contactID || a.status !== undefined ||
           a.priority !== undefined || a.queueID !== undefined ||
           a.assignedResourceID || a.unassigned || a.createdAfter || a.createdBefore || a.lastActivityAfter ||
           a.externalID || a.contractID || a.noContract;
@@ -3042,15 +3044,15 @@ export class AutotaskToolHandler {
       }],
       ['autotask_create_quote', async (a) => {
         // Elicit company if not provided
-        if (!a.companyId && this.mcpServer) {
+        if (a.companyId == null && this.mcpServer) {
           try {
             const companyId = await this.elicitCompanyId();
-            if (companyId) a = { ...a, companyId: companyId };
+            if (companyId != null) a = { ...a, companyId: companyId };
           } catch { /* proceed without company */ }
         }
 
         // Elicit opportunity if not provided but company is known
-        if (!a.opportunityId && a.companyId && this.mcpServer) {
+        if (!a.opportunityId && a.companyId != null && this.mcpServer) {
           try {
             const opps = await s.searchOpportunities({ companyId: a.companyId });
             if (opps.length > 0) {

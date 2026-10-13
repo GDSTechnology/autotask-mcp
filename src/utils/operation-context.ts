@@ -45,7 +45,8 @@ const TYPE: Record<string, string> = {
 };
 const PARENT_TYPE: Record<string, string> = { Tickets: 'ticket', Companies: 'company', Projects: 'project', Tasks: 'task', Contracts: 'contract' };
 
-const posInt = (v: unknown): number | null => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
+/** An Autotask id from a path / body / response. 0 is a real id: the tenant's own company (/Companies/0). Empty values are not ids. */
+const posInt = (v: unknown): number | null => { if (v == null || v === '') return null; const n = Number(v); return Number.isInteger(n) && n >= 0 ? n : null; };
 
 /** Which entity a write touched: from the path, the body id, or the create response's itemId. */
 export function parseWrite(method: string, path: string, body: unknown, response: unknown, at = new Date()): OperationWrite {
@@ -65,7 +66,7 @@ export function parseWrite(method: string, path: string, body: unknown, response
     entity = TYPE[segs[0]!] ?? segs[0]!;
     entityId = posInt(segs[1]) ?? posInt(b.id) ?? posInt(r.itemId);
     if (entity === 'ticketNote' || entity === 'ticketCharge' || entity === 'ticketChecklistItem' || entity === 'ticketAttachment') {
-      const tid = posInt(b.ticketID); if (tid) { parentType = 'ticket'; parentId = tid; }
+      const tid = posInt(b.ticketID); if (tid != null) { parentType = 'ticket'; parentId = tid; }
     }
   }
   return { at: at.toISOString(), method: method.toUpperCase(), path: '/' + segs.join('/'), entityType: entity, entityId, parentType, parentId };

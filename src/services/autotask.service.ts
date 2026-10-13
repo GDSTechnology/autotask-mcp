@@ -6457,7 +6457,7 @@ export class AutotaskService {
     try {
       this.logger.debug('Searching quotes with options:', options);
       const filters: QueryFilter[] = [];
-      if (options.companyId) {
+      if (options.companyId != null) {
         // The Quotes entity has NO account* field — its company link is
         // `companyID` (confirmed via entityInformation/fields). Filtering on
         // `accountId` returns HTTP 500 "Unable to find accountId in the
@@ -6492,7 +6492,7 @@ export class AutotaskService {
       // Autotask requires location IDs on the quote. Auto-populate from the
       // company's first location if the caller didn't supply them.
       if (
-        quote.companyID &&
+        quote.companyID != null &&
         (!quote.billToLocationID || !quote.shipToLocationID || !quote.soldToLocationID)
       ) {
         try {
@@ -6542,7 +6542,7 @@ export class AutotaskService {
     try {
       this.logger.debug('Searching opportunities with options:', options);
       const filters: QueryFilter[] = [];
-      if (options.companyId) {
+      if (options.companyId != null) {
         filters.push({ field: 'companyID', op: 'eq', value: options.companyId });
       }
       if (options.searchTerm) {

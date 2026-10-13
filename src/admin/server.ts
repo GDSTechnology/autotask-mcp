@@ -241,10 +241,11 @@ const CANDIDATE_MIN_UPSTREAM = 50;
 export function readSourceReport(hours = 24): Record<string, unknown> {
   const { since, entities } = entityReadStats(hours);
   const rt = getShadowRuntime();
-  const scale = 24 / Math.min(Math.max(hours, 1), 24);
+  const h = Math.min(Math.max(Math.floor(hours), 1), 168);
+  const scale = 24 / h; // the candidate rule is per 24 h
   return {
     since,
-    hours: Math.min(Math.max(Math.floor(hours), 1), 24),
+    hours: h,
     candidateRule: `≥ ${CANDIDATE_MIN_UPSTREAM} Autotask reads per 24 h, under 50% answered locally, not mirrored`,
     entities: entities.map((e) => {
       const mirrored = !!shadowEntity(e.entity);
@@ -298,6 +299,31 @@ export function toolGapReport(hours = 24): Record<string, unknown> {
     raw: g.raw.map((r) => ({ ...r, coveredBy: coveringTool(r.shape) })),
     fallbacks: g.fallbacks,
     outside: outsideTraffic(),
+  };
+}
+
+/**
+ * The Overview's view of THIS MCP's traffic (not the tenant's other
+ * integrations): reads Autotask answered live — what to cache or mirror next —
+ * and raw_request calls no tool covers — what to build next.
+ */
+export function mcpTrafficSummary(hours = 24): Record<string, unknown> {
+  const r = readSourceReport(hours) as { since: string; entities: Array<{ entity: string; upstream: number; cache: number; shadow: number; localPct: number | null; mirrored: boolean; servedFromShadow: boolean; cacheTtlSeconds: number; candidate: boolean; topCallers: Array<{ caller: string; count: number }> }> };
+  const upstream = r.entities.reduce((s, e) => s + e.upstream, 0);
+  const local = r.entities.reduce((s, e) => s + e.cache + e.shadow, 0);
+  const g = toolGapReport(hours) as { raw: Array<{ shape: string; calls: number; errors: number; coveredBy: string | null; callers: Array<{ caller: string; count: number }> }> };
+  const uncovered = g.raw.filter((x) => !x.coveredBy), covered = g.raw.filter((x) => x.coveredBy);
+  return {
+    since: r.since, hours: Math.min(Math.max(Math.floor(hours), 1), 168),
+    reads: {
+      live: upstream, local, localPct: upstream + local ? Math.round((local / (upstream + local)) * 1000) / 10 : null,
+      top: r.entities.filter((e) => e.upstream > 0 && !e.servedFromShadow).slice(0, 4).map((e) => ({ entity: e.entity, live: e.upstream, localPct: e.localPct, candidate: e.candidate, cached: e.cacheTtlSeconds > 0, mirrored: e.mirrored, topCaller: e.topCallers[0]?.caller ?? null })),
+    },
+    gaps: {
+      uncoveredShapes: uncovered.length, uncoveredCalls: uncovered.reduce((s, x) => s + x.calls, 0),
+      coveredShapes: covered.length, coveredCalls: covered.reduce((s, x) => s + x.calls, 0),
+      top: uncovered.slice(0, 4).map((x) => ({ shape: x.shape, calls: x.calls, errors: x.errors, caller: x.callers[0]?.caller ?? null })),
+    },
   };
 }
 
@@ -373,6 +399,7 @@ export function adminHandler(deps: AdminDeps) {
       authMode: opts.authMode,
       autotaskAuth: tenant ? authBlockStatus(tenant) : null,
       outsideTraffic: tenant ? outsideTraffic() : null,
+      mcpTraffic: mcpTrafficSummary(24),
       api: tenant ? { server: usageSnapshot(tenant, 15), autotask: thresholdCache?.value ?? null, autotaskCheckedAt: thresholdCache ? new Date(thresholdCache.at).toISOString() : null } : null,
       postgres: { enabled: pg.enabled, ok: pg.ok, latencyMs: pg.latencyMs ?? null, error: pg.error ?? null },
       shadow: rt ? {

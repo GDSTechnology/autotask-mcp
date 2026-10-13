@@ -166,6 +166,37 @@ function usageBar(pct) {
   return h('div', { class: `bar ${cls}` }, h('span', { style: `width:${Math.min(100, pct || 0)}%` }));
 }
 
+/** Open Calls on a given tab (Reads by entity / Tool gaps). */
+function openCalls(tab) { callsStartTab = tab; if (location.hash === '#/calls') render(); else location.hash = '#/calls'; }
+let callsStartTab = null;
+
+/**
+ * THIS MCP's traffic, last 24 h: reads Autotask answered live (what to cache or
+ * mirror next) and raw_request calls no tool covers (what to build next).
+ */
+function trafficCards(t) {
+  if (!t) return null;
+  const r = t.reads, g = t.gaps;
+  const link = (tab, label) => h('button', { class: 'small', style: 'margin-top:10px', onclick: () => openCalls(tab) }, label);
+  return [
+    h('section', { class: 'panel' }, h('h2', null, 'Reads Autotask answered live (24 h)'),
+      h('div', { class: 'stat' }, fmt(r.live), h('small', null, r.localPct == null ? '' : ` · ${r.localPct}% answered locally`)),
+      r.top.length ? h('dl', { class: 'kv' }, r.top.flatMap((e) => [
+        h('dt', { title: e.topCaller ? `Mostly from ${e.topCaller}` : '' }, e.entity),
+        h('dd', null, `${fmt(e.live)} `, e.candidate ? h('span', { class: 'badge warn' }, 'mirror it') : (e.localPct ?? 0) > 0 ? h('span', { class: 'badge' }, `${e.localPct}% local`) : h('span', { class: 'badge warn' }, e.cached ? 'cache misses' : 'not cached'))]))
+        : h('p', { class: 'muted' }, 'No live reads recorded yet.'),
+      link('entities', 'Reads by entity →')),
+    h('section', { class: 'panel' }, h('h2', null, 'Tool gaps: raw_request (24 h)'),
+      h('div', { class: 'stat' }, fmt(g.uncoveredCalls), h('small', null, ` call(s) no tool covers · ${fmt(g.uncoveredShapes)} kind(s)`)),
+      g.top.length ? h('dl', { class: 'kv' }, g.top.flatMap((x) => [
+        h('dt', { class: 'mono', style: 'font-size:12px', title: x.caller ? `From ${x.caller}` : '' }, x.shape),
+        h('dd', null, fmt(x.calls), x.errors ? [' ', h('span', { class: 'badge bad' }, `${fmt(x.errors)} failed`)] : null)]))
+        : h('p', { class: 'muted' }, 'Every raw_request call has a tool that covers it.'),
+      g.coveredCalls ? h('div', { class: 'muted', style: 'font-size:12.5px' }, `${fmt(g.coveredCalls)} more raw_request call(s) already have a tool — switch the caller.`) : null,
+      link('gaps', 'Tool gaps →')),
+  ];
+}
+
 async function dashboard(body) {
   const draw = async () => {
     const s = await api('GET', '/api/status');
@@ -206,10 +237,8 @@ async function dashboard(body) {
       h('section', { class: 'panel' }, h('h2', null, 'Autotask API (whole tenant)'),
         at ? [h('div', { class: 'stat' }, `${at.usedPct ?? '—'}%`, h('small', null, ` of ${fmt(at.limit)} / h`)), usageBar(at.usedPct),
           h('div', { class: 'muted' }, `${fmt(at.used)} calls this hour · checked ${ago(s.api.autotaskCheckedAt)}`),
-          s.outsideTraffic ? h('dl', { class: 'kv', style: 'margin-top:8px' },
-            h('dt', null, 'Through this MCP'), h('dd', null, fmt(s.outsideTraffic.mcpCalls)),
-            h('dt', { title: 'Tenant total minus this MCP: other integrations, or workflows calling Autotask directly' }, 'Not through this MCP'), h('dd', null, h('span', { class: `badge ${s.outsideTraffic.otherPct >= 25 && !s.outsideTraffic.partial ? 'warn' : ''}` }, `~${fmt(s.outsideTraffic.otherCalls)} (${s.outsideTraffic.otherPct}%)`)),
-            s.outsideTraffic.partial ? h('dd', { class: 'muted', style: 'grid-column:1/-1;text-align:left;font-size:12px' }, 'The MCP restarted within the last hour, so its own count is incomplete and this estimate reads high until an hour has passed.') : null) : null]
+          s.outsideTraffic ? h('div', { class: 'muted', style: 'margin-top:6px;font-size:12.5px', title: 'The tenant total includes every integration with its own API user (Pax8, Datto RMM, IT Glue, …). Autotask’s API usage report says whose they are.' },
+            `This MCP ${fmt(s.outsideTraffic.mcpCalls)} · other integrations ~${fmt(s.outsideTraffic.otherCalls)}${s.outsideTraffic.partial ? ' (MCP restarted < 1 h ago)' : ''}`) : null]
           : h('p', { class: 'muted' }, s.autotaskAuth ? 'Paused: Autotask rejected the credentials (see above).' : s.api && s.api.autotask && s.api.autotask.error ? `Unavailable: ${s.api.autotask.error}` : noApi)),
       h('section', { class: 'panel' }, h('h2', null, 'This MCP’s calls'),
         srv ? [h('div', { class: 'stat' }, fmt(srv.upstreamLastHour), h('small', null, ' last hour')),
@@ -219,6 +248,7 @@ async function dashboard(body) {
             h('dt', null, 'Read cache'), h('dd', null, srv.cacheEnabled ? 'On' : 'Off'),
             h('dt', null, 'Rate-limited (429)'), h('dd', null, fmt(srv.rateLimited)))]
           : h('p', { class: 'muted' }, noApi)),
+      trafficCards(s.mcpTraffic),
       h('section', { class: 'panel' }, h('h2', null, 'Tools'),
         h('div', { class: 'stat' }, fmt(s.tools.enabled), h('small', null, ` of ${fmt(s.tools.total)} enabled`)),
         h('dl', { class: 'kv' },
@@ -320,7 +350,8 @@ function callerCell(r) {
 }
 
 async function calls(body) {
-  const state = { tab: 'tools', errors: false, tool: '', source: '', auto: true, open: new Set(), hours: 24 };
+  const state = { tab: callsStartTab || 'tools', errors: false, tool: '', source: '', auto: true, open: new Set(), hours: 24 };
+  callsStartTab = null;
   const content = h('div');
   const errBox = h('input', { type: 'checkbox', onchange: (e) => { state.errors = e.target.checked; draw(); } });
   const toolBox = h('input', { type: 'text', placeholder: 'Filter by tool or path…', style: 'max-width:260px', oninput: (e) => { state.tool = e.target.value.trim(); clearTimeout(toolBox._t); toolBox._t = setTimeout(draw, 300); } });
@@ -377,11 +408,6 @@ async function calls(body) {
     if (state.tab === 'gaps') {
       const o = list.outside;
       table = h('div', null,
-        o ? h('div', { class: `banner ${o.otherPct >= 25 ? 'warn' : ''}` },
-          h('strong', null, `Not through this MCP: ~${fmt(o.otherCalls)} of ${fmt(o.tenantCalls)} Autotask calls (${o.otherPct}%) in Autotask's current ${o.windowMinutes || 60}-minute window. `),
-          o.partial ? 'The MCP restarted within the last hour, so this reads high until an hour has passed. ' : '',
-          `24 h: average ~${fmt(o.otherAvg24h)}, peak ~${fmt(o.otherMax24h)}. These are other integrations, or workflows calling Autotask with their own credentials — invisible to the MCP. Autotask's own API usage report lists calls per integration, which tells you whose they are.`)
-          : h('div', { class: 'banner' }, 'The "not through this MCP" estimate appears after the first Autotask usage check (within 5 minutes when the shadow runs).'),
         h('h3', null, 'raw_request use (the escape hatch)'),
         list.calls.length ? h('table', null,
           h('thead', null, h('tr', null, h('th', null, 'Request'), h('th', { class: 'num' }, 'Calls'), h('th', { class: 'num' }, 'Failed'), h('th', null, 'Existing tool'), h('th', null, 'Who'), h('th', null, 'Last'))),
@@ -398,7 +424,8 @@ async function calls(body) {
           h('tbody', null, list.fallbacks.map((f) => h('tr', null,
             h('td', { class: 'mono' }, f.failedTool.replace(/^autotask_/, '')), h('td', { class: 'mono' }, f.thenRaw), h('td', { class: 'num' }, fmt(f.count)),
             h('td', { class: 'muted' }, f.lastError || '—'), h('td', { class: 'muted' }, ago(f.lastAt))))))
-          : h('p', { class: 'muted' }, 'None in this period.'));
+          : h('p', { class: 'muted' }, 'None in this period.'),
+        o ? h('p', { class: 'muted', style: 'font-size:12.5px;margin-top:14px' }, `For reference, not part of this MCP: other integrations made ~${fmt(o.otherCalls)} of the tenant's ${fmt(o.tenantCalls)} Autotask calls this hour (24 h average ~${fmt(o.otherAvg24h)}). They use their own API users; Autotask's API usage report lists them.`) : null);
     } else if (state.tab === 'entities') {
       const keep = (e) => {
         const out = [];
@@ -458,14 +485,14 @@ async function calls(body) {
       h('section', { class: 'panel' },
         h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:10px' },
           h('div', { class: 'row' }, tabBtn('tools', 'Tool calls'), tabBtn('api', 'Autotask API calls'), tabBtn('entities', 'Reads by entity'), tabBtn('gaps', 'Tool gaps'), tabBtn('logs', 'Server log'),
-            state.tab === 'entities' || state.tab === 'gaps' ? h('select', { style: 'max-width:150px', 'aria-label': 'Period', onchange: (e) => { state.hours = Number(e.target.value); draw(); } }, [1, 6, 24].map((n) => { const o = h('option', { value: String(n) }, `Last ${n} h`); o.selected = n === state.hours; return o; })) : null),
+            state.tab === 'entities' || state.tab === 'gaps' ? h('select', { style: 'max-width:150px', 'aria-label': 'Period', onchange: (e) => { state.hours = Number(e.target.value); draw(); } }, [1, 6, 24, 168].map((n) => { const o = h('option', { value: String(n) }, n === 168 ? 'Last 7 days' : `Last ${n} h`); o.selected = n === state.hours; return o; })) : null),
           h('div', { class: 'row' }, toolBox, state.tab === 'tools' ? sourceSel : null,
             h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center;margin:0' }, errBox, 'Errors only'))),
         list.calls.length || state.tab === 'gaps' ? h('div', { class: 'table-wrap' }, table) : h('p', { class: 'muted' }, state.tab === 'logs' ? 'No warnings or errors since the server started.' : state.tab === 'entities' ? 'No Autotask reads recorded in this period yet.' : 'Nothing matches.'),
         h('p', { class: 'muted', style: 'margin:10px 0 0' }, state.tab === 'gaps'
           ? '"Covered": an existing tool does the same thing (matched by name), so point that caller at it to get the cache, the shadow and the safety checks. "No tool covers this": a tool to build. Fallbacks show which tool is missing something.'
           : state.tab === 'entities'
-          ? `Where each read was answered: Autotask, the short-lived read cache, or the Postgres shadow. "Candidate to mirror": ${list.candidateRule}. Counts reset on restart.`
+          ? `Where each read was answered: Autotask, the short-lived read cache, or the Postgres shadow. "Candidate to mirror": ${list.candidateRule}. Counts are kept for 7 days, across restarts.`
           : state.tab === 'logs'
           ? 'Warnings and errors the server logged since it started (last 500). Credential-like fields are redacted.'
           : state.tab === 'tools'

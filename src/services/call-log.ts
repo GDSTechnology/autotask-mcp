@@ -278,7 +278,8 @@ export function noteShadowRead(entity?: string): void { const r = scope.getStore
 
 type ReadSource = 'upstream' | 'cache' | 'shadow' | 'write';
 interface EntityCounts { upstream: number; cache: number; shadow: number; write: number; callers: Map<string, number> }
-const HOURS = 24;
+/** Hourly read / gap counts kept: 7 days (persisted in Postgres so they survive restarts — db/call-stats-store.ts). */
+const HOURS = 168;
 const buckets = new Map<number, Map<string, EntityCounts>>();
 
 /** Top-level entity of an Autotask path ("/Tickets/5/Notes/query" → "Tickets"). */
@@ -325,7 +326,7 @@ export interface EntityReadStats {
   topCallers: Array<{ caller: string; count: number }>;
 }
 
-/** Reads per entity over the last `hours` (max 24), busiest-upstream first. */
+/** Reads per entity over the last `hours` (max 168), busiest-upstream first. */
 export function entityReadStats(hours = 24): { since: string; entities: EntityReadStats[] } {
   const h = Math.min(Math.max(Math.floor(hours), 1), HOURS);
   const now = Math.floor(Date.now() / 3_600_000);
@@ -428,4 +429,57 @@ export function callerSummary(minutes = 60): { callers: CallerSummary[]; backgro
 }
 
 /** Tests only. */
+// ── persistence of the hourly counts (db/call-stats-store.ts) ───────────────
+
+/** One persisted hourly counter: kind read = per entity, gap = per raw_request shape, fallback = per tool→raw pair. */
+export interface StatRow { hour: number; kind: 'read' | 'gap' | 'fallback'; key: string; data: Record<string, unknown> }
+
+const obj = (m: Map<string, number>) => Object.fromEntries(m);
+const map = (o: unknown) => new Map(Object.entries((o as Record<string, number>) ?? {}).map(([k, v]) => [k, Number(v)]));
+
+/** The hourly counts from `fromHour` on, as rows to upsert. */
+export function snapshotStats(fromHour: number): StatRow[] {
+  const out: StatRow[] = [];
+  for (const [hour, b] of buckets) if (hour >= fromHour) for (const [key, c] of b) out.push({ hour, kind: 'read', key, data: { upstream: c.upstream, cache: c.cache, shadow: c.shadow, write: c.write, callers: obj(c.callers) } });
+  for (const [hour, b] of gapBuckets) if (hour >= fromHour) for (const [key, c] of b) out.push({ hour, kind: 'gap', key, data: { calls: c.calls, errors: c.errors, callers: obj(c.callers), lastAt: c.lastAt, lastError: c.lastError } });
+  for (const [hour, b] of fallbackBuckets) if (hour >= fromHour) for (const [key, c] of b) out.push({ hour, kind: 'fallback', key, data: { count: c.count, lastAt: c.lastAt, lastError: c.lastError } });
+  return out;
+}
+
+/**
+ * Add persisted counts back after a restart. Counts ADD to whatever arrived
+ * since the process started (run it once, at start), so the current hour
+ * keeps both the persisted and the new calls.
+ */
+export function restoreStats(rows: StatRow[]): number {
+  const oldest = Math.floor(Date.now() / 3_600_000) - HOURS;
+  let n = 0;
+  const bucketOf = <T>(m: Map<number, Map<string, T>>, hour: number) => { let b = m.get(hour); if (!b) { b = new Map(); m.set(hour, b); } return b; };
+  const addCallers = (into: Map<string, number>, from: unknown) => { for (const [k, v] of map(from)) into.set(k, (into.get(k) ?? 0) + v); };
+  for (const r of rows) {
+    if (r.hour <= oldest) continue;
+    const d = r.data as Record<string, any>;
+    if (r.kind === 'read') {
+      const b = bucketOf(buckets, r.hour);
+      const c = b.get(r.key) ?? { upstream: 0, cache: 0, shadow: 0, write: 0, callers: new Map() };
+      c.upstream += Number(d.upstream ?? 0); c.cache += Number(d.cache ?? 0); c.shadow += Number(d.shadow ?? 0); c.write += Number(d.write ?? 0); addCallers(c.callers, d.callers);
+      b.set(r.key, c);
+    } else if (r.kind === 'gap') {
+      const b = bucketOf(gapBuckets, r.hour);
+      const c = b.get(r.key) ?? { calls: 0, errors: 0, callers: new Map(), lastAt: String(d.lastAt ?? ''), lastError: null };
+      c.calls += Number(d.calls ?? 0); c.errors += Number(d.errors ?? 0); addCallers(c.callers, d.callers);
+      if (String(d.lastAt ?? '') > c.lastAt) { c.lastAt = String(d.lastAt); c.lastError = d.lastError ?? c.lastError; } else c.lastError ??= d.lastError ?? null;
+      b.set(r.key, c);
+    } else if (r.kind === 'fallback') {
+      const b = bucketOf(fallbackBuckets, r.hour);
+      const c = b.get(r.key) ?? { count: 0, lastAt: String(d.lastAt ?? ''), lastError: null };
+      c.count += Number(d.count ?? 0);
+      if (String(d.lastAt ?? '') >= c.lastAt) { c.lastAt = String(d.lastAt); c.lastError = d.lastError ?? null; }
+      b.set(r.key, c);
+    } else continue;
+    n++;
+  }
+  return n;
+}
+
 export function _resetCallLog(): void { tools.length = 0; api.length = 0; nextTool = 1; nextApi = 1; buckets.clear(); gapBuckets.clear(); fallbackBuckets.clear(); usageSamples.length = 0; }

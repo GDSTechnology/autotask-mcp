@@ -382,9 +382,16 @@ to see every Autotask request that call made, with each request's status code
 and duration. Each row also shows how many requests were answered from the read
 cache or the Postgres shadow instead of going to Autotask.
 
+The **Dashboard** shows the two numbers below for the last 24 hours, for this
+MCP's own traffic only:
+- **Reads Autotask answered live**, with the busiest entities;
+- **Tool gaps**: `raw_request` calls no tool covers.
+
+Their buttons open the matching tab here.
+
 **Reads by entity (what to cache next).** For each Autotask entity (Invoices,
 Tickets, BillingItems…), where its reads were answered over the last 1, 6 or 24
-hours:
+hours, or 7 days:
 
 - **Autotask reads:** sent to Autotask.
 - **From cache:** answered by the short-lived read cache.
@@ -414,16 +421,15 @@ downloaded as a CSV and is part of the diagnostics bundle.
 - **Fallbacks.** A tool failed, and the same caller used `raw_request` within
   10 minutes. That points to the tool missing something; the tool's error is
   shown.
-- **Not through this MCP.** Autotask's usage counter covers the whole database
-  (every integration). The tenant's calls in Autotask's current window, minus
-  this MCP's own calls, estimates the traffic that never went through the MCP:
-  other integrations, or workflows calling Autotask with their own credentials.
-  It is also shown on the Dashboard, with a 24-hour average and peak. The MCP
-  can't see these calls, so it can't say whose they are; Autotask's API usage
-  report lists calls per integration.
+- **Other integrations** (a footnote, not part of this MCP). Autotask's usage
+  counter covers the whole database, so the tenant total minus this MCP's own
+  calls estimates the calls made by other integrations with their own API
+  users (Pax8, Datto RMM, IT Glue…). The MCP can't see those calls, so it can't
+  say whose they are; Autotask's API usage report lists calls per integration.
 
-Kept for 24 hours in memory. Also available as a CSV and in the diagnostics
-bundle.
+Reads by entity and Tool gaps are kept for **7 days, across restarts and
+deploys** (hourly counts in Postgres, migration 0013; in memory only without
+Postgres). Both are also available as a CSV and in the diagnostics bundle.
 
 **Autotask API calls.** Every request sent to Autotask, with its status code and
 the tool call or job that caused it.

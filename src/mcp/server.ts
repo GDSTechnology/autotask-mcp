@@ -10,6 +10,7 @@
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
 import { startNotifyWatch } from '../services/notify-watch.js';
 import { startVendorMonitor } from '../vendors/monitor.js';
+import { flushCallStats, startCallStatsPersistence } from '../db/call-stats-store.js';
 import { ingestAutotaskWebhook } from '../db/webhook-ingest.js';
 import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
 import { initAuthBlockStore } from '../db/auth-block-store.js';
@@ -322,6 +323,9 @@ export class AutotaskMcpServer {
         startNotifyWatch({ tenant, lastRun: () => getShadowRuntime()?.lastRun() ?? null, lastVerify: () => getShadowRuntime()?.lastVerify() ?? null });
         // Vendor monitor (stale imports, renewals, contracts ending, sync drift) — daily at MCP_VENDOR_MONITOR_HOUR_UTC; off when unset.
         if (isPgEnabled()) startVendorMonitor(this.autotaskService, () => getPool(this.logger), this.logger);
+        // Console traffic counts (Reads by entity, Tool gaps): kept 7 days across restarts.
+        const statsPool = isPgEnabled() ? getPool(this.logger) : null;
+        if (statsPool) void startCallStatsPersistence(statsPool, this.logger);
       }
     } else {
       await this.startStdioTransport();
@@ -530,6 +534,8 @@ export class AutotaskMcpServer {
    */
   async stop(): Promise<void> {
     this.logger.info('Stopping Autotask MCP Server...');
+    // Keep the last minutes of the console's traffic counts across the restart.
+    await Promise.race([flushCallStats().catch(() => undefined), new Promise((r) => setTimeout(r, 3000))]);
     getShadowRuntime()?.stop();
     await this.adminConsole?.stop();
     if (this.httpServer) {

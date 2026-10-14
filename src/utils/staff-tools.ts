@@ -44,7 +44,34 @@ export function matchPicklist(values: PicklistValue[] | undefined, requested: st
   return { ok: false, requested, choices };
 }
 
-export const formatChoices = (choices: PicklistChoice[]): string =>
+export type ExactPicklistMatch =
+  | { ok: true; value: number; label: string; isActive: boolean }
+  | { ok: false; reason: 'ambiguous' | 'unknown'; requested: string | number; choices: PicklistChoice[]; suggestions: PicklistChoice[]; inactiveMatch: PicklistChoice | null };
+
+/**
+ * Strict picklist match for a FILTER: an id (honoured even if inactive — it was
+ * asked for explicitly), or an exact label, case-insensitive. No partial
+ * matching: a partial only comes back as a suggestion. Inactive labels match
+ * only with includeInactive.
+ */
+export function matchPicklistExact(values: PicklistValue[] | undefined, requested: string | number, opts: { includeInactive?: boolean } = {}): ExactPicklistMatch {
+  const all = (values ?? []).map((v) => ({ value: Number(v.value), label: String(v.label ?? ''), isActive: v.isActive !== false })).filter((v) => Number.isFinite(v.value));
+  const pool = opts.includeInactive ? all : all.filter((v) => v.isActive);
+  const pick = (xs: typeof all): PicklistChoice[] => xs.map(({ value, label }) => ({ value, label }));
+  const raw = String(requested).trim();
+  if (typeof requested === 'number' || /^\d+$/.test(raw)) {
+    const hit = all.find((v) => v.value === Number(raw));
+    return hit ? { ok: true, ...hit } : { ok: false, reason: 'unknown', requested, choices: pick(pool), suggestions: [], inactiveMatch: null };
+  }
+  const want = raw.toLowerCase();
+  const exact = pool.filter((v) => v.label.trim().toLowerCase() === want);
+  if (exact.length === 1) return { ok: true, ...exact[0]! };
+  if (exact.length > 1) return { ok: false, reason: 'ambiguous', requested, choices: pick(exact), suggestions: [], inactiveMatch: null };
+  const inactive = opts.includeInactive ? undefined : all.find((v) => !v.isActive && v.label.trim().toLowerCase() === want);
+  return { ok: false, reason: 'unknown', requested, choices: pick(pool), suggestions: pick(pool.filter((v) => v.label.toLowerCase().includes(want))), inactiveMatch: inactive ? { value: inactive.value, label: inactive.label } : null };
+}
+
+export const formatChoices =(choices: PicklistChoice[]): string =>
   choices.map((c) => `${c.value} = ${c.label}`).join('; ');
 
 /**

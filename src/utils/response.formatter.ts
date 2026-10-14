@@ -23,7 +23,7 @@ export interface CompactResponse {
  */
 const SUMMARY_FIELDS: Record<EntityType, string[]> = {
   tickets: ['id', 'ticketNumber', 'title', 'status', 'priority', 'companyID', 'assignedResourceID', 'createDate', 'dueDateTime'],
-  companies: ['id', 'companyName', 'isActive', 'phone', 'city', 'state'],
+  companies: ['id', 'companyName', 'isActive', 'phone', 'city', 'state', 'classification'],
   contacts: ['id', 'firstName', 'lastName', 'emailAddress', 'companyID'],
   projects: ['id', 'projectName', 'status', 'companyID', 'projectLeadResourceID', 'startDate', 'endDate'],
   tasks: ['id', 'title', 'status', 'projectID', 'assignedResourceID', 'percentComplete'],
@@ -32,6 +32,9 @@ const SUMMARY_FIELDS: Record<EntityType, string[]> = {
   billingItemApprovalLevels: ['id', 'timeEntryID', 'approvalLevel', 'approvalResourceID', 'approvalDateTime'],
   timeEntries: ['id', 'resourceID', 'ticketID', 'projectID', 'taskID', 'dateWorked', 'hoursWorked', 'summaryNotes'],
 };
+
+/** Fields shown even when null — "not set" is the answer (search_companies: classification {id, label} or null). */
+const KEEP_NULL: Partial<Record<EntityType, string[]>> = { companies: ['classification'] };
 
 /**
  * Pick only the summary fields from an item, inlining any _enhanced names.
@@ -43,6 +46,8 @@ function pickSummaryFields(item: Record<string, any>, entityType: EntityType): R
   for (const field of fields) {
     if (item[field] !== undefined && item[field] !== null) {
       compact[field] = item[field];
+    } else if (item[field] === null && KEEP_NULL[entityType]?.includes(field)) {
+      compact[field] = null;
     }
   }
 

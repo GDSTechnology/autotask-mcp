@@ -548,7 +548,7 @@ export class AutotaskService {
     return this.ensureClient();
   }
 
-  async searchCompanies(options: AutotaskQueryOptions = {}): Promise<PagedResult<AutotaskCompany>> {
+  async searchCompanies(options: AutotaskQueryOptions & { classification?: number; companyType?: number } = {}): Promise<PagedResult<AutotaskCompany>> {
     try {
       this.logger.debug('Searching companies with options:', options);
 
@@ -559,6 +559,9 @@ export class AutotaskService {
       if (options.isActive !== undefined) {
         filters.push({ op: 'eq', field: 'isActive', value: options.isActive });
       }
+      // Picklist ids, resolved by the caller (0 is never a valid picklist value, but check != null anyway).
+      if (options.classification != null) filters.push({ op: 'eq', field: 'classification', value: options.classification });
+      if (options.companyType != null) filters.push({ op: 'eq', field: 'companyType', value: options.companyType });
 
       return await this.queryPaged<AutotaskCompany>('Companies', filters, options, { maxPageSize: 200 });
     } catch (error) {

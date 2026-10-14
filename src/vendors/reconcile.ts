@@ -70,14 +70,21 @@ export interface ReconInput {
   charges?: ChargeRow[];
 }
 
+/** Words every Microsoft product shares — a look-alike must also share a word that names the product. */
+const GENERIC_WORDS = new Set(['microsoft', '365', 'office', 'for', 'and', 'the', 'plan', 'online', 'business', '1', '2', '3']);
+function lookAlike(a: string, b: string): boolean {
+  const B = new Set(productKey(b).split(' '));
+  return similarity(a, b) >= 0.34 && productKey(a).split(' ').some((t) => t && !GENERIC_WORDS.has(t) && B.has(t));
+}
+
 export interface ChargeRow { id: number; contractID: number; contractServiceID: number | null; name: string; unitQuantity: number | null; unitPrice: number | null; isBilled: boolean }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-/** The months a back-bill charge covers, from its name ("Service — back-bill September 2026 – October 2026"): [from, to] as YYYY-MM. */
+/** The months a back-bill charge covers, from its name ("Service — back-bill Sep 2026 – Oct 2026"; full month names too): [from, to] as YYYY-MM. */
 export function backbillWindow(name: string): [string, string] | null {
   const m = /back-bill\s+([A-Za-z]+)\s+(\d{4})(?:\s*[–-]\s*([A-Za-z]+)\s+(\d{4}))?/i.exec(name);
   if (!m) return null;
-  const ym = (mon: string, y: string) => { const n = MONTHS.findIndex((x) => x.toLowerCase() === mon.toLowerCase()); return n < 0 ? null : `${y}-${String(n + 1).padStart(2, '0')}`; };
+  const ym = (mon: string, y: string) => { const n = MONTHS.findIndex((x) => x.slice(0, 3).toLowerCase() === mon.slice(0, 3).toLowerCase()); return n < 0 ? null : `${y}-${String(n + 1).padStart(2, '0')}`; };
   const from = ym(m[1]!, m[2]!), to = m[3] ? ym(m[3], m[4]!) : from;
   return from && to ? [from, to] : null;
 }
@@ -258,7 +265,7 @@ export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<st
       const exposure = landed != null && qty ? landed * qty : costTotal;
       const elsewhere = (outOfPeriod.get(cm.autotaskCompanyId!) ?? []).filter((x) => x.offeringId === offering.id).map((x) => `${x.contract.contractName} (${x.contract.contractType != null && x.contract.contractType !== RECURRING_SERVICE_CONTRACT ? 'not a Recurring Service contract' : `${day(x.contract.startDate) ?? '?'} – ${day(x.contract.endDate) ?? '?'}`})`);
       // A line on a service with a similar name that isn't linked to a product: probably this one, not yet linked.
-      const maybe = [...new Set((unlinked.get(cm.autotaskCompanyId!) ?? []).filter((x) => similarity(services.get(x.serviceID)?.name ?? '', offering.name) >= 0.34)
+      const maybe = [...new Set((unlinked.get(cm.autotaskCompanyId!) ?? []).filter((x) => lookAlike(services.get(x.serviceID)?.name ?? '', offering.name))
         .map((x) => `"${services.get(x.serviceID)?.name ?? x.serviceID}" on ${x.contract.contractName}`))];
       push({ ...base, ...empty, exceptionKey: keyOf(null), severity: maybe.length ? 'review' : company && !company.isActive ? 'high' : 'critical', exceptions: ['not_billed', ...(company && !company.isActive ? ['inactive_company'] : []), ...(maybe.length ? ['unlinked_service'] : [])],
         reason: `${company && !company.isActive ? 'the Autotask company is INACTIVE and ' : ''}no contract of ${company?.companyName ?? 'the customer'} in effect for ${period} bills ${offering.name} — the vendor charge is not billed back${elsewhere.length ? `; a contract NOT in effect for this period has it: ${[...new Set(elsewhere)].join('; ')}` : ''}${maybe.length ? `; BUT ${maybe.join('; ')} ${maybe.length > 1 ? 'are' : 'is'} not linked to a product — probably this one. Link it (resolve_mapping kind=catalog) and re-run before acting` : ''}`,

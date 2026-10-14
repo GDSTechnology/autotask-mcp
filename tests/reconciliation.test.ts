@@ -57,6 +57,24 @@ describe('reconcile', () => {
     expect(unposted.reason).toMatch(/not yet confirmed by a posted invoice/);
   });
 
+  test('not billed, but an unlinked look-alike line is on a contract in effect → review "link it", not critical', () => {
+    const r = reconcile(input({ links: [link(259, 8, 'monthly')] , services: [{ id: 297, name: 'MS 365 Business Standard (legacy)', periodType: 2, unitCost: 13.2, unitPrice: 15 }] })).rows[0]!;
+    expect(r).toMatchObject({ severity: 'review', confidence: 'unverified', proposedAction: 'link the service, then re-run' });
+    expect(r.exceptions).toEqual(['not_billed', 'unlinked_service']);
+    expect(r.reason).toMatch(/"MS 365 Business Standard \(legacy\)" on 2026-28 - MSA - Licenses is not linked/);
+  });
+
+  test('a back-bill charge covering the month turns "not billed" / "quantity short" into info', () => {
+    const charges = [{ id: 501, contractID: 1, contractServiceID: null, name: 'Microsoft 365 Business Standard [NCE] - MM — back-bill September 2026 – October 2026', unitQuantity: 8, unitPrice: 15, isBilled: false }];
+    const nb = reconcile(input({ contractServices: [], units: [], billed: [], charges })).rows[0]!;
+    expect(nb).toMatchObject({ severity: 'info', monthlyExposure: 0, proposedAction: 'none — back-billed; make sure the charge is posted' });
+    expect(nb.exceptions).toEqual(expect.arrayContaining(['not_billed', 'backbilled']));
+    expect(nb.reason).toMatch(/back-bill charge 501 .*not invoiced yet/);
+    // a window that ends before the month doesn't cover it; another company's contract never does
+    expect(reconcile(input({ contractServices: [], units: [], billed: [], charges: [{ ...charges[0]!, name: 'Microsoft 365 Business Standard — back-bill September 2026' }] })).rows[0]!.severity).toBe('critical');
+    expect(reconcile(input({ contractServices: [], units: [], billed: [], charges: [{ ...charges[0]!, contractID: 3 }] })).rows[0]!.severity).toBe('critical');
+  });
+
   test('quantity short, term mismatch, billed on several lines', () => {
     const r = reconcile(input({
       lines: [line({ quantity: 6, costTotal: 84.67, cadence: 'AM', commitmentTerm: '1-Year', unitCost: 11.03 })],

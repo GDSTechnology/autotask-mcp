@@ -44,7 +44,8 @@ vendor line ──SKU──▶ offering ◀──link── Autotask Service (on
 4. **SKUs → offerings.** Use `kind=offerings`. Vendor fees are proposed as `not_billable`.
 5. **Autotask services → offerings.** Use `kind=catalog`. Each service's term is read from its name, e.g. *"[NCE] Annual - Billed Monthly"* = AM.
    - A service whose name doesn't state its term is `medium`; confirm the term.
-   - Similar names (renames, *Office 365 E5* vs *Microsoft 365 E5*) are only **suggested**. Link them with `action=set`.
+   - A known manufacturer rename (*Project Plan 5* → *Planner and Project Plan 5*, *Microsoft 365 Domestic Calling Plan* → *Microsoft Teams Domestic Calling Plan*, *Business Apps* → *Microsoft 365 Apps for Business*) is proposed at `medium`; confirm it.
+   - Other similar names (*Office 365 E5* vs *Microsoft 365 E5*, a different product) are only **suggested**. Link them with `action=set`.
 6. **Check coverage** with `autotask_vendor_list_sources`, and look at lines with `autotask_vendor_get_lines` (`unmappedOnly: true` shows what still needs a decision).
 
 Every mapping decision is **versioned**: a change supersedes the previous row, recording who decided and when. Nothing in Autotask is written in this phase.
@@ -99,6 +100,7 @@ This needs migration `0012_reconciliation.sql`. Every step below reads Autotask 
    - **Price Should Be** comes from the pricing policy.
    - **Billed** is the posted recurring BillingItem for that month. A loss counts as *confirmed* only when an invoice was posted; otherwise it is *unverified*.
    - **The other direction:** a contract line is `not_purchased` when it bills a product this vendor supplies but the vendor has no charge for that customer. This is usually a cancelled subscription still billed to the customer. Annual-billed (AA) subscriptions appear on one invoice a year, so those are checked against the last 13 months of imports.
+   - **Not billed, two checks first:** if the customer has a line on a contract in effect whose service has a similar name but is not linked to a product, the row is `review` + `unlinked_service` ("link it and re-run"), not critical. If a back-bill charge (named "… — back-bill <month> [– <month>]") covers the invoice month, a `not_billed` or `qty_short` row becomes `info` + `backbilled`, with no exposure, and the plan proposes no second back-bill.
    - The run is saved, and a run with critical rows sends the `reconcile.critical` notification.
 2. Exceptions, by severity:
 
@@ -106,8 +108,8 @@ This needs migration `0012_reconciliation.sql`. Every step below reads Autotask 
    |---|---|
    | critical | `below_cost`, `not_billed` |
    | high | `qty_short`, `term_mismatch`, `cost_stale`, `inactive_company`, `not_purchased` |
-   | review | `below_target`, `margin_below_policy`, `negotiated`, `qty_over`, `billed_on_multiple_lines`, `unmapped_customer`, `unmapped_sku`, `proration_credit` |
-   | info | `not_customer_billable` (internal / NFR) |
+   | review | `below_target`, `margin_below_policy`, `negotiated`, `qty_over`, `billed_on_multiple_lines`, `unmapped_customer`, `unmapped_sku`, `unlinked_service`, `proration_credit` |
+   | info | `not_customer_billable` (internal / NFR), `backbilled` |
 
    `autotask_reconcile_get_exceptions` lists them and can update one (status `open` | `acknowledged` | `resolved` | `accepted`, plus an owner and a note). Each update is kept in the exception's history. An exception that comes back in a later run reopens. Mark a `not_purchased` line `accepted` when the customer buys that product from another vendor.
 3. `autotask_vendor_pricing_policy` sets the policy and is versioned. Policy can be set globally, per manufacturer or per offering:

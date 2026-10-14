@@ -101,6 +101,8 @@ export function contractToolHandlers(s: AutotaskService, getPool: () => Pool | n
       } else if (source === 'duplicates') {
         // Lines on a service that duplicates the STANDARD service for its product + term.
         const links = (await st.vendor.catalogLinks()).filter((l) => l.autotaskEntity === 'Services' && (!Array.isArray(a.offeringIds) || !a.offeringIds.length || a.offeringIds.map(Number).includes(l.offeringId)));
+        // Nothing linked yet means "unknown", not "no duplicates" — say what to do first.
+        if (!links.length) return { result: { status: 'no_links' }, message: 'No Autotask services are linked to vendor products yet, so duplicates can’t be found. Link them first: autotask_reconcile_resolve_mapping kind=catalog (propose, then accept), then run the catalog plan (autotask_catalog_plan_standardize).' };
         const offerings = new Map((await st.vendor.offerings()).map((o) => [o.id, o]));
         const groups = new Map<string, typeof links>();
         for (const l of links) { const k = `${l.offeringId}|${l.cadence}`; (groups.get(k) ?? groups.set(k, []).get(k)!).push(l); }
@@ -111,6 +113,7 @@ export function contractToolHandlers(s: AutotaskService, getPool: () => Pool | n
           if (!std) { if (g.length > 1) notes.push(`${o?.name ?? k} ${k.split('|')[1]}: no standard service yet — run the catalog plan first`); continue; }
           for (const l of g) if (l.autotaskId !== std.autotaskId) dupOf.set(l.autotaskId, { std: std.autotaskId, label: `${o?.name ?? 'product'} ${std.cadence}` });
         }
+        if (!links.some((l) => l.method === 'standardized')) return { result: { status: 'no_standard', notes }, message: 'No standard services yet: run the catalog plan first (autotask_catalog_plan_standardize, approve, execute). It picks the one service per product and term that duplicates are moved onto.' };
         if (!dupOf.size) return { result: { notes }, message: `No duplicate services with contract lines to move.${notes.length ? ` ${notes.join('; ')}.` : ''}` };
         const lines = await inChunks<{ id: number; contractID: number; serviceID: number }>(q, 'ContractServices', 'serviceID', [...dupOf.keys()], [], ['id', 'contractID', 'serviceID']);
         const active = new Set((await inChunks<{ id: number }>(q, 'Contracts', 'id', lines.map((l) => Number(l.contractID)), [{ op: 'eq', field: 'status', value: 1 }], ['id'])).map((c) => Number(c.id)));

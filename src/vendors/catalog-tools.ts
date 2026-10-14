@@ -127,7 +127,7 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
       const sm = r.summary;
       return {
         result: { ...planView(plan), summary: sm },
-        message: `Plan ${plan.id} (hash ${plan.hash}): ${sm.products} product(s) — rename ${sm.rename}, catalog reprice ${sm.reprice}, create ${sm.create}${sm.blocked ? ` (${sm.blocked} blocked: missing price / work type)` : ''}, deactivate ${sm.deactivate} unused duplicate(s), ${sm.inUseDuplicates} in-use duplicate(s) kept${sm.inUseDuplicates ? ' (move their contract lines with autotask_contract_plan_move_lines, then rebuild this plan to deactivate them)' : ''}, ${sm.unknownTerm} service(s) with an unstated term. Nothing written. Review the rows, then approve: autotask_change_plan_review action=approve planId hash rows="1-12" (or "all").`,
+        message: `Plan ${plan.id} (hash ${plan.hash}): ${sm.products} product(s) — rename ${sm.rename}, catalog reprice ${sm.reprice}, create ${sm.create}${sm.blocked ? ` (${sm.blocked} blocked: missing price / work type)` : ''}${sm.skippedTerms ? `, ${sm.skippedTerms} term(s) not offered skipped (no service, no price, not bought)` : ''}, deactivate ${sm.deactivate} unused duplicate(s), ${sm.inUseDuplicates} in-use duplicate(s) kept${sm.inUseDuplicates ? ' (move their contract lines with autotask_contract_plan_move_lines, then rebuild this plan to deactivate them)' : ''}, ${sm.unknownTerm} service(s) with an unstated term. Nothing written. Review the rows, then approve: autotask_change_plan_review action=approve planId hash rows="1-12" (or "all").`,
       };
     }],
 

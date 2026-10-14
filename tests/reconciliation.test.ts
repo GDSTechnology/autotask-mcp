@@ -62,10 +62,13 @@ describe('reconcile', () => {
     expect(r).toMatchObject({ severity: 'review', confidence: 'unverified', proposedAction: 'link the service, then re-run' });
     expect(r.exceptions).toEqual(['not_billed', 'unlinked_service']);
     expect(r.reason).toMatch(/"MS 365 Business Standard \(legacy\)" on 2026-28 - MSA - Licenses is not linked/);
+    // sharing only "Microsoft 365 … for" is not a look-alike (Copilot is not Business Standard)
+    const other = reconcile(input({ links: [link(259, 8, 'monthly')], services: [{ id: 297, name: 'Microsoft Copilot for Microsoft 365 [NCE] - Annual', periodType: 5, unitCost: 30, unitPrice: 36 }] })).rows[0]!;
+    expect(other).toMatchObject({ severity: 'critical', exceptions: ['not_billed'] });
   });
 
   test('a back-bill charge covering the month turns "not billed" / "quantity short" into info', () => {
-    const charges = [{ id: 501, contractID: 1, contractServiceID: null, name: 'Microsoft 365 Business Standard [NCE] - MM — back-bill September 2026 – October 2026', unitQuantity: 8, unitPrice: 15, isBilled: false }];
+    const charges = [{ id: 501, contractID: 1, contractServiceID: null, name: 'Microsoft 365 Business Standard [NCE] - MM — back-bill Sep 2026 – Oct 2026', unitQuantity: 8, unitPrice: 15, isBilled: false }];
     const nb = reconcile(input({ contractServices: [], units: [], billed: [], charges })).rows[0]!;
     expect(nb).toMatchObject({ severity: 'info', monthlyExposure: 0, proposedAction: 'none — back-billed; make sure the charge is posted' });
     expect(nb.exceptions).toEqual(expect.arrayContaining(['not_billed', 'backbilled']));

@@ -138,9 +138,26 @@ describe('catalog standardization plan', () => {
     const r = buildStandardizePlan(base);
     const aa = r.rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))!;
     expect(aa.blocked).toMatch(/BELOW its cost/); // suggested 130 < cost 140
-    const noPrice = buildStandardizePlan({ ...base, prices: base.prices.slice(0, 1) }).rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))!;
+    // bought on AA but no price → blocked create
+    const boughtAA = new Map([...base.soldSkus, ['MST-NCE-104-C100', { cadences: new Set(['MM', 'AA']), chargeClasses: new Set(['recurring']) }]]);
+    const noPrice = buildStandardizePlan({ ...base, soldSkus: boughtAA, prices: base.prices.slice(0, 1) }).rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))!;
     expect(noPrice.blocked).toMatch(/no pax8 price for AA/);
     expect(noPrice.after).toMatchObject({ periodType: 5, billingCodeID: 9 }); // yearly period; sibling's work type
+  });
+
+  test('a term nobody buys, with no service and no price, is skipped — not a blocked create', () => {
+    const r = buildStandardizePlan({ ...base, prices: base.prices.slice(0, 1) });
+    expect(r.rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))).toBeUndefined();
+    expect(r.summary.skippedTerms).toBe(1);
+  });
+
+  test('a product with no service of its own borrows the work type across "NinjaOne (Dropsuite)" / "NinjaOne"', () => {
+    const NEW = { id: 3, manufacturer: 'NinjaOne', name: 'NinjaOne SaaS Backup + Archiver', manufacturerProductId: null, unit: null, kind: 'recurring', notes: null };
+    const r = buildStandardizePlan({ ...base, offerings: [MS, NJ, NEW], offeringMappings: [...base.offeringMappings, { vendor: 'pax8', sku: 'DRP-ARC-BAR-C100', status: 'mapped' as const, offeringId: 3, method: 'm', confidence: 'high', note: null, decidedBy: null, decidedAt: 'x' }],
+      soldSkus: new Map([...base.soldSkus, ['DRP-ARC-BAR-C100', { cadences: new Set(['monthly']), chargeClasses: new Set(['recurring']) }]]),
+      prices: [...base.prices, { vendor: 'pax8', sku: 'DRP-ARC-BAR-C100', cadence: 'monthly', unitCost: 4.2, suggestedPrice: 6, per: 'month' as const, source: 'invoice:1', effectiveDate: '2026-10-01' }] });
+    const c = r.rows.find((x) => x.action === 'create' && x.after?.name === 'NinjaOne SaaS Backup + Archiver - Monthly')!;
+    expect(c).toMatchObject({ blocked: null, after: { billingCodeID: 4 } });
   });
 
   test('catalog price rows are reference-only and use the term price', () => {

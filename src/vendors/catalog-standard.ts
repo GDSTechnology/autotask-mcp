@@ -56,11 +56,11 @@ export interface StandardizeInput {
   offeringIds?: number[];
 }
 
-export interface StandardizeResult { rows: PlanRowInput[]; summary: { products: number; keep: number; rename: number; reprice: number; create: number; deactivate: number; inUseDuplicates: number; blocked: number; unknownTerm: number } }
+export interface StandardizeResult { rows: PlanRowInput[]; summary: { products: number; keep: number; rename: number; reprice: number; create: number; deactivate: number; inUseDuplicates: number; blocked: number; unknownTerm: number; skippedTerms: number } }
 
 export function buildStandardizePlan(i: StandardizeInput): StandardizeResult {
   const rows: PlanRowInput[] = [];
-  const sum = { products: 0, keep: 0, rename: 0, reprice: 0, create: 0, deactivate: 0, inUseDuplicates: 0, blocked: 0, unknownTerm: 0 };
+  const sum = { products: 0, keep: 0, rename: 0, reprice: 0, create: 0, deactivate: 0, inUseDuplicates: 0, blocked: 0, unknownTerm: 0, skippedTerms: 0 };
   const byOffering = new Map<number, OfferingMapping[]>();
   for (const m of i.offeringMappings) if (m.status === 'mapped' && m.offeringId != null) (byOffering.get(m.offeringId) ?? byOffering.set(m.offeringId, []).get(m.offeringId)!).push(m);
   const linkOf = new Map(i.links.filter((l) => l.autotaskEntity === 'Services').map((l) => [l.autotaskId, l]));
@@ -78,7 +78,9 @@ export function buildStandardizePlan(i: StandardizeInput): StandardizeResult {
 
   // The work type most of a manufacturer's linked services use (for a product with no service yet).
   const manufacturerSibling = (manufacturer: string): AutotaskServiceRow | null => {
-    const ids = new Set(i.offerings.filter((x) => x.manufacturer === manufacturer).map((x) => x.id));
+    // "NinjaOne (Dropsuite)" is NinjaOne: compare without the parenthesised channel.
+    const bare = (m: string) => m.replace(/\s*\(.*\)$/, '').toLowerCase();
+    const ids = new Set(i.offerings.filter((x) => bare(x.manufacturer) === bare(manufacturer)).map((x) => x.id));
     const pool = i.services.filter((s) => s.billingCodeID != null && s.isActive !== false && ((linkOf.get(s.id) && ids.has(linkOf.get(s.id)!.offeringId)) || i.offerings.some((x) => ids.has(x.id) && productKey(x.name) === productKey(s.name))));
     const count = new Map<number, number>();
     for (const s of pool) count.set(s.billingCodeID!, (count.get(s.billingCodeID!) ?? 0) + 1);
@@ -133,6 +135,9 @@ export function buildStandardizePlan(i: StandardizeInput): StandardizeResult {
           }
         }
       } else {
+        // A term with no service, no vendor price and no vendor line is not offered — no create (it would only be blocked).
+        const bought = skus.some((k) => i.soldSkus.get(k)?.cadences.has(term) || (term === 'monthly' && i.soldSkus.get(k)?.cadences.has('MM')));
+        if ((!price || price.unitCost == null) && !bought && !members.length) { sum.skippedTerms++; continue; }
         sum.create++;
         const sibling = group.map((g) => g.s).find((s) => s.billingCodeID != null) ?? manufacturerSibling(o.manufacturer);
         const blocked = price && price.unitCost != null && price.suggestedPrice != null && price.suggestedPrice < price.unitCost ? `the vendor's suggested price ${price.suggestedPrice} is BELOW its cost ${price.unitCost} — set the GDS price (autotask_vendor_prices action=set) and rebuild` : !price || price.unitCost == null ? `no ${i.vendor} price for ${term} yet — add it (autotask_vendor_prices action=set) and rebuild` : !sibling ? 'no sibling service to copy the work type (billing code) from — create one service of this product first' : null;

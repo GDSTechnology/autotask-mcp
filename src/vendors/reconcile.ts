@@ -17,7 +17,7 @@
 //                            this vendor supplies but no longer charges us for
 //   bundle price → its parts a bundle priced below the landed cost of its components
 
-import { cadenceMatches, productKey, serviceCadence } from './offerings.js';
+import { cadenceMatches, productKey, serviceCadence, similarity } from './offerings.js';
 import { landedCost, policyFor, priceShouldBe, type CustomerPriceException, type PricingPolicy } from './policy.js';
 import type { VendorLine, Cadence } from './types.js';
 import type { CatalogLink, CustomerMapping, Offering, OfferingMapping } from './store.js';
@@ -66,6 +66,20 @@ export interface ReconInput {
   recentAnnual?: string[];
   policies: PricingPolicy[];
   customerExceptions: CustomerPriceException[];
+  /** One-time contract charges on these contracts purchased on / after the period start — back-bills ("… — back-bill <month> [– <month>]") cover past months. */
+  charges?: ChargeRow[];
+}
+
+export interface ChargeRow { id: number; contractID: number; contractServiceID: number | null; name: string; unitQuantity: number | null; unitPrice: number | null; isBilled: boolean }
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** The months a back-bill charge covers, from its name ("Service — back-bill September 2026 – October 2026"): [from, to] as YYYY-MM. */
+export function backbillWindow(name: string): [string, string] | null {
+  const m = /back-bill\s+([A-Za-z]+)\s+(\d{4})(?:\s*[–-]\s*([A-Za-z]+)\s+(\d{4}))?/i.exec(name);
+  if (!m) return null;
+  const ym = (mon: string, y: string) => { const n = MONTHS.findIndex((x) => x.toLowerCase() === mon.toLowerCase()); return n < 0 ? null : `${y}-${String(n + 1).padStart(2, '0')}`; };
+  const from = ym(m[1]!, m[2]!), to = m[3] ? ym(m[3], m[4]!) : from;
+  return from && to ? [from, to] : null;
 }
 
 export interface ReconRow {
@@ -153,10 +167,13 @@ export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<st
   // that are NOT in effect (future renewals, expired, wrong type) are kept to explain a "not billed".
   const candsByCompany = new Map<number, Cand[]>();
   const outOfPeriod = new Map<number, Array<{ contract: ContractRow; offeringId: number }>>();
+  /** Lines on contracts in effect whose service isn't linked to any product — a "not billed" may just be one of these. */
+  const unlinked = new Map<number, Array<{ contract: ContractRow; serviceID: number }>>();
   const addCand = (companyID: number, c: Cand) => { (candsByCompany.get(companyID) ?? candsByCompany.set(companyID, []).get(companyID)!).push(c); };
   for (const cs of i.contractServices) {
     const c = contracts.get(cs.contractID); if (!c) continue;
-    const o = offeringOfService(cs.serviceID); if (!o) continue;
+    const o = offeringOfService(cs.serviceID);
+    if (!o) { if (contractCovers(c, periodStart, periodEnd)) (unlinked.get(c.companyID) ?? unlinked.set(c.companyID, []).get(c.companyID)!).push({ contract: c, serviceID: cs.serviceID }); continue; }
     if (!contractCovers(c, periodStart, periodEnd)) { if (c.status === 1) (outOfPeriod.get(c.companyID) ?? outOfPeriod.set(c.companyID, []).get(c.companyID)!).push({ contract: c, offeringId: o.offeringId }); continue; }
     addCand(c.companyID, { kind: 'service', lineId: cs.id, contractID: c.id, serviceID: cs.serviceID, o, cs, cb: null, bundle: null, u: units.get(cs.id) ?? NO_UNITS, noPeriod: !units.has(cs.id) });
   }
@@ -240,9 +257,12 @@ export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<st
     if (!cands.length) {
       const exposure = landed != null && qty ? landed * qty : costTotal;
       const elsewhere = (outOfPeriod.get(cm.autotaskCompanyId!) ?? []).filter((x) => x.offeringId === offering.id).map((x) => `${x.contract.contractName} (${x.contract.contractType != null && x.contract.contractType !== RECURRING_SERVICE_CONTRACT ? 'not a Recurring Service contract' : `${day(x.contract.startDate) ?? '?'} – ${day(x.contract.endDate) ?? '?'}`})`);
-      push({ ...base, ...empty, exceptionKey: keyOf(null), severity: company && !company.isActive ? 'high' : 'critical', exceptions: ['not_billed', ...(company && !company.isActive ? ['inactive_company'] : [])],
-        reason: `${company && !company.isActive ? 'the Autotask company is INACTIVE and ' : ''}no contract of ${company?.companyName ?? 'the customer'} in effect for ${period} bills ${offering.name} — the vendor charge is not billed back${elsewhere.length ? `; a contract NOT in effect for this period has it: ${[...new Set(elsewhere)].join('; ')}` : ''}`,
-        proposedAction: 'add it to the customer’s contract (or confirm it is intentionally absorbed)', confidence: 'verified',
+      // A line on a service with a similar name that isn't linked to a product: probably this one, not yet linked.
+      const maybe = [...new Set((unlinked.get(cm.autotaskCompanyId!) ?? []).filter((x) => similarity(services.get(x.serviceID)?.name ?? '', offering.name) >= 0.34)
+        .map((x) => `"${services.get(x.serviceID)?.name ?? x.serviceID}" on ${x.contract.contractName}`))];
+      push({ ...base, ...empty, exceptionKey: keyOf(null), severity: maybe.length ? 'review' : company && !company.isActive ? 'high' : 'critical', exceptions: ['not_billed', ...(company && !company.isActive ? ['inactive_company'] : []), ...(maybe.length ? ['unlinked_service'] : [])],
+        reason: `${company && !company.isActive ? 'the Autotask company is INACTIVE and ' : ''}no contract of ${company?.companyName ?? 'the customer'} in effect for ${period} bills ${offering.name} — the vendor charge is not billed back${elsewhere.length ? `; a contract NOT in effect for this period has it: ${[...new Set(elsewhere)].join('; ')}` : ''}${maybe.length ? `; BUT ${maybe.join('; ')} ${maybe.length > 1 ? 'are' : 'is'} not linked to a product — probably this one. Link it (resolve_mapping kind=catalog) and re-run before acting` : ''}`,
+        proposedAction: maybe.length ? 'link the service, then re-run' : 'add it to the customer’s contract (or confirm it is intentionally absorbed)', confidence: maybe.length ? 'unverified' : 'verified',
         costShouldBe: r4(landed), priceShouldBe: r4(target.price), priceRule: target.rule, landedCost: r4(landed), monthlyExposure: r2(monthly(exposure, basis)), annualExposure: r2(monthly(exposure, basis)! * 12) });
       continue;
     }
@@ -391,6 +411,24 @@ export function reconcile(i: ReconInput): { rows: ReconRow[]; summary: Record<st
         matchMethod: x.o.method, otherContractServices: [],
       });
     }
+  }
+
+  // A back-bill charge covering this month already bills what the contract line missed.
+  const month = periodStart.slice(0, 7);
+  const companyOfContract = new Map(i.contracts.map((c) => [c.id, c.companyID]));
+  const backbills = (i.charges ?? []).map((ch) => ({ ch, w: backbillWindow(ch.name), product: ch.name.split(/\s+[—-]\s+back-bill/i)[0]!.trim() })).filter((x) => x.w && x.w[0] <= month && x.w[1] >= month);
+  for (const r of rows) {
+    if (!r.exceptions.includes('not_billed') && !r.exceptions.includes('qty_short')) continue;
+    const off = r.offeringId != null ? offerings.get(r.offeringId) : undefined; if (!off) continue;
+    const hit = backbills.find(({ ch, product }) => companyOfContract.get(ch.contractID) === r.autotaskCompanyId
+      && ((r.contractServiceId != null && ch.contractServiceID === r.contractServiceId) || productKey(product) === productKey(off.name)
+        || [...services.values()].some((sv) => sv.name === product && offeringOfService(sv.id)?.offeringId === off.id)));
+    if (!hit) continue;
+    const { ch } = hit;
+    r.severity = 'info'; r.exceptions.push('backbilled'); r.confidence = 'verified';
+    r.reason += `; covered for ${month} by back-bill charge ${ch.id} "${ch.name}" (${ch.unitQuantity ?? '?'} × ${ch.unitPrice ?? '?'}, ${ch.isBilled ? 'invoiced' : 'not invoiced yet — bills at the next Approve & Post'})`;
+    r.proposedAction = ch.isBilled ? 'none — back-billed' : 'none — back-billed; make sure the charge is posted';
+    r.monthlyExposure = 0; r.annualExposure = 0;
   }
 
   rows.sort((a, b) => RANK[b.severity] - RANK[a.severity] || (b.monthlyExposure ?? 0) - (a.monthlyExposure ?? 0) || String(a.customerName).localeCompare(String(b.customerName)));

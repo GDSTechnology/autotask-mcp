@@ -75,12 +75,17 @@ export async function loadReconInput(s: AutotaskService, st: { vendor: VendorSto
     .map((u) => ({ contractServiceBundleID: Number(u.contractServiceBundleID), units: Number(u.units ?? 0), price: num(u.price), cost: num(u.cost), startDate: String(u.startDate), endDate: String(u.endDate) }));
   const billedBundles = (await inChunks<Record<string, any>>('BillingItems', 'contractServiceBundleID', cbIds, inMonth, ['id', 'contractServiceBundleID', 'quantity', 'rate', 'extendedPrice', 'ourCost', 'invoiceID', 'itemDate', 'postedDate']))
     .map((b) => ({ contractServiceBundleID: Number(b.contractServiceBundleID), ...billedOf(b) }));
+  // Back-bill charges (one-time, dated the last day they cover) that may cover this month.
+  // Only a refinement: if the read fails, reconcile without it (back-billed months then show as not billed).
+  const charges = (await inChunks<Record<string, any>>('ContractCharges', 'contractID', contractIds, [{ op: 'gte', field: 'datePurchased', value: `${periodStart}T00:00:00` }], ['id', 'contractID', 'contractServiceID', 'name', 'unitQuantity', 'unitPrice', 'isBilled']).catch(() => [] as Record<string, any>[]))
+    .filter((x) => /back-bill/i.test(String(x.name ?? '')))
+    .map((x) => ({ id: Number(x.id), contractID: Number(x.contractID), contractServiceID: num(x.contractServiceID), name: String(x.name), unitQuantity: num(x.unitQuantity), unitPrice: num(x.unitPrice), isBilled: x.isBilled === true }));
   return {
     calls,
     input: {
       vendor: q.vendor, invoice: { documentId: doc.id, invoiceNumber: doc.invoiceNumber, invoiceDate: doc.invoiceDate, periodStart, periodEnd },
       lines, customerMappings, offeringMappings, offerings, links, services, companies, contracts, contractServices, units, billed,
-      bundleLines, bundles, bundleUnits, billedBundles, recentAnnual, policies, customerExceptions,
+      bundleLines, bundles, bundleUnits, billedBundles, recentAnnual, policies, customerExceptions, charges,
     },
   };
 }

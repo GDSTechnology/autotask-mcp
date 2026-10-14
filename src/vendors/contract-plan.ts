@@ -238,7 +238,7 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
 
     // Back-bill: the months before the effective date that the vendor charged and the customer was not billed —
     // a one-time contract charge (the forward fix is the quantity / missing-line row from the effective date).
-    if (want('backbill') && i.backbillFrom && (r.exceptions.includes('not_billed') || (r.primary && r.exceptions.includes('qty_short')))) {
+    if (want('backbill') && i.backbillFrom && !r.exceptions.includes('backbilled') && (r.exceptions.includes('not_billed') || (r.primary && r.exceptions.includes('qty_short')))) {
       const missing = r.exceptions.includes('not_billed') ? r.quantity ?? 0 : delta > 0 ? delta : 0;
       const from = i.backbillFrom.slice(0, 7), to = i.effectiveDate.slice(0, 7);
       const months = (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7));

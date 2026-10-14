@@ -24,7 +24,7 @@ export function manufacturerOf(vendor: string, sku: string | null, description: 
 const TERM_NOISE = [
   /\[\s*new commerce experience\s*\]/gi, /\[\s*nce\s*\]/gi, /\bnce\b/gi,
   /\bannual\s*-\s*billed\s*(monthly|annual(ly)?)\b/gi, /\bmonthly\s*-\s*billed\s*monthly\b/gi,
-  /\bmonthly\s*-\s*1\s*yr\s*commit\b/gi, /\b1\s*yr\s*commit\b/gi, /\b(monthly|annual|yearly)\b\s*$/gi,
+  /\bmonthly\s*-\s*1\s*yr\s*commit\b/gi, /\b1\s*yr\s*commit\b/gi, /\b(monthly|annual|yearly)\s*commit(ment)?\b/gi, /\b(monthly|annual|yearly)\b\s*$/gi,
   /\s-\s*(monthly|annual|yearly)\b/gi, /\[options:\s*\]/gi, /\bpowered by dropsuite\b/gi,
 ];
 
@@ -33,6 +33,19 @@ export function productKey(name: string): string {
   let s = String(name ?? '');
   for (const re of TERM_NOISE) s = s.replace(re, ' ');
   return s.toLowerCase().replace(/[^a-z0-9+]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Products the manufacturer renamed: old product key → current one. Proposed for a person to confirm, never auto-matched. */
+const PRODUCT_RENAMES: Record<string, string> = {
+  'project plan 5': 'planner and project plan 5',
+  'microsoft 365 domestic calling plan': 'microsoft teams domestic calling plan',
+  'microsoft 365 business apps': 'microsoft 365 apps for business',
+  'microsoft business apps': 'microsoft 365 apps for business',
+};
+
+/** The current product key for a renamed product, or null. */
+export function renamedKey(name: string): string | null {
+  return PRODUCT_RENAMES[productKey(name)] ?? null;
 }
 
 /**

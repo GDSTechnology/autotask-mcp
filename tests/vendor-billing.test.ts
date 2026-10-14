@@ -147,4 +147,18 @@ describe('proposals never guess', () => {
     expect(by[200]?.proposed ?? null).toBeNull(); // Dropsuite vs NinjaOne SaaS Backup: a rename — never linked automatically (set it by hand)
     expect(by[999]).toBeUndefined();
   });
+
+  test('catalog: "Monthly Commit" is a term, not the product; a manufacturer rename is proposed at medium only', async () => {
+    const store = fakeStore({ offerings: [{ id: 9, manufacturer: 'Microsoft', name: 'Office 365 Extra File Storage' }, { id: 10, manufacturer: 'Microsoft', name: 'Planner and Project Plan 5' }, { id: 11, manufacturer: 'Microsoft', name: 'Microsoft 365 E5' }] });
+    const p = await proposeCatalogLinks(store, [
+      { id: 1, name: 'Office 365 Extra File Storage [NCE] - Monthly - Monthly Commit', periodType: 2 },
+      { id: 2, name: 'Project Plan 5 [NCE] - Monthly', periodType: 2 },
+      { id: 3, name: 'Office 365 E5 [NCE] Annual - Billed Monthly', periodType: 2 },
+    ]);
+    const by = Object.fromEntries(p.map((x) => [x.autotaskId, x]));
+    expect(by[1]).toMatchObject({ proposed: { offeringId: 9 }, cadence: 'MM', confidence: 'high' });
+    expect(by[2]).toMatchObject({ proposed: { offeringId: 10 }, cadence: 'MM', confidence: 'medium' });
+    expect(by[2]!.why).toMatch(/renamed/);
+    expect(by[3]!.proposed).toBeNull(); // Office 365 E5 is not Microsoft 365 E5 — a person decides
+  });
 });

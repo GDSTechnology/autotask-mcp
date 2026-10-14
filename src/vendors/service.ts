@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { parse } from 'csv-parse/sync';
 import { pax8Adapter } from './pax8.js';
-import { cadenceMatches, manufacturerOf, offeringName, productKey, serviceCadence, similarity } from './offerings.js';
+import { cadenceMatches, manufacturerOf, offeringName, productKey, renamedKey, serviceCadence, similarity } from './offerings.js';
 import type { ParsedDocument, VendorAdapter } from './types.js';
 import type { CatalogLink, CrosswalkRow, CustomerMapping, Offering, OfferingMapping, VendorStore } from './store.js';
 
@@ -172,10 +172,13 @@ export async function proposeCatalogLinks(store: VendorStore, services: Array<{ 
     if (cur && !opts.includeLinked) continue;
     const key = productKey(s.name);
     const exact = offerings.filter((o) => productKey(o.name) === key);
+    const newKey = exact.length ? null : renamedKey(s.name);
+    const renamed = newKey ? offerings.filter((o) => productKey(o.name) === newKey) : [];
     const ranked = offerings.map((o) => ({ offeringId: o.id, offering: label(o), score: Math.round(similarity(o.name, s.name) * 100) / 100 })).filter((c) => c.score >= 0.34).sort((a, b) => b.score - a.score).slice(0, 3);
     const cadence = serviceCadence(s.name, s.periodType ?? null);
     const base = { autotaskEntity: 'Services' as const, autotaskId: s.id, name: s.name, cadence, unitCost: s.unitCost ?? null, unitPrice: s.unitPrice ?? null, current: cur };
     if (exact.length === 1) out.push({ ...base, proposed: { offeringId: exact[0]!.id, offering: label(exact[0]!) }, candidates: ranked, confidence: cadence ? 'high' : 'medium', why: cadence ? `same product; sells ${cadence}` : 'same product; the service name does not state the term — confirm it' });
+    else if (renamed.length === 1) out.push({ ...base, proposed: { offeringId: renamed[0]!.id, offering: label(renamed[0]!) }, candidates: ranked, confidence: 'medium', why: `renamed product: now sold as ${renamed[0]!.name}${cadence ? `; sells ${cadence}` : '; the service name does not state the term'} — confirm it` });
     else if (ranked.length) out.push({ ...base, proposed: null, candidates: ranked, confidence: 'low', why: 'similar names only — pick one, or leave unlinked' });
   }
   return out;

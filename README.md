@@ -348,7 +348,7 @@ Resources provide read-only access to Autotask data:
 The server provides 171 tools for interacting with Autotask:
 
 #### Company Operations
-- `autotask_search_companies` - Search companies with filters
+- `autotask_search_companies` - Search companies by name / active state, by **Classification** (exact label or id from the tenant picklist — list them with `autotask_get_field_info { entityType: "Companies", fieldName: "classification" }`), or in identity mode (domain, phone, company number); rows carry `classification: {id, label}` or `null`
 - `autotask_create_company` - Create new company
 - `autotask_update_company` - Update existing company
 

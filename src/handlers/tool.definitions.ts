@@ -212,7 +212,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   // Company tools
   {
     name: 'autotask_search_companies',
-    description: 'Search companies. Plain mode: searchTerm (name contains) + isActive, paged, max 200/page. IDENTITY mode (read-only, used when any of name / webDomain / emailDomain / phone / companyNumber / companyType is given): every plausible match with evidence (name_exact on the normalized name — suffixes like Inc/LLC ignored, name_partial, web_domain, contact_email_domain, phone on normalized digits, company_number) and conflicts, ranked; duplicate clusters; INACTIVE companies included unless isActive is set. Consumer email domains (gmail.com etc.) are never used to match a company. Returns id, name, web address, phone, type, active, owner, created date/by.',
+    description: 'Search companies. Plain mode: searchTerm (name contains) + isActive (+ classification label or id, + companyType with classification), paged, max 200/page; each row carries classification as {id, label} or null. IDENTITY mode (read-only, used when any of name / webDomain / emailDomain / phone / companyNumber / companyType is given): every plausible match with evidence (name_exact on the normalized name — suffixes like Inc/LLC ignored, name_partial, web_domain, contact_email_domain, phone on normalized digits, company_number) and conflicts, ranked; duplicate clusters; INACTIVE companies included unless isActive is set. Consumer email domains (gmail.com etc.) are never used to match a company. Returns id, name, web address, phone, type, active, owner, created date/by.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -229,7 +229,9 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         emailDomain: { type: 'string', description: 'Identity: email domain — matches company web address and companies whose contacts use it' },
         phone: { type: 'string', description: 'Identity: phone in any format (compared on digits)' },
         companyNumber: { type: 'string', description: 'Identity: company number / external identifier (exact)' },
-        companyType: { type: 'string', description: 'Identity: company type label or id (e.g. "Customer", "Prospect")' },
+        companyType: { type: 'string', description: 'Identity: company type label or id (e.g. "Customer", "Prospect"). With classification it is a plain filter.' },
+        classification: { type: 'string', description: 'Plain-mode filter: Classification exact label (case-insensitive) or picklist id, resolved against the tenant\'s live picklist. Combines with searchTerm (or name), isActive, companyType; not with webDomain / emailDomain / phone / companyNumber. Unknown or ambiguous → the choices. List the values: autotask_get_field_info { entityType: "Companies", fieldName: "classification" }.' },
+        includeInactiveClassifications: { type: 'boolean', description: 'Let classification match an INACTIVE label (an id always matches). Default false.' },
         page: {
           type: 'number',
           

@@ -14,7 +14,7 @@ import { normalizeCreateToolResult, CREATE_TOOL_META, NormalizedCreateResult } f
 import { classifyLockError, lockReason } from '../utils/timesheet-lock.js';
 import { RoleSource, needsRoleSelectionMessage, invalidRoleMessage } from '../utils/time-entry-role.js';
 import { partitionTicketNotes } from '../utils/ticket-note-kind.js';
-import { defaultWorkDate, formatChoices, localDayWindow, matchPicklist, TimeGap } from '../utils/staff-tools.js';
+import { defaultWorkDate, formatChoices, localDayWindow, matchPicklist, matchPicklistExact, TimeGap } from '../utils/staff-tools.js';
 import { getShadowRuntime } from '../db/shadow-runtime.js';
 import { collectAuditEvents, type CollectOptions } from '../db/audit-collector.js';
 import { BACKFILL_SOURCES, BackfillJobs, MAX_RANGE_DAYS, runBackfillStep, type BackfillSource } from '../db/history-backfill.js';
@@ -1410,8 +1410,41 @@ export class AutotaskToolHandler {
       // Companies
       ['autotask_search_companies', async (a) => {
         // Identity mode (read-only, evidence per match) when any identity field is given.
-        const identity = [a.name, a.webDomain, a.domain, a.emailDomain, a.phone, a.companyNumber, a.companyType].some((v) => v != null && v !== '');
-        if (!identity) return paged(await s.searchCompanies(a), 'companies');
+        const given = (v: unknown) => v != null && v !== '';
+        // Classification {id, label} on every plain-mode row (null when unset); labels from the tenant's live picklist.
+        const classValues = async () => { try { return await s.getPicklistValues('Companies', 'classification'); } catch { return []; } };
+        const withClassification = (items: object[], values: Array<{ value: unknown; label: string }>) => {
+          const labels = new Map(values.map((v) => [Number(v.value), v.label]));
+          return items.map((c) => { const id = (c as Record<string, unknown>).classification; return { ...c, classification: id == null || id === '' ? null : { id: Number(id), label: labels.get(Number(id)) ?? null } }; });
+        };
+        // Classification search is plain mode: it combines with searchTerm (or name) / isActive / companyType, never identity matching.
+        if (given(a.classification)) {
+          const other = (['webDomain', 'domain', 'emailDomain', 'phone', 'companyNumber'] as const).filter((k) => given(a[k]));
+          if (other.length) return { result: { status: 'invalid_combination', fields: other }, message: `classification combines with searchTerm (or name), isActive and companyType — not ${other.join(', ')}. Search by those without classification (identity mode).` };
+          const values = await s.getPicklistValues('Companies', 'classification');
+          const m = matchPicklistExact(values, a.classification, { includeInactive: a.includeInactiveClassifications === true });
+          if (!m.ok) {
+            const hint = m.reason === 'ambiguous' ? 'several classifications have that label — pass the id'
+              : m.inactiveMatch ? `"${m.inactiveMatch.label}" (${m.inactiveMatch.value}) is INACTIVE — pass includeInactiveClassifications: true, or its id`
+              : m.suggestions.length ? `did you mean ${formatChoices(m.suggestions)}?` : 'no such classification';
+            return { result: { status: m.reason === 'ambiguous' ? 'ambiguous_classification' : 'invalid_classification', requested: m.requested, choices: m.choices, suggestions: m.suggestions, inactiveMatch: m.inactiveMatch }, message: `classification "${m.requested}": ${hint}. Choices: ${formatChoices(m.choices)}` };
+          }
+          let companyType: number | undefined;
+          if (given(a.companyType)) {
+            const t = matchPicklist(await s.getPicklistValues('Companies', 'companyType'), a.companyType);
+            if (!t.ok) return { result: { status: 'invalid_company_type', choices: t.choices }, message: `companyType "${a.companyType}" not found. Choices: ${formatChoices(t.choices)}` };
+            companyType = t.value;
+          }
+          const { companyType: _type, classification: _class, ...rest } = a;
+          const p = await s.searchCompanies({ ...rest, searchTerm: a.searchTerm ?? a.name, classification: m.value, ...(companyType != null ? { companyType } : {}) });
+          const out = paged({ ...p, items: withClassification(p.items, values) }, 'companies');
+          return { ...out, message: `${out.message} classified "${m.label}" (${m.value})${m.isActive ? '' : ' — an INACTIVE classification'}` };
+        }
+        const identity = [a.name, a.webDomain, a.domain, a.emailDomain, a.phone, a.companyNumber, a.companyType].some(given);
+        if (!identity) {
+          const p = await s.searchCompanies(a);
+          return paged({ ...p, items: withClassification(p.items, await classValues()) }, 'companies');
+        }
         let companyType: number | undefined;
         if (a.companyType != null && a.companyType !== '') {
           const m = matchPicklist(await s.getPicklistValues('Companies', 'companyType'), a.companyType);
@@ -3989,7 +4022,8 @@ export class AutotaskToolHandler {
             ...(pagination ? { pagination } : {}),
           });
           compact.items = await this.enhanceItems(compact.items);
-          responseText = JSON.stringify(compact);
+          // The message says what was searched (a resolved picklist filter, served from the shadow).
+          responseText = JSON.stringify(message ? { message, ...compact } : compact);
         } else {
           const enhanced = await this.enhanceItems(result);
           responseText = JSON.stringify({ message, data: enhanced });

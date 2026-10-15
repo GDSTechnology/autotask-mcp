@@ -115,6 +115,8 @@ This needs migration `0012_reconciliation.sql`. Every step below reads Autotask 
    `autotask_reconcile_get_exceptions` lists them and can update one (status `open` | `acknowledged` | `resolved` | `accepted`, plus an owner and a note). Each update is kept in the exception's history. An exception that comes back in a later run reopens. Mark a `not_purchased` line `accepted` when the customer buys that product from another vendor.
 3. `autotask_vendor_pricing_policy` sets the policy and is versioned. Policy can be set globally, per manufacturer or per offering:
    - **Modes:** `vendor_suggested`, `margin`, `markup`.
+     - `vendor_suggested` is the vendor’s suggested retail price. With `pct` it is retail plus that percentage (`pct: 5` = 5% over retail).
+     - Example, "retail or a small margin over it": `mode: vendor_suggested, pct: 5, marginFloor: 10` prices at retail + 5%, but never below a 10% margin on cost (for products whose retail is at or below cost).
    - **Margin floor:** the lowest margin allowed. Bundles use the global floor.
    - **Fees:** `overhead` or `allocate` (allocated fees are spread into the landed cost).
    - **Negotiated prices:** `set_negotiated` records one per customer. A negotiated price always wins: it becomes the target, and a plan moves billing up to it, never past it or away from it.

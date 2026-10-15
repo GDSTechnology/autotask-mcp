@@ -30,6 +30,7 @@ export function priceShouldBe(cost: number | null, vendorSuggested: number | nul
   let price: number | null; let rule: string;
   if (p.mode === 'margin' && p.pct != null && p.pct < 1) { price = cost / (1 - p.pct); rule = `${Math.round(p.pct * 100)}% margin (${p.scope})`; }
   else if (p.mode === 'markup' && p.pct != null) { price = cost * (1 + p.pct); rule = `${Math.round(p.pct * 100)}% markup (${p.scope})`; }
+  else if (p.pct && vendorSuggested != null) { price = vendorSuggested * (1 + p.pct); rule = `vendor suggested + ${Math.round(p.pct * 1000) / 10}% (${p.scope})`; }
   else { price = vendorSuggested; rule = `vendor suggested (${p.scope})`; }
   const floor = p.marginFloor != null && p.marginFloor < 1 ? cost / (1 - p.marginFloor) : cost;
   if (price == null || price < floor) { price = floor; rule += p.marginFloor ? ` → raised to the ${Math.round(p.marginFloor * 100)}% margin floor` : ' → raised to cost (suggested price is below cost)'; }

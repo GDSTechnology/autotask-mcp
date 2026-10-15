@@ -100,7 +100,7 @@ export function reconToolHandlers(s: AutotaskService, getPool: () => Pool | null
         const fee = String(a.feePolicy ?? 'overhead');
         if (!['overhead', 'allocate'].includes(fee)) return { result: { status: 'invalid_value', field: 'feePolicy' }, message: 'feePolicy: overhead | allocate.' };
         await st.policy.setPolicy({ scope: String(a.scope ?? '*'), mode, pct, marginFloor: floor, feePolicy: fee as 'overhead' | 'allocate', note: a.note ? String(a.note) : null, decidedBy: who(ctx) });
-        return { result: { saved: true }, message: `Pricing policy for ${a.scope ?? '*'} saved (${mode}${pct != null ? ` ${Math.round(pct * 100)}%` : ''}${floor != null ? `, floor ${Math.round(floor * 100)}%` : ''}, fees ${fee}). It applies from the next reconciliation run.` };
+        return { result: { saved: true }, message: `Pricing policy for ${a.scope ?? '*'} saved (${mode}${pct != null ? ` ${mode === 'vendor_suggested' ? '+' : ''}${Math.round(pct * 1000) / 10}%` : ''}${floor != null ? `, floor ${Math.round(floor * 100)}%` : ''}, fees ${fee}). It applies from the next reconciliation run.` };
       }
       if (action === 'set_negotiated' || action === 'remove_negotiated') {
         const company = Number(a.companyId), offering = Number(a.offeringId);

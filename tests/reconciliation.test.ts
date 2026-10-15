@@ -119,6 +119,9 @@ describe('pricing policy', () => {
     expect(priceShouldBe(10, 12, { ...DEFAULT_POLICY, mode: 'margin', pct: 0.2 }, null).price).toBe(12.5);
     expect(priceShouldBe(10, 12, { ...DEFAULT_POLICY, mode: 'markup', pct: 0.3 }, null).price).toBe(13);
     expect(priceShouldBe(10, 10.5, { ...DEFAULT_POLICY, marginFloor: 0.2 }, null).price).toBe(12.5);
+    // retail + a small uplift; when retail is below cost the margin floor (on cost) wins
+    expect(priceShouldBe(10, 12, { ...DEFAULT_POLICY, pct: 0.05, marginFloor: 0.1 }, null)).toEqual({ price: 12.6, rule: 'vendor suggested + 5% (*)' });
+    expect(priceShouldBe(10.08, 9.96, { ...DEFAULT_POLICY, pct: 0.05, marginFloor: 0.1 }, null)).toEqual({ price: 11.2, rule: 'vendor suggested + 5% (*) → raised to the 10% margin floor' });
     expect(landedCost(10, 0.028, { ...DEFAULT_POLICY, feePolicy: 'allocate' })).toBe(10.28);
     const ps = [{ ...DEFAULT_POLICY, scope: '*' }, { ...DEFAULT_POLICY, scope: 'Microsoft', mode: 'margin' as const, pct: 0.15 }, { ...DEFAULT_POLICY, scope: 'offering:7', mode: 'markup' as const, pct: 0.1 }];
     expect(policyFor(ps, 7, 'Microsoft').scope).toBe('offering:7');

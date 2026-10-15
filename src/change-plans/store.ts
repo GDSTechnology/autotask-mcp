@@ -53,6 +53,9 @@ export class PlanStore {
     try {
       await c.query('BEGIN');
       // A newer plan of the same kind replaces the older open one (it could be applied on stale data).
+      // Serialize builds of one kind: two parallel builds each superseded only what was committed
+      // before the other's insert, and both stayed open (seen live: ChatGPT built a catalog plan twice).
+      if (p.supersedeKind !== false) await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`change_plan:${p.kind}`]);
       if (p.supersedeKind !== false) await c.query(`UPDATE change_plan SET status = 'superseded', updated_at = now() WHERE kind = $1 AND status = 'open'`, [p.kind]);
       await c.query(`INSERT INTO change_plan (id, kind, title, params, hash, status, created_by) VALUES ($1,$2,$3,$4,$5,'open',$6)`, [id, p.kind, p.title, p.params ? JSON.stringify(p.params) : null, hash, p.by]);
       for (let i = 0; i < p.rows.length; i++) {

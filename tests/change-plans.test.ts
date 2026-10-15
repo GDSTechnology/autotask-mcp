@@ -4,9 +4,19 @@
 // per product + term, never deactivates an in-use service, never prices below
 // cost, and blocks what it can't price.
 
-import { parseRows, type Plan, type PlanRow } from '../src/change-plans/store';
+import { parseRows, PlanStore, type Plan, type PlanRow } from '../src/change-plans/store';
 import { executePlan, type EntityIO } from '../src/change-plans/execute';
 import { buildStandardizePlan, standardService } from '../src/vendors/catalog-standard';
+
+describe('plan store', () => {
+  test('a new plan supersedes the open one of its kind under a per-kind lock (parallel builds left two open)', async () => {
+    const sql: string[] = [];
+    const client = { query: async (q: string, v?: unknown[]) => { sql.push(v?.length && /advisory/.test(q) ? `${q} [${v[0]}]` : q.split(' ').slice(0, 2).join(' ')); return { rows: [] }; }, release: () => undefined };
+    const pool = { connect: async () => client, query: async () => ({ rows: [] }) };
+    await new PlanStore(pool as never).create({ kind: 'catalog_standardize', title: 't', rows: [], by: null });
+    expect(sql.slice(0, 4)).toEqual(['BEGIN', 'SELECT pg_advisory_xact_lock(hashtext($1)) [change_plan:catalog_standardize]', 'UPDATE change_plan', 'INSERT INTO']);
+  });
+});
 
 describe('row selection', () => {
   test('"all", ranges, lists; malformed is refused', () => {

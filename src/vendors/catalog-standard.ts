@@ -13,6 +13,7 @@
 import { productKey, serviceCadence } from './offerings.js';
 import type { CatalogLink, Offering, OfferingMapping } from './store.js';
 import type { VendorPrice } from './prices.js';
+import { DEFAULT_POLICY, policyFor, priceShouldBe, type PricingPolicy } from './policy.js';
 import type { PlanRowInput } from '../change-plans/store.js';
 
 export type Term = 'MM' | 'AM' | 'AA' | 'monthly';
@@ -54,6 +55,8 @@ export interface StandardizeInput {
   prices: VendorPrice[];
   /** Only these offerings (default: every product we sell or have in the catalog). */
   offeringIds?: number[];
+  /** GDS pricing policies: when one applies, the catalog price is the policy target (retail ± uplift, floored on cost), not the raw suggested price. */
+  policies?: PricingPolicy[];
 }
 
 export interface StandardizeResult { rows: PlanRowInput[]; summary: { products: number; keep: number; rename: number; reprice: number; create: number; deactivate: number; inUseDuplicates: number; blocked: number; unknownTerm: number; skippedTerms: number } }
@@ -109,7 +112,7 @@ export function buildStandardizePlan(i: StandardizeInput): StandardizeResult {
 
     for (const term of terms) {
       const std = standardService(o, term, nce);
-      const price = pickPrice(i.prices, skus, term);
+      const price = withPolicy(pickPrice(i.prices, skus, term), i.policies, o);
       const members = group.filter((g) => g.term === term || (term === 'monthly' && g.term === 'MM'));
       // A keeper must already bill on the right period (periodType can't be changed in Autotask).
       const eligible = members.filter((g) => (g.s.periodType ?? PERIOD[term]) === PERIOD[term] && g.s.isActive !== false);
@@ -131,7 +134,7 @@ export function buildStandardizePlan(i: StandardizeInput): StandardizeResult {
             sum.reprice++;
             const loss = price.unitCost != null && price.suggestedPrice != null && price.suggestedPrice < price.unitCost;
             if (loss) sum.blocked++;
-            rows.push({ blocked: loss ? `the vendor's suggested price ${price.suggestedPrice} is BELOW its cost ${price.unitCost} — set the GDS price for this term (autotask_vendor_prices action=set) and rebuild` : null, meta: { offeringId: o.id, term }, action: 'update', entity: 'Services', targetId: k.id, label: `Catalog price #${k.id} ${std.name}: cost ${k.unitCost ?? '—'} → ${pa.unitCost ?? k.unitCost}, price ${k.unitPrice ?? '—'} → ${pa.unitPrice ?? k.unitPrice} (per ${price.per})`, before: Object.fromEntries(Object.keys(pa).map((f) => [f, (k as unknown as Record<string, unknown>)[f] ?? null])), after: pa, reason: `${i.vendor} ${price.source}, ${price.effectiveDate}. Catalog reference only — customer contract prices are NOT changed by this.` });
+            rows.push({ blocked: loss ? `the vendor's suggested price ${price.suggestedPrice} is BELOW its cost ${price.unitCost} — set a pricing policy (autotask_vendor_pricing_policy, e.g. a margin floor) or the GDS price for this term (autotask_vendor_prices action=set), then rebuild` : null, meta: { offeringId: o.id, term }, action: 'update', entity: 'Services', targetId: k.id, label: `Catalog price #${k.id} ${std.name}: cost ${k.unitCost ?? '—'} → ${pa.unitCost ?? k.unitCost}, price ${k.unitPrice ?? '—'} → ${pa.unitPrice ?? k.unitPrice} (per ${price.per})`, before: Object.fromEntries(Object.keys(pa).map((f) => [f, (k as unknown as Record<string, unknown>)[f] ?? null])), after: pa, reason: `${i.vendor} ${price.source}, ${price.effectiveDate}. Catalog reference only — customer contract prices are NOT changed by this.` });
           }
         }
       } else {
@@ -140,7 +143,7 @@ export function buildStandardizePlan(i: StandardizeInput): StandardizeResult {
         if ((!price || price.unitCost == null) && !bought && !members.length) { sum.skippedTerms++; continue; }
         sum.create++;
         const sibling = group.map((g) => g.s).find((s) => s.billingCodeID != null) ?? manufacturerSibling(o.manufacturer);
-        const blocked = price && price.unitCost != null && price.suggestedPrice != null && price.suggestedPrice < price.unitCost ? `the vendor's suggested price ${price.suggestedPrice} is BELOW its cost ${price.unitCost} — set the GDS price (autotask_vendor_prices action=set) and rebuild` : !price || price.unitCost == null ? `no ${i.vendor} price for ${term} yet — add it (autotask_vendor_prices action=set) and rebuild` : !sibling ? 'no sibling service to copy the work type (billing code) from — create one service of this product first' : null;
+        const blocked = price && price.unitCost != null && price.suggestedPrice != null && price.suggestedPrice < price.unitCost ? `the vendor's suggested price ${price.suggestedPrice} is BELOW its cost ${price.unitCost} — set a pricing policy (autotask_vendor_pricing_policy, e.g. a margin floor) or the GDS price (autotask_vendor_prices action=set), then rebuild` : !price || price.unitCost == null ? `no ${i.vendor} price for ${term} yet — add it (autotask_vendor_prices action=set) and rebuild` : !sibling ? 'no sibling service to copy the work type (billing code) from — create one service of this product first' : null;
         if (blocked) sum.blocked++;
         rows.push({
           meta: { offeringId: o.id, term }, action: 'create', entity: 'Services', targetId: null, label: `Create "${std.name}"${price?.unitCost != null ? ` — cost ${price.unitCost} / price ${price.suggestedPrice ?? '—'} per ${price.per}` : ''}`,
@@ -163,6 +166,19 @@ export function buildStandardizePlan(i: StandardizeInput): StandardizeResult {
     }
   }
   return { rows, summary: sum };
+}
+
+/**
+ * The catalog price under the GDS policy: with an explicit policy for this product, the suggested
+ * price becomes the policy target (never below cost) and the rule is kept in source. Without one
+ * (built-in default), the vendor's suggested price is used as-is — and blocked when below cost.
+ */
+function withPolicy(price: VendorPrice | null, policies: PricingPolicy[] | undefined, o: Offering): VendorPrice | null {
+  if (!price || price.unitCost == null || !policies?.length) return price;
+  const p = policyFor(policies, o.id, o.manufacturer);
+  if (p === DEFAULT_POLICY) return price;
+  const t = priceShouldBe(price.unitCost, price.suggestedPrice, p, null);
+  return t.price == null ? price : { ...price, suggestedPrice: t.price, source: `${price.source}; GDS policy: ${t.rule}` };
 }
 
 function pickPrice(prices: VendorPrice[], skus: string[], term: Term): VendorPrice | null {

@@ -7,6 +7,7 @@
 import { parseRows, PlanStore, type Plan, type PlanRow } from '../src/change-plans/store';
 import { executePlan, type EntityIO } from '../src/change-plans/execute';
 import { buildStandardizePlan, standardService } from '../src/vendors/catalog-standard';
+import { DEFAULT_POLICY } from '../src/vendors/policy';
 
 describe('plan store', () => {
   test('a new plan supersedes the open one of its kind under a per-kind lock (parallel builds left two open)', async () => {
@@ -153,6 +154,19 @@ describe('catalog standardization plan', () => {
     const noPrice = buildStandardizePlan({ ...base, soldSkus: boughtAA, prices: base.prices.slice(0, 1) }).rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))!;
     expect(noPrice.blocked).toMatch(/no pax8 price for AA/);
     expect(noPrice.after).toMatchObject({ periodType: 5, billingCodeID: 9 }); // yearly period; sibling's work type
+  });
+
+  test('with a GDS pricing policy the catalog price is the policy target — retail + uplift, floored on cost — so below-cost retail is not blocked', () => {
+    const policies = [{ ...DEFAULT_POLICY, scope: '*', pct: 0.05, marginFloor: 0.1, note: 'retail or a small margin over it' }];
+    const r = buildStandardizePlan({ ...base, policies });
+    const aa = r.rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))!; // retail 130 < cost 140
+    expect(aa.blocked).toBeNull();
+    expect(aa.after).toMatchObject({ unitCost: 140, unitPrice: 155.555556 }); // 140 / 0.9
+    expect(aa.reason).toMatch(/GDS policy: vendor suggested \+ 5% \(\*\) → raised to the 10% margin floor/);
+    const mm = r.rows.find((x) => x.targetId === 297 && x.after?.unitPrice !== undefined)!;
+    expect(mm.after).toEqual({ unitCost: 14.112, unitPrice: 17.64 }); // 16.80 × 1.05
+    // no policy set → the vendor's suggested price as before
+    expect(buildStandardizePlan({ ...base, policies: [] }).rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))!.blocked).toMatch(/BELOW its cost/);
   });
 
   test('a term nobody buys, with no service and no price, is skipped — not a blocked create', () => {

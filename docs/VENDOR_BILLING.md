@@ -72,6 +72,7 @@ The goal is **one Autotask Service per product and term**, named to one standard
 2. `autotask_catalog_plan_standardize` builds a **frozen, numbered plan** (id + hash) and writes nothing. For each product we sell and each of its terms (Microsoft NCE: MM / AM / AA; month-to-month products: Monthly):
    - **Keep** the service most active contracts use, and **rename** it to the standard.
    - **Deactivate** duplicates, but only when no active contract uses them. An in-use duplicate is listed and left alone; move those contract lines first.
+   - **Catalog price** = the vendor cost and, once a pricing policy is set, the policy target (retail ± uplift, never below the margin floor on cost); with no policy, the vendor’s suggested price.
    - **Create** missing terms from the vendor cost and suggested price, copying a sibling service's work type (any service of the same manufacturer; "NinjaOne (Dropsuite)" counts as NinjaOne).
    - A term with no service, no vendor price and no vendor line is **not offered**: it is skipped (counted in the summary), not a blocked create. Add a price for it to have it created.
    - **Blocked** rows (shown, never approvable):

@@ -10,6 +10,7 @@ import { VendorStore } from './store.js';
 import { PriceStore, perOf, pricesFromInvoices } from './prices.js';
 import { buildStandardizePlan, type AutotaskServiceRow } from './catalog-standard.js';
 import { PlanStore, parseRows, type Plan } from '../change-plans/store.js';
+import { PolicyStore } from './policy.js';
 import { executePlan, type EntityIO } from '../change-plans/execute.js';
 import { inChunks } from './contract-context.js';
 import { ADJUSTMENTS, adjustmentAlreadyApplied, adjustmentReadBack, adjustmentSnapshot, unitsOn, type LineKind, type QueryFn, type UnitPeriod } from './contract-io.js';
@@ -74,7 +75,7 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
 }
 
 export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | null): Array<[string, H]> {
-  const stores = () => { const p = getPool(); return p ? { vendor: new VendorStore(p), prices: new PriceStore(p), plans: new PlanStore(p) } : null; };
+  const stores = () => { const p = getPool(); return p ? { vendor: new VendorStore(p), prices: new PriceStore(p), plans: new PlanStore(p), policy: new PolicyStore(p) } : null; };
   const io = () => createEntityIO(s);
 
   return [
@@ -121,7 +122,7 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
         if (linked.has(x.serviceID) && !billing.has(Number(x.id))) continue;
         activeUses.set(x.serviceID, (activeUses.get(x.serviceID) ?? 0) + 1);
       }
-      const r = buildStandardizePlan({ vendor, offerings, offeringMappings, soldSkus, links, services, activeUses, prices, ...(Array.isArray(a.offeringIds) && a.offeringIds.length ? { offeringIds: a.offeringIds.map(Number) } : {}) });
+      const r = buildStandardizePlan({ vendor, offerings, offeringMappings, soldSkus, links, services, activeUses, prices, policies: await st.policy.policies(), ...(Array.isArray(a.offeringIds) && a.offeringIds.length ? { offeringIds: a.offeringIds.map(Number) } : {}) });
       if (!r.rows.length) return { result: { summary: r.summary }, message: 'The catalog already matches the standard — nothing to change.' };
       const plan = await st.plans.create({ kind: 'catalog_standardize', title: `Standardize Autotask services (${vendor}: ${r.summary.products} product(s))`, params: { vendor, summary: r.summary }, rows: r.rows, by: who(ctx) });
       const sm = r.summary;

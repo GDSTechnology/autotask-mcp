@@ -397,7 +397,12 @@ export function recentApiCalls(q: CallQuery = {}): ApiCallRecord[] {
   return out;
 }
 
-export interface CallerSummary { caller: string; source: string; ip: string | null; userAgent: string | null; calls: number; errors: number; apiCalls: number; lastAt: string; lastTool: string }
+export interface CallerSummary {
+  caller: string; source: string; ip: string | null; userAgent: string | null; calls: number;
+  /** Real failures. A search that found nothing is counted in notFound, not here. */
+  errors: number; notFound: number;
+  apiCalls: number; lastAt: string; lastTool: string;
+}
 
 /** Who has been calling in the last `minutes`, grouped by declared source + origin. */
 export function callerSummary(minutes = 60): { callers: CallerSummary[]; background: Array<{ job: string; apiCalls: number; errors: number; lastAt: string }>; since: string; oldest: string | null } {
@@ -407,8 +412,9 @@ export function callerSummary(minutes = 60): { callers: CallerSummary[]; backgro
     if (Date.parse(r.at) < since) continue;
     const source = r.source ?? 'unknown';
     const key = `${source}|${r.ip ?? ''}|${r.userAgent ?? ''}`;
-    const c = m.get(key) ?? { caller: key, source, ip: r.ip, userAgent: r.userAgent, calls: 0, errors: 0, apiCalls: 0, lastAt: r.at, lastTool: r.tool };
-    c.calls++; c.apiCalls += r.apiCalls; if (isErr(r.outcome)) c.errors++;
+    const c = m.get(key) ?? { caller: key, source, ip: r.ip, userAgent: r.userAgent, calls: 0, errors: 0, notFound: 0, apiCalls: 0, lastAt: r.at, lastTool: r.tool };
+    c.calls++; c.apiCalls += r.apiCalls;
+    if (r.outcome === 'not-found') c.notFound++; else if (isErr(r.outcome)) c.errors++;
     if (r.at >= c.lastAt) { c.lastAt = r.at; c.lastTool = r.tool; }
     m.set(key, c);
   }

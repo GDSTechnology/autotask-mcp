@@ -50,6 +50,14 @@ describe('call log', () => {
     expect(recentToolCalls({ tool: 'ticket_by' })).toHaveLength(3);
   });
 
+  test('a search that found nothing is counted as not found, not as an error', async () => {
+    await runToolCall('autotask_search_tickets', async () => { noteToolAudit({ outcome: 'not-found', durationMs: 1, source: 'agent' }); return { isError: true }; });
+    await expect(runToolCall('autotask_search_tickets', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    const c = callerSummary(60).callers.find((x) => x.source === 'agent')!;
+    expect(c).toMatchObject({ calls: 1, errors: 0, notFound: 1 });
+    expect(callerSummary(60).callers.find((x) => x.source === 'unknown')).toMatchObject({ errors: 1, notFound: 0 });
+  });
+
   test('bounded: keeps the newest 500 tool calls', async () => {
     for (let i = 0; i < 520; i++) await runToolCall(`t${i}`, async () => ({}));
     const all = recentToolCalls({ limit: 1000 });

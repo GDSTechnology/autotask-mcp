@@ -214,7 +214,9 @@ usage-pause threshold.
   the same filter format as the Autotask API; every answer reports data age.
 - `MCP_PG_SHADOW_SERVE_READS=true` — the regular `search_*` tools (tickets, time
   entries, companies, contacts, resources, …) are answered from the shadow while
-  the entity is backfilled and younger than `MCP_PG_SHADOW_MAX_AGE_SECONDS` (900);
+  the entity is backfilled and younger than `MCP_PG_SHADOW_MAX_AGE_SECONDS` (900) —
+  or, for an entity re-copied on a schedule (Resources, ContractServices, ContractBlocks,
+  the window-refresh billing entities), younger than its refresh interval + 5 min;
   otherwise, or for any filter the shadow can't translate, they go live.
   Verified: same ids, order and `hasMore` as the live API.
   **Every query and by-id read of the MCP's own tenant asks the shadow first**,

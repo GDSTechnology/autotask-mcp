@@ -231,6 +231,18 @@ async function fieldsKnown(rt: ShadowRuntime, name: string, filters: ShadowFilte
   if (!c || Date.now() - c.at > 600_000) { c = { at: Date.now(), names: new Set(await rt.store.fieldNames(name)) }; fieldCache.set(name, c); }
   return c.names.size > 0 && want.every((f) => c!.names.has(f));
 }
+/**
+ * How old a copy may be and still answer reads. An entity re-copied on a schedule (full or
+ * window refresh, e.g. Resources every 60 min) is trusted for its whole interval plus 5 min:
+ * with only the global limit (900 s) it went live for ~45 min of every hour — Resources made
+ * hundreds of live reads although mirrored. Incremental entities keep the global limit.
+ */
+export function maxAgeFor(rt: Pick<ShadowRuntime, 'maxAgeSeconds'>, name: string): number {
+  const def = shadowEntity(name);
+  const every = def ? (def.refreshEveryMinutes ?? (!def.watermarkField && !def.watermarkCandidates ? def.fullEveryMinutes : undefined)) : undefined;
+  return every ? Math.max(rt.maxAgeSeconds, every * 60 + 300) : rt.maxAgeSeconds;
+}
+
 /** After an MCP write to an entity, its searches read live this long (until the next sync re-reads the row). */
 const WRITE_BYPASS_MS = 90_000;
 
@@ -238,7 +250,7 @@ async function freshEnough(rt: ShadowRuntime, name: string): Promise<Freshness |
   let c = freshCache.get(name);
   if (!c || Date.now() - c.at > 15_000) { c = { at: Date.now(), f: await rt.store.freshness(name) }; freshCache.set(name, c); }
   const f = c.f;
-  if (!f.ready || f.ageSeconds == null || f.ageSeconds + Math.round((Date.now() - c.at) / 1000) > rt.maxAgeSeconds) return null;
+  if (!f.ready || f.ageSeconds == null || f.ageSeconds + Math.round((Date.now() - c.at) / 1000) > maxAgeFor(rt, name)) return null;
   return f;
 }
 
@@ -277,7 +289,7 @@ export async function shadowRead<T>(entity: string, filters: ShadowFilter[], lim
     let c = freshCache.get(name);
     if (!c || Date.now() - c.at > 15_000) { c = { at: Date.now(), f: await rt.store.freshness(name) }; freshCache.set(name, c); }
     const f = c.f;
-    if (!f.ready || f.ageSeconds == null || f.ageSeconds + Math.round((Date.now() - c.at) / 1000) > rt.maxAgeSeconds) return null;
+    if (!f.ready || f.ageSeconds == null || f.ageSeconds + Math.round((Date.now() - c.at) / 1000) > maxAgeFor(rt, name)) return null;
     // A windowed mirror only holds recent history: serve only queries whose
     // filters stay inside it (e.g. open tickets, dateWorked ≥ window start).
     const def = shadowEntity(entity)!;

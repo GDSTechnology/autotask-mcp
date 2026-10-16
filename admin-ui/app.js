@@ -395,13 +395,13 @@ async function calls(body) {
       h('h2', null, 'Who is calling (last hour)'),
       sum.callers.length || sum.background.length
         ? h('div', { class: 'table-wrap' }, h('table', null,
-            h('thead', null, h('tr', null, h('th', null, 'Caller'), h('th', { class: 'num' }, 'Tool calls'), h('th', { class: 'num' }, 'Errors'), h('th', { class: 'num' }, 'Autotask calls'), h('th', null, 'Last seen'))),
+            h('thead', null, h('tr', null, h('th', null, 'Caller'), h('th', { class: 'num' }, 'Tool calls'), h('th', { class: 'num' }, 'Errors'), h('th', { class: 'num', title: 'Searches that found nothing — not failures' }, 'Not found'), h('th', { class: 'num' }, 'Autotask calls'), h('th', null, 'Last seen'))),
             h('tbody', null,
               sum.callers.map((c) => h('tr', null, h('td', null, callerCell(c)), h('td', { class: 'num' }, fmt(c.calls)),
-                h('td', { class: 'num' }, c.errors ? h('span', { class: 'badge bad' }, fmt(c.errors)) : '0'), h('td', { class: 'num' }, fmt(c.apiCalls)),
+                h('td', { class: 'num' }, c.errors ? h('span', { class: 'badge bad' }, fmt(c.errors)) : '0'), h('td', { class: 'num' }, c.notFound ? h('span', { class: 'badge warn' }, fmt(c.notFound)) : '0'), h('td', { class: 'num' }, fmt(c.apiCalls)),
                 h('td', null, `${ago(c.lastAt)} · `, h('span', { class: 'mono' }, c.lastTool)))),
               sum.background.map((b) => h('tr', null, h('td', null, h('span', { class: 'badge accent' }, 'background'), ' ', b.job), h('td', { class: 'num muted' }, '—'),
-                h('td', { class: 'num' }, b.errors ? h('span', { class: 'badge bad' }, fmt(b.errors)) : '0'), h('td', { class: 'num' }, fmt(b.apiCalls)), h('td', null, ago(b.lastAt)))))))
+                h('td', { class: 'num' }, b.errors ? h('span', { class: 'badge bad' }, fmt(b.errors)) : '0'), h('td', { class: 'num muted' }, '—'), h('td', { class: 'num' }, fmt(b.apiCalls)), h('td', null, ago(b.lastAt)))))))
         : h('p', { class: 'muted' }, 'No calls in the last hour.'));
 
     let table;

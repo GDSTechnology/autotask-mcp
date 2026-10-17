@@ -75,6 +75,7 @@ const ROUTES = [
   { hash: '#/', label: 'Dashboard', view: dashboard },
   { hash: '#/calls', label: 'Calls', view: calls },
   { hash: '#/actors', label: 'Actors', view: actors },
+  { hash: '#/requests', label: 'Requests', view: requests },
   { hash: '#/notifications', label: 'Notifications', view: notifications },
   { hash: '#/settings', label: 'Settings', view: settings },
   { hash: '#/users', label: 'Users', view: users, admin: true },
@@ -584,6 +585,74 @@ async function actors(body) {
     h('h1', null, 'Actors'),
     h('p', { class: 'muted' }, 'Who changed a ticket: a person, or automation. Ticket history and the activity feed use this, and anything learning from technicians (Hermes) must only learn from "Person" — never from automation, including this MCP\'s own n8n / Nexus changes. "Unknown" needs confirming. ★ Reference technicians are the trusted standard.'),
     h('section', { class: 'panel' }, h('div', { class: 'row', style: 'margin-bottom:10px' }, search, typeSel, inactive), content));
+  await draw();
+}
+
+// ── requests: what the MCP can't do yet ───────────────────────────────────
+const GAP_STATUS_LABEL = { open: 'Open', planned: 'Planned', built: 'Built', declined: 'Declined', duplicate: 'Duplicate' };
+const GAP_SOURCE_LABEL = { agent: 'AI agent', console: 'Person', auto: 'Captured' };
+async function requests(body) {
+  const isAdmin = me.role === 'admin';
+  const state = { status: 'open,planned', q: '' };
+  const content = h('div');
+  async function draw() {
+    const qs = new URLSearchParams({ ...(state.status ? { status: state.status } : {}), ...(state.q ? { q: state.q } : {}) });
+    const r = await api('GET', `/api/gaps?${qs}`);
+    if (!r.available) { content.replaceChildren(h('p', { class: 'muted' }, 'Needs Postgres (MCP_PG_ENABLED) — requests are stored there.')); return; }
+    const statusBadgeOf = (s) => h('span', { class: `badge ${s === 'open' ? 'warn' : s === 'built' ? 'ok' : s === 'planned' ? 'accent' : ''}` }, GAP_STATUS_LABEL[s] || s);
+    const edit = (g) => {
+      if (!isAdmin) return statusBadgeOf(g.status);
+      const sel = h('select', { 'aria-label': `Status of request ${g.id}`, onchange: async (e) => {
+        try {
+          const resolution = ['built', 'declined', 'duplicate'].includes(e.target.value) ? prompt(e.target.value === 'built' ? 'Which tool / release covers it?' : 'Why? (shown to whoever reported it)', g.resolution || '') : undefined;
+          await api('PATCH', `/api/gaps/${g.id}`, { status: e.target.value, ...(resolution != null ? { resolution } : {}) }); toast('Saved.'); await draw();
+        } catch (x) { toast(x.message); }
+      } }, ...r.statuses.map((s) => h('option', { value: s }, GAP_STATUS_LABEL[s] || s)));
+      sel.value = g.status;
+      const pri = h('select', { 'aria-label': `Priority of request ${g.id}`, onchange: async (e) => { try { await api('PATCH', `/api/gaps/${g.id}`, { priority: e.target.value }); toast('Saved.'); await draw(); } catch (x) { toast(x.message); } } },
+        ...r.priorities.map((p) => h('option', { value: p }, p)));
+      pri.value = g.priority;
+      return h('div', { class: 'row' }, sel, pri);
+    };
+    content.replaceChildren(
+      h('div', { class: 'row', style: 'margin-bottom:10px' }, ...r.statuses.map((s) => h('span', { class: 'badge' }, `${GAP_STATUS_LABEL[s]}: ${r.counts[s] || 0}`))),
+      r.gaps.length ? h('div', { class: 'table-wrap' }, h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Request'), h('th', null, 'From'), h('th', { class: 'num' }, 'Times'), h('th', null, 'Last'), h('th', null, isAdmin ? 'Status / priority' : 'Status'))),
+        h('tbody', null, r.gaps.map((g) => h('tr', null,
+          h('td', null, h('strong', null, `#${g.id} ${g.title}`), g.priority === 'high' ? h('span', { class: 'badge bad', style: 'margin-left:6px' }, 'high') : null,
+            g.detail ? h('div', { class: 'muted', style: 'font-size:13px;margin-top:2px;white-space:pre-wrap' }, g.detail) : null,
+            g.toolTried ? h('div', { class: 'mono muted', style: 'font-size:12px' }, `tried: ${g.toolTried}`) : null,
+            g.resolution ? h('div', { style: 'font-size:13px;margin-top:2px' }, `→ ${g.resolution}`) : null),
+          h('td', null, h('span', { class: 'badge' }, GAP_SOURCE_LABEL[g.source] || g.source), g.reporter ? h('div', { class: 'muted mono', style: 'font-size:12px' }, g.reporter) : null),
+          h('td', { class: 'num' }, fmt(g.occurrences)),
+          h('td', { class: 'muted' }, ago(g.lastSeen)),
+          h('td', null, edit(g))))))) : h('p', { class: 'muted' }, 'Nothing here.'),
+      h('h3', { style: 'margin-top:22px' }, 'Seen by the server, not reported yet'),
+      h('p', { class: 'muted' }, 'raw_request calls in the last 7 days that no tool covers — clients doing it the hard way. Add one as a request to build a tool for it.'),
+      r.uncovered.length ? h('table', null,
+        h('thead', null, h('tr', null, h('th', null, 'Request'), h('th', { class: 'num' }, 'Calls'), h('th', { class: 'num' }, 'Failed'), h('th', null, 'Who'), h('th', null, ''))),
+        h('tbody', null, r.uncovered.map((u) => h('tr', null,
+          h('td', { class: 'mono' }, u.shape), h('td', { class: 'num' }, fmt(u.calls)), h('td', { class: 'num' }, u.errors ? h('span', { class: 'badge bad' }, fmt(u.errors)) : '0'),
+          h('td', { class: 'muted' }, u.callers.slice(0, 3).map((c) => h('div', { class: 'mono' }, `${c.caller} × ${fmt(c.count)}`))),
+          h('td', null, h('button', { class: 'small', onclick: async () => {
+            try { await api('POST', '/api/gaps', { title: `Build a tool for ${u.shape}`, detail: `Clients call raw_request ${u.shape} (${u.calls} call(s), ${u.errors} failed, last 7 days) and no tool covers it.`, toolTried: 'autotask_raw_request', dedupeKey: `raw:${u.shape}` }); toast('Added to requests.'); await draw(); } catch (x) { toast(x.message); }
+          } }, 'Add as request'))))))
+        : h('p', { class: 'muted' }, 'None — every raw_request shape seen has a tool.'));
+  }
+  const title = h('input', { type: 'text', placeholder: 'What is missing? e.g. "Delete a contract charge"', style: 'flex:1;min-width:240px' });
+  const detail = h('textarea', { rows: 2, placeholder: 'What were you trying to do, and what happened? (optional)', style: 'width:100%;margin-top:6px' });
+  const add = h('form', { onsubmit: async (e) => {
+    e.preventDefault();
+    try { const x = await api('POST', '/api/gaps', { title: title.value, detail: detail.value || undefined }); toast(x.created ? `Added request #${x.id}.` : `Already requested (#${x.id}) — counted again.`); title.value = ''; detail.value = ''; await draw(); } catch (x) { toast(x.message); }
+  } }, h('div', { class: 'row' }, title, h('button', { type: 'submit' }, 'Add request')), detail);
+  const statusSel = h('select', { style: 'max-width:200px', onchange: (e) => { state.status = e.target.value; draw(); } },
+    h('option', { value: 'open,planned' }, 'Open + planned'), h('option', { value: 'open' }, 'Open'), h('option', { value: 'planned' }, 'Planned'), h('option', { value: 'built' }, 'Built'), h('option', { value: 'declined,duplicate' }, 'Declined / duplicate'), h('option', { value: '' }, 'All'));
+  const search = h('input', { type: 'text', placeholder: 'Search…', style: 'max-width:220px', oninput: (e) => { state.q = e.target.value.trim(); clearTimeout(search._t); search._t = setTimeout(draw, 250); } });
+  body.replaceChildren(
+    h('h1', null, 'Requests'),
+    h('p', { class: 'muted' }, 'What the MCP can\'t do yet, so it can be built: reported by AI agents (autotask_report_gap — e.g. ChatGPT when no tool fits), added here by people, or captured by the server (a client called a tool that doesn\'t exist). The same request again counts another time instead of a new row.'),
+    h('section', { class: 'panel' }, h('h2', null, 'Add a request'), add),
+    h('section', { class: 'panel' }, h('div', { class: 'row', style: 'margin-bottom:10px' }, statusSel, search), content));
   await draw();
 }
 

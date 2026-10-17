@@ -7,7 +7,7 @@ import { isMutatingTool } from '../utils/idempotency.js';
 import { settingValue } from './settings.js';
 
 /** Discovery / routing meta-tools are never switched off — agents need them to see what is available. */
-const ALWAYS_ON = new Set(['autotask_list_categories', 'autotask_list_category_tools', 'autotask_execute_tool', 'autotask_router', 'autotask_test_connection', 'autotask_whoami']);
+const ALWAYS_ON = new Set(['autotask_list_categories', 'autotask_list_category_tools', 'autotask_execute_tool', 'autotask_router', 'autotask_test_connection', 'autotask_whoami', 'autotask_report_gap']); // a missing capability can always be reported
 
 // Name shapes that write even when the name prefix looks like a read
 // (e.g. autotask_find_or_create_contact).

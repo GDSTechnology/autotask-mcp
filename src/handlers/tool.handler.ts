@@ -66,6 +66,8 @@ import { notify } from '../services/notifier.js';
 import { vendorToolHandlers } from '../vendors/tools.js';
 import { catalogToolHandlers } from '../vendors/catalog-tools.js';
 import { reconToolHandlers } from '../vendors/recon-tools.js';
+import { processToolHandlers } from '../vendors/process-tools.js';
+import { captureGap, gapToolHandlers } from '../gaps/tools.js';
 import { pax8ToolHandlers } from '../vendors/pax8-tools.js';
 import { contractToolHandlers } from '../vendors/contract-tools.js';
 import {
@@ -1150,6 +1152,9 @@ export class AutotaskToolHandler {
       ...reconToolHandlers(s, () => getPool(this.logger)),
       ...pax8ToolHandlers(() => getPool(this.logger)),
       ...contractToolHandlers(s, () => getPool(this.logger)),
+      ...processToolHandlers(s, () => getPool(this.logger)),
+      // Capability gaps → console Requests page.
+      ...gapToolHandlers(() => getPool(this.logger)),
       // Connection
       ['autotask_get_api_usage', async () => {
         const r = await s.getApiUsage();
@@ -3821,7 +3826,11 @@ export class AutotaskToolHandler {
 
     try {
       const handler = this.getDispatchTable().get(name);
-      if (!handler) throw new Error(`Unknown tool: ${name}`);
+      if (!handler) {
+        // A client asked for a tool that doesn't exist: capture it as a request (console → Requests).
+        captureGap(() => getPool(this.logger), { dedupeKey: `unknown_tool:${name.slice(0, 120)}`, title: `Unknown tool called: ${name.slice(0, 120)}`, detail: `A client called "${name.slice(0, 120)}", which this MCP doesn't have. Arguments given: ${Object.keys(args ?? {}).slice(0, 20).join(', ') || 'none'}.`, reporter: ctx.source !== 'unknown' ? ctx.source : null, toolTried: name.slice(0, 120) });
+        throw new Error(`Unknown tool: ${name}`);
+      }
       // Admin console switches (read-only mode / disabled tool groups).
       const blocked = toolBlockReason(name);
       if (blocked) throw new Error(blocked);

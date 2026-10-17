@@ -39,6 +39,7 @@ import { shadowEntity } from '../db/shadow-entities.js';
 import { authBlockStatus, clearAuthBlock } from '../services/autotask-http.js';
 import { recentLogs } from '../utils/logger.js';
 import { getNotifier, NOTIFY_EVENTS, type NotifyChannel } from '../services/notifier.js';
+import { GapStore, GAP_PRIORITIES, GAP_STATUSES, type GapPriority, type GapStatus } from '../gaps/store.js';
 import { CHANNEL_KINDS, ChannelInputError, NOTIFY_SETTING_KEY, channelFromInput, channelLogDetails, channelView, parseStoredChannels } from './notifications.js';
 
 export interface AdminConsoleOptions {
@@ -645,6 +646,48 @@ export function adminHandler(deps: AdminDeps) {
         void log(ctx, 'notify.channel_removed', channelLogDetails(existing));
         return send(res, 200, { ok: true });
       }
+    }
+
+    // ── requests: capabilities the MCP is missing (agents, people, auto-captured) ──
+    if (path === '/api/gaps' && method === 'GET') {
+      requireUser(ctx);
+      if (!deps.pool) return send(res, 200, { gaps: [], counts: {}, uncovered: [], available: false });
+      const url = new URL(req.url ?? '/', 'http://x');
+      const status = (url.searchParams.get('status') ?? '').split(',').filter((x) => (GAP_STATUSES as readonly string[]).includes(x));
+      const st = new GapStore(deps.pool);
+      const [gaps, counts] = await Promise.all([st.list({ ...(status.length ? { status } : {}), ...(url.searchParams.get('q') ? { search: url.searchParams.get('q')! } : {}) }), st.counts()]).catch((e) => {
+        if (/capability_gap/.test(String(e))) throw new HttpError(503, 'The Requests table is missing — run the migrations (0014).', 'migration');
+        throw e;
+      });
+      // raw_request shapes no tool covers (last 7 days) — candidates the server saw but nobody reported.
+      const g = toolGapReport(168) as { raw: Array<{ shape: string; calls: number; errors: number; coveredBy: string | null; lastAt: string; callers: Array<{ caller: string; count: number }> }> };
+      return send(res, 200, { gaps, counts, uncovered: g.raw.filter((r) => !r.coveredBy).slice(0, 25), statuses: GAP_STATUSES, priorities: GAP_PRIORITIES, available: true });
+    }
+    if (path === '/api/gaps' && method === 'POST') {
+      const u = requireUser(ctx);
+      if (!deps.pool) throw new HttpError(503, 'Needs Postgres.');
+      const b = await readJson(req, 16 * 1024);
+      const title = String(b.title ?? '').trim();
+      if (title.length < 8) throw new HttpError(400, 'Say in one line what is missing (at least 8 characters).', 'invalid');
+      const priority = (GAP_PRIORITIES as readonly string[]).includes(String(b.priority)) ? String(b.priority) as GapPriority : 'normal';
+      const r = await new GapStore(deps.pool).report({ title, detail: b.detail ? String(b.detail) : null, source: 'console', reporter: u.username, toolTried: b.toolTried ? String(b.toolTried) : null, priority, ...(b.dedupeKey ? { dedupeKey: String(b.dedupeKey).slice(0, 200) } : {}) });
+      void log(ctx, 'gap.reported', { id: r.gap.id, title: r.gap.title, created: r.created });
+      return send(res, 200, { ok: true, id: r.gap.id, created: r.created });
+    }
+    const gapMatch = /^\/api\/gaps\/(\d+)$/.exec(path);
+    if (gapMatch && method === 'PATCH') {
+      requireUser(ctx, 'admin');
+      if (!deps.pool) throw new HttpError(503, 'Needs Postgres.');
+      const b = await readJson(req, 16 * 1024);
+      if (b.status != null && !(GAP_STATUSES as readonly string[]).includes(String(b.status))) throw new HttpError(400, `status: ${GAP_STATUSES.join(' | ')}`, 'invalid');
+      if (b.priority != null && !(GAP_PRIORITIES as readonly string[]).includes(String(b.priority))) throw new HttpError(400, `priority: ${GAP_PRIORITIES.join(' | ')}`, 'invalid');
+      const g = await new GapStore(deps.pool).update(Number(gapMatch[1]), {
+        ...(b.status != null ? { status: String(b.status) as GapStatus } : {}), ...(b.priority != null ? { priority: String(b.priority) as GapPriority } : {}),
+        ...(b.resolution !== undefined ? { resolution: b.resolution == null ? null : String(b.resolution) } : {}), by: ctx.user!.username,
+      });
+      if (!g) throw new HttpError(404, 'No such request.');
+      void log(ctx, 'gap.updated', { id: g.id, status: g.status, priority: g.priority });
+      return send(res, 200, { ok: true, gap: g });
     }
 
     if (path === '/api/users' && method === 'GET') { requireUser(ctx, 'admin'); return send(res, 200, { users: (await store.listUsers()).map(publicUser) }); }

@@ -8,7 +8,22 @@ import type { Pool } from 'pg';
 import type { ReconRow } from './reconcile.js';
 
 export interface RunInfo { id: string; vendor: string; documentId: number | null; invoiceNumber: string | null; periodStart: string | null; periodEnd: string | null; summary: Record<string, unknown>; createdBy: string | null; createdAt: string }
-export interface ExceptionState { exceptionKey: string; status: 'open' | 'acknowledged' | 'resolved' | 'accepted'; owner: string | null; history: Array<{ at: string; by: string | null; status?: string; owner?: string | null; note?: string }>; firstSeenRun: string | null; lastSeenRun: string | null }
+/**
+ * What became of an exception. open / acknowledged = still to decide; the rest are OUTCOMES:
+ *   resolved          fixed in Autotask (reopens if it comes back next run)
+ *   accepted          an expected variance (e.g. the customer buys it elsewhere)
+ *   absorbed          GDS carries the cost — a write-off, counted apart from open exposure
+ *   billed_elsewhere  billed on another company / contract / invoice — reference says where
+ *   fix_planned       a change plan will fix it — reference = the plan id
+ */
+export const EXCEPTION_STATUSES = ['open', 'acknowledged', 'resolved', 'accepted', 'absorbed', 'billed_elsewhere', 'fix_planned'] as const;
+export type ExceptionStatus = typeof EXCEPTION_STATUSES[number];
+/** Decided: no longer counted as open exposure. */
+export const DECIDED_STATUSES: ExceptionStatus[] = ['resolved', 'accepted', 'absorbed', 'billed_elsewhere'];
+export interface ExceptionState {
+  exceptionKey: string; status: ExceptionStatus; owner: string | null; dueOn: string | null; reference: string | null;
+  history: Array<{ at: string; by: string | null; status?: string; owner?: string | null; note?: string; dueOn?: string | null; reference?: string | null }>; firstSeenRun: string | null; lastSeenRun: string | null;
+}
 
 const day = (d: unknown) => (d == null ? null : new Date(d as string).toISOString().slice(0, 10));
 
@@ -65,18 +80,19 @@ export class ReconStore {
   async states(keys: string[]): Promise<Map<string, ExceptionState>> {
     if (!keys.length) return new Map();
     const r = await this.pool.query('SELECT * FROM reconciliation_exception_state WHERE exception_key = ANY($1::text[])', [keys]);
-    return new Map(r.rows.map((x) => [x.exception_key, { exceptionKey: x.exception_key, status: x.status, owner: x.owner, history: x.history ?? [], firstSeenRun: x.first_seen_run, lastSeenRun: x.last_seen_run }]));
+    return new Map(r.rows.map((x) => [x.exception_key, { exceptionKey: x.exception_key, status: x.status, owner: x.owner, dueOn: x.due_on ? new Date(x.due_on).toISOString().slice(0, 10) : null, reference: x.reference ?? null, history: x.history ?? [], firstSeenRun: x.first_seen_run, lastSeenRun: x.last_seen_run }]));
   }
 
   /** Change status / owner / add a note — appended to the history, never overwritten. */
-  async updateState(keys: string[], u: { status?: ExceptionState['status']; owner?: string | null; note?: string; by: string | null }): Promise<number> {
+  async updateState(keys: string[], u: { status?: ExceptionStatus; owner?: string | null; note?: string; dueOn?: string | null; reference?: string | null; by: string | null }): Promise<number> {
     let n = 0;
     for (const k of keys) {
-      const entry = { at: new Date().toISOString(), by: u.by, ...(u.status ? { status: u.status } : {}), ...(u.owner !== undefined ? { owner: u.owner } : {}), ...(u.note ? { note: u.note } : {}) };
-      const r = await this.pool.query(`INSERT INTO reconciliation_exception_state (exception_key, status, owner, history) VALUES ($1, COALESCE($2, 'open'), $3, jsonb_build_array($4::jsonb))
+      const entry = { at: new Date().toISOString(), by: u.by, ...(u.status ? { status: u.status } : {}), ...(u.owner !== undefined ? { owner: u.owner } : {}), ...(u.note ? { note: u.note } : {}), ...(u.dueOn !== undefined ? { dueOn: u.dueOn } : {}), ...(u.reference !== undefined ? { reference: u.reference } : {}) };
+      const r = await this.pool.query(`INSERT INTO reconciliation_exception_state (exception_key, status, owner, history, due_on, reference) VALUES ($1, COALESCE($2, 'open'), $3, jsonb_build_array($4::jsonb), $6::date, $8)
         ON CONFLICT (exception_key) DO UPDATE SET status = COALESCE($2, reconciliation_exception_state.status), owner = CASE WHEN $5 THEN $3 ELSE reconciliation_exception_state.owner END,
+          due_on = CASE WHEN $7 THEN $6::date ELSE reconciliation_exception_state.due_on END, reference = CASE WHEN $9 THEN $8 ELSE reconciliation_exception_state.reference END,
           history = reconciliation_exception_state.history || jsonb_build_array($4::jsonb), updated_at = now()`,
-        [k, u.status ?? null, u.owner ?? null, JSON.stringify(entry), u.owner !== undefined]);
+        [k, u.status ?? null, u.owner ?? null, JSON.stringify(entry), u.owner !== undefined, u.dueOn ?? null, u.dueOn !== undefined, u.reference ?? null, u.reference !== undefined]);
       n += r.rowCount ?? 0;
     }
     return n;

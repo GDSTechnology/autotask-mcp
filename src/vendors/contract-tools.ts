@@ -174,7 +174,7 @@ export function contractToolHandlers(s: AutotaskService, getPool: () => Pool | n
     ['autotask_vendor_monitor', async (a) => {
       const st = stores(); if (!st) return unavailable;
       const r = await runVendorMonitor(s, st.pool, { drift: a.drift !== false });
-      return { result: r, message: `Monitor: ${r.staleImports.length} vendor(s) with no recent invoice, ${r.renewals.length} subscription(s) renewing within 30 days, ${r.contractsEnding.length} contract(s) ending within 45 days, ${r.drift ? `${r.drift.findings.length} drifted change(s) (${r.drift.new} new)` : 'drift not checked'}. ${r.events} notification(s) sent (each finding once).` };
+      return { result: r, message: `Monitor: ${r.staleImports.length} vendor(s) with no recent invoice, ${r.renewals.length} subscription(s) renewing within 30 days, ${r.contractsEnding.length} contract(s) ending within 45 days, ${r.drift ? `${r.drift.findings.length} drifted change(s) (${r.drift.new} new)` : 'drift not checked'}, ${r.overdue.length} exception(s) past due, ${r.noticesDue.length} customer notice(s) due. ${r.events} notification(s) sent (each finding once).` };
     }],
   ];
 }

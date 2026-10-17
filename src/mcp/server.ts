@@ -598,6 +598,9 @@ Use autotask_list_categories to discover available tool categories, then autotas
 ## Picklist Discovery:
 Use autotask_list_queues, autotask_list_ticket_statuses, or autotask_list_ticket_priorities to discover valid IDs before filtering. Use autotask_get_field_info for any entity's field definitions and picklist values.
 
+## When no tool does it:
+Call **autotask_report_gap** (title = what was needed, detail = what the user asked and why the tools fell short, toolsTried) and tell the user it was logged. Don't guess, and don't work around it with raw_request writes. It lands on the admin console's Requests page, where it gets built. (action=list shows what is already requested.)
+
 ## ID-to-Name Mapping:
 All search and detail tools automatically include human-readable names for company and resource IDs in an _enhanced field on each result.
 

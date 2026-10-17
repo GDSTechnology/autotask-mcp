@@ -141,6 +141,9 @@ describe('contract change plan', () => {
     expect(cost).toMatchObject({ action: 'update', targetId: 3482, before: { unitCost: 11 }, after: { unitCost: 14.112 } });
     expect(price).toMatchObject({ action: 'create', blocked: null, before: { unitPrice: 12.5, units: 4 }, after: { contractID: 1, contractServiceID: 3482, effectiveDate: '2026-11-01', unitChange: 0, adjustedUnitPrice: 16.8 } });
     expect(price.label).toMatch(/customer price increase/);
+    // the customer-notice list and the execution gate read these
+    expect(cost.meta).toMatchObject({ kind: 'cost', companyId: 100 });
+    expect(price.meta).toMatchObject({ kind: 'price', companyId: 100, customer: 'Contoso Office Centers', per: 'month' });
   });
 
   test('blocked: already invoiced, outside the contract; a negotiated price is moved TO, never blocked', () => {

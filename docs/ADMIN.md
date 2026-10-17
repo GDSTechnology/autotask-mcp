@@ -298,6 +298,17 @@ ground truth. The same classification (`actorType`, `classificationSource`,
 `reference`) appears on every event from
 `autotask_get_ticket_change_history`, and in `autotask_get_actor_roster`.
 
+### Requests (what the MCP can't do yet)
+
+A list of capabilities to build, so a missing tool is captured instead of worked around:
+
+- **From AI agents:** `autotask_report_gap`. The server instructions tell every client (ChatGPT included) to call it when no tool fits, and it works even in read-only mode.
+- **From people:** the **Add a request** form on this page.
+- **Captured automatically:** a client called a tool that doesn't exist.
+- **Seen by the server, not reported yet:** raw_request shapes from the last 7 days that no tool covers. **Add as request** turns one into a request.
+
+The same request again (same title, ignoring case and punctuation) counts another occurrence instead of adding a row. Admins set the status (open → planned → built, or declined / duplicate) and priority. A resolution note says which tool or release covers it. A request marked built or declined that is reported again reopens. Stored in Postgres (migration 0014).
+
 ### Notifications (Discord, Teams, Slack, any webhook)
 
 The **Notifications** page posts an alert to a chat channel when something

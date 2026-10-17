@@ -103,7 +103,8 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
   const pick = i.rowNos?.length ? i.rows.filter((r) => i.rowNos!.includes(r.rowNo)) : i.rows;
   const nameOf = (sid: number | null) => (sid == null ? '?' : i.serviceName?.(sid) ?? `service ${sid}`);
   const lineOf = (contractId: number | null, serviceId: number | null) => (contractId != null && serviceId != null ? i.contractLines?.get(contractId)?.get(serviceId) ?? null : null);
-  const push = (kind: keyof typeof sum, row: PlanRowInput) => { sum[kind] = (sum[kind] ?? 0) + 1; if (row.blocked) sum.blocked++; out.push(row); };
+  // Every row carries its kind (the customer-notice list and the execution gate read it).
+  const push = (kind: keyof typeof sum, row: PlanRowInput) => { sum[kind] = (sum[kind] ?? 0) + 1; if (row.blocked) sum.blocked++; out.push({ ...row, meta: { ...(row.meta ?? {}), kind } }); };
 
   const dateBlock = (lineId: number | null, contractId: number | null, bundle = false): string | null => {
     const c = contractId != null ? i.contracts.get(contractId) : undefined;
@@ -117,7 +118,7 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
   };
 
   for (const r of pick) {
-    const meta = { reconRow: r.rowNo, exceptionKey: r.exceptionKey, customer: r.customerName, contractServiceId: r.contractServiceId, contractServiceBundleId: r.contractServiceBundleId, offeringId: r.offeringId, cadence: r.cadence };
+    const meta = { reconRow: r.rowNo, exceptionKey: r.exceptionKey, customer: r.customerName, companyId: r.autotaskCompanyId, contract: r.autotaskContract, product: r.offering ?? r.serviceName, per: r.serviceBasis ?? r.basis, contractServiceId: r.contractServiceId, contractServiceBundleId: r.contractServiceBundleId, offeringId: r.offeringId, cadence: r.cadence };
     const where = `${r.customerName} / ${r.autotaskContract} / ${r.serviceName}`;
     const serviceLine = r.lineKind === 'service' && r.contractServiceId != null;
     const delta = r.primary && r.quantity != null ? r4(r.quantity - (r.contractQuantityTotal ?? r.contractQuantity ?? 0)) : 0;
@@ -153,7 +154,7 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
           meta,
         }, out.length + 1);
         sum.term++; if (rows[0]!.blocked) sum.blocked += 2;
-        out.push(...rows);
+        out.push(...rows.map((x) => ({ ...x, meta: { ...(x.meta ?? {}), kind: 'term' } })));
         termMoved = true;
       }
     }

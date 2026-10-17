@@ -8,7 +8,7 @@ import type { AutotaskService } from '../services/autotask.service.js';
 import type { CallerContext } from '../types/context.js';
 import { VendorStore } from './store.js';
 import { PolicyStore, type PolicyMode } from './policy.js';
-import { ReconStore } from './recon-store.js';
+import { DECIDED_STATUSES, EXCEPTION_STATUSES, ReconStore, type ExceptionStatus } from './recon-store.js';
 import { loadReconInput } from './recon-data.js';
 import { reconcile, type ReconRow } from './reconcile.js';
 import { buildWorkbook } from './workbook.js';
@@ -26,13 +26,19 @@ const who = (ctx: CallerContext) => ctx.trustedActingUserEmail ?? ctx.requesting
 const unavailable: Result = { result: { status: 'unavailable' }, message: 'Needs the Postgres store (MCP_PG_ENABLED=true and migrations 0010–0012).' };
 const money = (n: unknown) => (typeof n === 'number' ? `$${n.toFixed(2)}` : '—');
 
+const today = () => new Date().toISOString().slice(0, 10);
+/** Still undecided and past its due date. */
+export function isOverdue(s: { status: string; dueOn?: string | null }): boolean {
+  return !!s.dueOn && s.dueOn < today() && !DECIDED_STATUSES.includes(s.status as ExceptionStatus) && s.status !== 'fix_planned';
+}
+
 /** The compact row chat shows: the required columns, then why. */
-export function chatRow(r: ReconRow, state?: { status: string; owner: string | null }): Record<string, unknown> {
+export function chatRow(r: ReconRow, state?: { status: string; owner: string | null; dueOn?: string | null; reference?: string | null }): Record<string, unknown> {
   return {
     row: r.rowNo, severity: r.severity, exceptions: r.exceptions, customer: r.customerName, contract: r.autotaskContract, vendor: r.vendor, sku: r.serviceSku, offering: r.offering, term: r.cadence,
     unit: r.unit, quantity: r.quantity, contractQuantity: r.contractQuantity, costShouldBe: r.costShouldBe, priceShouldBe: r.priceShouldBe, currentCost: r.currentCost, currentPrice: r.currentPrice,
     differenceOnCost: r.differenceOnCost, differenceOnPrice: r.differenceOnPrice, per: r.basis, billedRate: r.billedRate, billingPosted: r.billingPosted, monthlyExposure: r.monthlyExposure,
-    confidence: r.confidence, reason: r.reason, proposedAction: r.proposedAction, exceptionKey: r.exceptionKey, ...(state ? { status: state.status, owner: state.owner } : {}),
+    confidence: r.confidence, reason: r.reason, proposedAction: r.proposedAction, exceptionKey: r.exceptionKey, ...(state ? { status: state.status, owner: state.owner, dueOn: state.dueOn ?? null, overdue: isOverdue(state), reference: state.reference ?? null } : {}),
   };
 }
 
@@ -65,9 +71,14 @@ export function reconToolHandlers(s: AutotaskService, getPool: () => Pool | null
       if (action === 'update') {
         const keys = Array.isArray(a.keys) ? a.keys.map(String) : [];
         if (!keys.length) return { result: { status: 'invalid_value', field: 'keys' }, message: 'keys: the exceptionKey of each row to update.' };
-        if (a.status && !['open', 'acknowledged', 'resolved', 'accepted'].includes(String(a.status))) return { result: { status: 'invalid_value', field: 'status' }, message: 'status: open | acknowledged | resolved | accepted (accepted = an expected variance).' };
-        const n = await st.recon.updateState(keys, { ...(a.status ? { status: a.status } : {}), ...(a.owner !== undefined ? { owner: a.owner === null ? null : String(a.owner) } : {}), ...(a.note ? { note: String(a.note) } : {}), by: who(ctx) });
-        return { result: { updated: n }, message: `Updated ${n} exception(s); the change is added to each one's history.` };
+        if (a.status && !(EXCEPTION_STATUSES as readonly string[]).includes(String(a.status))) return { result: { status: 'invalid_value', field: 'status', choices: EXCEPTION_STATUSES }, message: `status: ${EXCEPTION_STATUSES.join(' | ')}. Outcomes: absorbed = GDS carries the cost; billed_elsewhere = billed on another company / contract (give reference); fix_planned = a change plan fixes it (reference = plan id); accepted = an expected variance; resolved = fixed in Autotask.` };
+        const status = a.status ? String(a.status) as ExceptionStatus : undefined;
+        if ((status === 'billed_elsewhere' || status === 'fix_planned') && !a.reference) return { result: { status: 'invalid_value', field: 'reference' }, message: status === 'billed_elsewhere' ? 'billed_elsewhere needs reference: where it is billed (company / contract / invoice).' : 'fix_planned needs reference: the change plan id.' };
+        if (status === 'absorbed' && !a.note) return { result: { status: 'invalid_value', field: 'note' }, message: 'absorbed needs a note: why GDS carries this cost (e.g. "customer out of business, contract ridden out").' };
+        const dueOn = a.dueOn === null || a.dueOn === '' ? null : a.dueOn != null ? String(a.dueOn).slice(0, 10) : undefined;
+        if (dueOn && !/^\d{4}-\d{2}-\d{2}$/.test(dueOn)) return { result: { status: 'invalid_value', field: 'dueOn' }, message: 'dueOn: YYYY-MM-DD (or null to clear).' };
+        const n = await st.recon.updateState(keys, { ...(status ? { status } : {}), ...(a.owner !== undefined ? { owner: a.owner === null ? null : String(a.owner) } : {}), ...(a.note ? { note: String(a.note) } : {}), ...(dueOn !== undefined ? { dueOn } : {}), ...(a.reference !== undefined ? { reference: a.reference === null ? null : String(a.reference) } : {}), by: who(ctx) });
+        return { result: { updated: n }, message: `Updated ${n} exception(s)${status ? ` → ${status}` : ''}; the change is added to each one's history.` };
       }
       const run = await runOf(st, a);
       if (!run) return { result: { status: 'not_found' }, message: 'No reconciliation run yet — autotask_reconcile_vendor_to_autotask.' };
@@ -79,12 +90,19 @@ export function reconToolHandlers(s: AutotaskService, getPool: () => Pool | null
       if (a.sku) rows = rows.filter((r) => r.serviceSku === String(a.sku));
       if (a.minExposure != null) rows = rows.filter((r) => (r.monthlyExposure ?? 0) >= Number(a.minExposure));
       const states = await st.recon.states(rows.map((r) => r.exceptionKey));
-      const withState = rows.map((r) => ({ r, s: states.get(r.exceptionKey) ?? { status: 'open', owner: null, history: [] } }));
-      const filtered = a.status ? withState.filter((x) => x.s.status === String(a.status)) : withState;
+      const withState = rows.map((r) => ({ r, s: states.get(r.exceptionKey) ?? { status: 'open' as ExceptionStatus, owner: null, dueOn: null, reference: null, history: [] } }));
+      let filtered = a.status ? withState.filter((x) => x.s.status === String(a.status)) : withState;
+      if (a.owner) filtered = filtered.filter((x) => String(x.s.owner ?? '').toLowerCase() === String(a.owner).toLowerCase());
+      if (a.overdue === true) filtered = filtered.filter((x) => isOverdue(x.s));
+      if (a.undecided === true) filtered = filtered.filter((x) => !DECIDED_STATUSES.includes(x.s.status) && x.s.status !== 'fix_planned');
+      const exposureOf = (f: (s: { status: string }) => boolean) => filtered.filter((x) => f(x.s)).reduce((t, x) => t + (x.r.monthlyExposure ?? 0), 0);
+      const byStatus: Record<string, number> = {};
+      for (const x of filtered) byStatus[x.s.status] = (byStatus[x.s.status] ?? 0) + 1;
       const limit = Math.min(Math.max(Number(a.limit) || 100, 1), 1000);
       return {
-        result: { runId: run.id, invoice: run.invoiceNumber, period: `${run.periodStart} – ${run.periodEnd}`, total: filtered.length, rows: filtered.slice(0, limit).map((x) => ({ ...chatRow(x.r, x.s), history: a.includeHistory === true ? (x.s as { history?: unknown }).history : undefined })) },
-        message: `${filtered.length} exception(s) in run ${run.id} (${run.invoiceNumber ?? ''}), monthly exposure ${money(filtered.reduce((t, x) => t + (x.r.monthlyExposure ?? 0), 0))}.`,
+        result: { runId: run.id, invoice: run.invoiceNumber, period: `${run.periodStart} – ${run.periodEnd}`, total: filtered.length, byStatus, overdue: filtered.filter((x) => isOverdue(x.s)).length,
+          openExposure: Math.round(exposureOf((s) => !DECIDED_STATUSES.includes(s.status as ExceptionStatus)) * 100) / 100, absorbedExposure: Math.round(exposureOf((s) => s.status === 'absorbed') * 100) / 100, rows: filtered.slice(0, limit).map((x) => ({ ...chatRow(x.r, x.s), history: a.includeHistory === true ? (x.s as { history?: unknown }).history : undefined })) },
+        message: `${filtered.length} exception(s) in run ${run.id} (${run.invoiceNumber ?? ''}): open exposure ${money(exposureOf((s) => !DECIDED_STATUSES.includes(s.status as ExceptionStatus)))}/month${exposureOf((s) => s.status === 'absorbed') ? `, absorbed ${money(exposureOf((s) => s.status === 'absorbed'))}/month` : ''}${filtered.some((x) => isOverdue(x.s)) ? `, ${filtered.filter((x) => isOverdue(x.s)).length} OVERDUE` : ''}.`,
       };
     }],
 

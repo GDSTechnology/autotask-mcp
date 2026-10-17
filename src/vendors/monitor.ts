@@ -5,6 +5,9 @@
 //   contract ending  a contract matched in the latest run ends within 45 days (plans
 //                    can't change a contract past its end — renew it first)
 //   sync drift       an applied plan change that no longer holds
+//   overdue          reconciliation exceptions past their due date and still undecided
+//   notice due       a contract plan's customer-facing change takes effect within 30
+//                    days and no customer notice is recorded
 // Each finding is a notification with a dedupe key, so a daily run repeats
 // nothing that is already known. Reads only (Autotask: contracts + drift).
 // Runs on demand (autotask_vendor_monitor) and, when MCP_VENDOR_MONITOR_HOUR_UTC
@@ -14,14 +17,15 @@ import type { Pool } from 'pg';
 import type { AutotaskService } from '../services/autotask.service.js';
 import { notify as defaultNotify, type NotifyEvent } from '../services/notifier.js';
 import { VendorStore } from './store.js';
-import { ReconStore } from './recon-store.js';
+import { DECIDED_STATUSES, ReconStore } from './recon-store.js';
+import { NoticeStore, buildNotices } from './notices.js';
 import { DriftStore, checkDrift, type DriftFinding } from './drift.js';
 import { PlanStore, type Plan } from '../change-plans/store.js';
 import { createEntityIO } from './catalog-tools.js';
 import { inChunks } from './contract-context.js';
 import type { Logger } from '../utils/logger.js';
 
-export const STALE_IMPORT_DAYS = 35, RENEWAL_DAYS = 30, CONTRACT_END_DAYS = 45;
+export const STALE_IMPORT_DAYS = 35, RENEWAL_DAYS = 30, CONTRACT_END_DAYS = 45, NOTICE_DAYS = 30;
 export const PLAN_KINDS_WITH_WRITES = ['catalog_standardize', 'contract_pricing', 'contract_moves', 'contract_wording', 'revert'];
 
 const addDays = (d: string, n: number) => { const x = new Date(`${d}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
@@ -32,6 +36,8 @@ export interface MonitorReport {
   renewals: Array<{ vendor: string; customer: string | null; description: string; quantity: number | null; renewalDate: string }>;
   contractsEnding: Array<{ contractId: number; contractName: string; customer: string | null; endDate: string; days: number }>;
   drift: { checked: number; findings: DriftFinding[]; new: number } | null; events: number;
+  overdue: Array<{ exceptionKey: string; customer: string | null; offering: string | null; owner: string | null; dueOn: string }>;
+  noticesDue: Array<{ planId: string; companyId: number; customer: string | null; effectiveDate: string; monthlyChange: number; oneTime: number }>;
 }
 
 /** Plans whose applied rows should still hold (the drift check's input). */
@@ -45,7 +51,7 @@ export async function runVendorMonitor(s: AutotaskService, pool: Pool, o: { now?
   const send = o.notify ?? defaultNotify;
   const today = (o.now ?? new Date()).toISOString().slice(0, 10);
   const vendor = new VendorStore(pool), recon = new ReconStore(pool), plans = new PlanStore(pool), driftStore = new DriftStore(pool);
-  const rep: MonitorReport = { at: new Date().toISOString(), staleImports: [], renewals: [], contractsEnding: [], drift: null, events: 0 };
+  const rep: MonitorReport = { at: new Date().toISOString(), staleImports: [], renewals: [], contractsEnding: [], drift: null, events: 0, overdue: [], noticesDue: [] };
   const emit = (e: NotifyEvent) => { rep.events++; send(e); };
 
   const docs = await vendor.listDocuments({ limit: 200 });
@@ -82,6 +88,34 @@ export async function runVendorMonitor(s: AutotaskService, pool: Pool, o: { now?
       const days = daysBetween(today, end);
       rep.contractsEnding.push({ contractId: Number(c.id), contractName: String(c.contractName), customer: customerOf.get(Number(c.id)) ?? null, endDate: end, days });
       emit({ type: 'vendor.contract_ending', severity: 'warning', title: `${customerOf.get(Number(c.id)) ?? 'Contract'}: "${c.contractName}" ends in ${days} days`, detail: `Contract ${c.id} ends ${end} and bills vendor products. Renew it before then — price, quantity and move plans are blocked past a contract's end, and the vendor keeps charging.`, fields: { contract: String(c.id) }, dedupeKey: `vendor.contract_ending:${c.id}:${end}` });
+    }
+  }
+
+  // Exceptions past their due date and still undecided (latest run of each vendor).
+  for (const v of latestByVendor.keys()) {
+    const run = await recon.latestRun(v); if (!run) continue;
+    const rows = await recon.rows(run.id);
+    const states = await recon.states(rows.map((r) => r.exceptionKey));
+    for (const r of rows) {
+      const st = states.get(r.exceptionKey);
+      if (!st?.dueOn || st.dueOn >= today || DECIDED_STATUSES.includes(st.status) || st.status === 'fix_planned') continue;
+      rep.overdue.push({ exceptionKey: r.exceptionKey, customer: r.customerName, offering: r.offering, owner: st.owner, dueOn: st.dueOn });
+    }
+  }
+  if (rep.overdue.length) {
+    const top = rep.overdue.slice(0, 10);
+    emit({ type: 'vendor.exception_overdue', severity: 'warning', title: `${rep.overdue.length} reconciliation exception(s) past due and undecided`, detail: top.map((x) => `due ${x.dueOn} — ${x.customer ?? '?'}: ${x.offering ?? '?'}${x.owner ? ` (owner ${x.owner})` : ''}`).join('\n') + (rep.overdue.length > top.length ? `\n… and ${rep.overdue.length - top.length} more` : '') + '\nDecide each one: absorbed, billed_elsewhere, fix_planned, accepted or resolved (autotask_reconcile_get_exceptions action=update).', fields: { overdue: String(rep.overdue.length) }, dedupeKey: `vendor.exception_overdue:${today}` });
+  }
+
+  // Customer-facing plan changes taking effect soon with no notice recorded.
+  const notices = new NoticeStore(pool);
+  for (const p of (await plans.list(50)).filter((x) => x.kind === 'contract_pricing' && (x.status === 'open' || x.status === 'executing'))) {
+    const plan = await plans.get(p.id); if (!plan) continue;
+    for (const c of buildNotices(plan, await notices.list(plan.id))) {
+      if (!c.increase || c.notice || !c.effectiveDate || c.effectiveDate < today || c.effectiveDate > addDays(today, NOTICE_DAYS)) continue;
+      if (c.lines.every((l) => l.blocked)) continue; // nothing in it can run
+      rep.noticesDue.push({ planId: plan.id, companyId: c.companyId, customer: c.customer, effectiveDate: c.effectiveDate, monthlyChange: c.monthlyChange, oneTime: c.oneTime });
+      emit({ type: 'vendor.notice_due', severity: 'warning', title: `${c.customer ?? `Company ${c.companyId}`}: price change from ${c.effectiveDate} — no customer notice recorded`, detail: `Plan ${plan.id} changes this customer's invoice by ${c.monthlyChange >= 0 ? '+' : ''}$${c.monthlyChange.toFixed(2)}/month${c.oneTime ? ` and $${c.oneTime.toFixed(2)} one-time` : ''} from ${c.effectiveDate} (${daysBetween(today, c.effectiveDate)} days). Send the notice, then record it (autotask_pricing_customer_notices action=mark_sent); until then those rows don't execute.`, fields: { plan: plan.id, company: String(c.companyId) }, dedupeKey: `vendor.notice_due:${plan.id}:${c.companyId}` });
     }
   }
 

@@ -183,6 +183,63 @@ Autotask can't change a contract line's service, and contract price and unit cha
 
 Good first pilots are one price row, then one missing-line row. A missing-line row adds a service through an adjustment that names the contract and the service but no line, which is the API's way to add a service mid-contract.
 
+## The monthly billing process
+
+Who does what each month. The AI client (e.g. ChatGPT) runs the tools and prepares everything; a person approves. Nothing reaches Autotask until a plan is approved and executed.
+
+| # | Step | Tool | Who |
+|---|---|---|---|
+| 1 | The vendor invoice arrives: import it (CSV + the customer report) | `autotask_vendor_import_invoice` (or `autotask_vendor_sync`) | AI client |
+| 2 | Reconcile it against the customers' contracts | `autotask_reconcile_vendor_to_autotask` | AI client |
+| 3 | Decide every critical / high exception: give it an outcome, an owner and a due date | `autotask_reconcile_get_exceptions action=update` | Person decides, AI records |
+| 4 | Build the contract plan; tell each customer about their invoice changes | `autotask_pricing_build_change_plan`, `autotask_pricing_customer_notices` | AI builds, person sends the notices |
+| 5 | Review and approve the plan rows | `autotask_change_plan_review` | Person |
+| 6 | Execute (customer-facing rows wait for the customer's notice) | `autotask_change_plan_execute` | AI, after approval |
+| 7 | Before Approve & Post in Autotask: the pre-invoice check | `autotask_billing_preinvoice_check` | AI, then person posts |
+| 8 | After posting: next month's reconcile and the drift check confirm it | `autotask_reconcile_check_sync_drift` | AI |
+
+The daily monitor (`autotask_vendor_monitor`) covers the gaps between: a missing import, renewals, contracts ending, overdue exceptions, notices due and drift.
+
+### Step 3: exception outcomes
+
+Every exception ends with an outcome (`autotask_reconcile_get_exceptions action=update keys=[…] status=…`):
+
+| Status | Meaning | Needs |
+|---|---|---|
+| `open` / `acknowledged` | Still to decide | — |
+| `fix_planned` | A change plan fixes it | `reference` = the plan id |
+| `billed_elsewhere` | Billed on another company, contract or invoice | `reference` = where |
+| `absorbed` | GDS carries the cost (a write-off) | `note` = why |
+| `accepted` | An expected variance (e.g. the customer buys it elsewhere) | — |
+| `resolved` | Fixed in Autotask | — |
+
+- `owner` and `dueOn` (YYYY-MM-DD) say who decides by when. `overdue: true` lists the ones past due and still undecided, and the monitor sends `vendor.exception_overdue` for them.
+- The list splits **open exposure** from **absorbed exposure**, so write-offs stay visible without counting as open.
+- A `resolved` exception that comes back next month reopens. The other outcomes stand.
+
+### Step 4: customer notices
+
+`autotask_pricing_customer_notices` reads a contract pricing plan (default: the newest open one):
+
+- **`list`:** per customer, every invoice change the plan makes: price increases, new lines, back-bill charges, term moves and more seats. Each shows old → new, the monthly and one-time difference, the effective date, and whether the notice was recorded and how many days ahead.
+- **`export`:** the same as CSV, for a mail merge.
+- **`mark_sent`:** records the notice: `{ companyIds | "all", sentOn, method: email | letter | portal | call | waived | other }`. `waived` needs a note. A notice shorter than 30 days before the effective date is flagged.
+- **`unmark`:** removes the record.
+
+**Execution waits for it.** An approved row that changes what a customer is invoiced runs only once that customer's notice (or waiver) is recorded. Other rows run. Cost updates, fewer seats and line ends need no notice. The monitor sends `vendor.notice_due` when such a change takes effect within 30 days and nothing is recorded.
+
+### Step 7: the pre-invoice check
+
+Run `autotask_billing_preinvoice_check` (optional `throughDate`, `companyId`) before **Approve & Post**. It only reads. For the posting month it lists:
+
+- **Pending charges:** unbilled contract charges that bill at this posting, with $0 and below-cost warnings.
+- **Double billing (STOP):** a back-bill charge for months another line of the same product already bills, for example a prepaid annual line next to a back-bill. Delete the charge in Autotask, or confirm the line is a different seat.
+- **Duplicate lines:** one customer billed for the same product on two lines this month.
+- **Price changes** taking effect this month, and whether the customer notice is recorded.
+- **Undecided critical exceptions** from the latest reconciliation.
+
+The verdict is `stop` (double billing), `review` (anything else) or `ready`. It checks the customers with pending charges plus the latest reconciliation's customers.
+
 ## Monitoring
 
 `autotask_vendor_monitor` runs one pass and sends each finding once:
@@ -190,6 +247,8 @@ Good first pilots are one price row, then one missing-line row. A missing-line r
 - subscriptions on the latest invoice renewing within 30 days (annual commitments can only be reduced at renewal);
 - contracts in the latest reconciliation that end within 45 days (plans are blocked past a contract's end);
 - sync drift on applied plan changes.
+- reconciliation exceptions past their due date and still undecided;
+- customer-facing plan changes taking effect within 30 days with no customer notice recorded.
 
 Set `MCP_VENDOR_MONITOR_HOUR_UTC` (0–23) to run it daily at that hour. It is off when unset, and it only reads Autotask.
 

@@ -11,6 +11,7 @@ import { PriceStore, perOf, pricesFromInvoices } from './prices.js';
 import { buildStandardizePlan, type AutotaskServiceRow } from './catalog-standard.js';
 import { PlanStore, parseRows, type Plan } from '../change-plans/store.js';
 import { PolicyStore } from './policy.js';
+import { NoticeStore, rowsAwaitingNotice } from './notices.js';
 import { executePlan, type EntityIO } from '../change-plans/execute.js';
 import { inChunks } from './contract-context.js';
 import { ADJUSTMENTS, adjustmentAlreadyApplied, adjustmentReadBack, adjustmentSnapshot, unitsOn, type LineKind, type QueryFn, type UnitPeriod } from './contract-io.js';
@@ -75,7 +76,7 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
 }
 
 export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | null): Array<[string, H]> {
-  const stores = () => { const p = getPool(); return p ? { vendor: new VendorStore(p), prices: new PriceStore(p), plans: new PlanStore(p), policy: new PolicyStore(p) } : null; };
+  const stores = () => { const p = getPool(); return p ? { vendor: new VendorStore(p), prices: new PriceStore(p), plans: new PlanStore(p), policy: new PolicyStore(p), notices: new NoticeStore(p) } : null; };
   const io = () => createEntityIO(s);
 
   return [
@@ -156,8 +157,16 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
       if (plan.status !== 'open' && plan.status !== 'executing') return { result: { status: plan.status }, message: `Plan is ${plan.status} — build a new plan.` };
       if (!plan.rows.some((r) => r.status === 'approved')) return { result: { status: 'nothing_approved' }, message: 'No approved rows — approve rows first (autotask_change_plan_review action=approve).' };
       const by = who(ctx);
-      const rowNos = a.rows != null ? parseRows(a.rows, plan.rows.length) : undefined;
+      let rowNos = a.rows != null ? parseRows(a.rows, plan.rows.length) : undefined;
       if (a.rows != null && !rowNos?.length) return { result: { status: 'invalid_value', field: 'rows' }, message: 'rows: "all", "3", "3-5" or [row numbers] — only these approved rows run (e.g. a one-row pilot).' };
+      // Customer-facing contract changes wait until the customer's notice (or a waiver) is recorded.
+      const held = plan.kind === 'contract_pricing' ? rowsAwaitingNotice(plan, await st.notices.list(plan.id)).filter((h) => !rowNos || rowNos.includes(h.row)) : [];
+      if (held.length) {
+        const heldRows = new Set(held.map((h) => h.row));
+        rowNos = (rowNos ?? plan.rows.filter((r) => r.status === 'approved').map((r) => r.rowNo)).filter((n) => !heldRows.has(n));
+        const who2 = [...new Set(held.map((h) => h.customer ?? String(h.companyId ?? '?')))].slice(0, 8).join(', ');
+        if (!rowNos.length) return { result: { status: 'notice_required', held }, message: `Nothing run: ${held.length} approved row(s) change what customers are invoiced and no notice is recorded for ${who2}. Send the notice, then record it: autotask_pricing_customer_notices { action: "mark_sent", planId, companyIds, sentOn, method } (method "waived" when no notice is needed).` };
+      }
       const rep = await executePlan(st.plans, plan, await io(), {
         maxRows: Number(a.maxRows) || 25,
         ...(rowNos ? { rowNos } : {}),
@@ -169,7 +178,7 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
         },
       });
       const left = (await st.plans.get(plan.id))!.rows.filter((r) => r.status === 'approved').length;
-      return { result: rep, message: `Executed ${rep.attempted} row(s): ${rep.applied} applied and verified, ${rep.skipped} already as planned, ${rep.stale} stale (changed since the plan — rebuild), ${rep.failed} failed${rep.waiting ? `, ${rep.waiting} waiting for a row they depend on` : ''}${rep.stoppedBy ? ` — STOPPED: ${rep.stoppedBy}` : ''}.${left ? ` ${left} approved row(s) left — call again.` : ''}${rep.rows.some((r) => r.detail?.includes('not verifiable yet')) ? ' Rows "not verifiable yet" were written; re-check them with autotask_reconcile_check_sync_drift once Autotask shows the new unit period.' : ''}` };
+      return { result: { ...rep, ...(held.length ? { heldForNotice: held } : {}) }, message: `${held.length ? `${held.length} row(s) held until the customer notice is recorded (autotask_pricing_customer_notices). ` : ''}Executed ${rep.attempted} row(s): ${rep.applied} applied and verified, ${rep.skipped} already as planned, ${rep.stale} stale (changed since the plan — rebuild), ${rep.failed} failed${rep.waiting ? `, ${rep.waiting} waiting for a row they depend on` : ''}${rep.stoppedBy ? ` — STOPPED: ${rep.stoppedBy}` : ''}.${left ? ` ${left} approved row(s) left — call again.` : ''}${rep.rows.some((r) => r.detail?.includes('not verifiable yet')) ? ' Rows "not verifiable yet" were written; re-check them with autotask_reconcile_check_sync_drift once Autotask shows the new unit period.' : ''}` };
     }],
   ];
 }

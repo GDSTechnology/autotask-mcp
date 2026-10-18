@@ -97,6 +97,22 @@ export interface NameCheckResult {
  * prose. Conservative by design — this is a hard gate, not the full seller-spam
  * classifier (that lives in n8n).
  */
+/**
+ * A raw_request write to Companies must pass the same name gate as create_company:
+ * a POST /Companies needs a plausible companyName; a PUT / PATCH that sets one is checked too.
+ * Returns why it is refused, or null.
+ */
+export function rawCompanyWriteProblem(method: unknown, path: unknown, body: unknown): string | null {
+  const m = String(method ?? '').toUpperCase();
+  if (m !== 'POST' && m !== 'PUT' && m !== 'PATCH') return null;
+  const p = String(path ?? '').split('?')[0]!.replace(/^\/+|\/+$/g, '').toLowerCase();
+  if (!/^companies(\/\d+)?$/.test(p)) return null;
+  const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  if (m === 'POST' && p === 'companies') { const c = isUnsafeCompanyName(b.companyName); return c.safe ? null : `refusing to create company: ${c.reason}`; }
+  if ('companyName' in b) { const c = isUnsafeCompanyName(b.companyName); return c.safe ? null : `refusing to rename company: ${c.reason}`; }
+  return null;
+}
+
 export function isUnsafeCompanyName(name: unknown): NameCheckResult {
   if (typeof name !== 'string') return { safe: false, reason: 'company name is missing or not a string' };
   const trimmed = name.trim();

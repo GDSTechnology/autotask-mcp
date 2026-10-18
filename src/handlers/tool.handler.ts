@@ -66,6 +66,7 @@ import { notify } from '../services/notifier.js';
 import { vendorToolHandlers } from '../vendors/tools.js';
 import { catalogToolHandlers } from '../vendors/catalog-tools.js';
 import { reconToolHandlers } from '../vendors/recon-tools.js';
+import { rawCompanyWriteProblem } from '../utils/company-guard.js';
 import { processToolHandlers } from '../vendors/process-tools.js';
 import { captureGap, gapToolHandlers } from '../gaps/tools.js';
 import { pax8ToolHandlers } from '../vendors/pax8-tools.js';
@@ -2723,6 +2724,9 @@ export class AutotaskToolHandler {
       // Raw REST passthrough (escape hatch)
       ['autotask_raw_request', async (a) => {
         noteRawRequest(a.method, a.path); // admin console "Tool gaps"
+        // The typed create_company refuses junk names ("Gmail", greetings…); raw_request writes to /Companies used to skip that.
+        const bad = rawCompanyWriteProblem(a.method, a.path, a.body);
+        if (bad) return { result: { status: 'refused', reason: bad }, message: `Refused: ${bad}. Not sent to Autotask — route this to manual review (a consumer email domain is never a company).` };
         const r = await s.rawRequest(a.method, a.path, a.body, a.queryParams);
         return { result: r, message: `Autotask ${a.method} ${a.path} completed` };
       }],

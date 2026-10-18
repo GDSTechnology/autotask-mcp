@@ -122,6 +122,11 @@ describe('pricing policy', () => {
     // retail + a small uplift; when retail is below cost the margin floor (on cost) wins
     expect(priceShouldBe(10, 12, { ...DEFAULT_POLICY, pct: 0.05, marginFloor: 0.1 }, null)).toEqual({ price: 12.6, rule: 'vendor suggested + 5% (*)' });
     expect(priceShouldBe(10.08, 9.96, { ...DEFAULT_POLICY, pct: 0.05, marginFloor: 0.1 }, null)).toEqual({ price: 11.2, rule: 'vendor suggested + 5% (*) → raised to the 10% margin floor' });
+    // customer prices: whole cents rounded UP (never under the floor); sub-dollar per-unit prices keep 4 decimals
+    expect(priceShouldBe(10.56, 9.96, { ...DEFAULT_POLICY, pct: 0.05, marginFloor: 0.1 }, null).price).toBe(11.74); // 11.7333…
+    expect(priceShouldBe(10.08, 9.96, { ...DEFAULT_POLICY, pct: 0.05, marginFloor: 0.1 }, null).price).toBe(11.2); // exact stays
+    expect(priceShouldBe(0.2, 0.24, { ...DEFAULT_POLICY, pct: 0.05 }, null).price).toBe(0.252);
+    expect(priceShouldBe(3, 3.17460317, { ...DEFAULT_POLICY, pct: 0.05 }, null).price).toBe(3.34); // 3.3333…
     expect(landedCost(10, 0.028, { ...DEFAULT_POLICY, feePolicy: 'allocate' })).toBe(10.28);
     const ps = [{ ...DEFAULT_POLICY, scope: '*' }, { ...DEFAULT_POLICY, scope: 'Microsoft', mode: 'margin' as const, pct: 0.15 }, { ...DEFAULT_POLICY, scope: 'offering:7', mode: 'markup' as const, pct: 0.1 }];
     expect(policyFor(ps, 7, 'Microsoft').scope).toBe('offering:7');
@@ -148,6 +153,7 @@ describe('contract change plan', () => {
     // a line with 0 units on the effective date: a price change on it changes no invoice
     const zero = rebaseToEffectiveDate(reconcile(input()).rows, new Map());
     expect(buildContractPlan({ ...base, rows: zero, include: ['price'] }).rows.filter((x) => x.entity === 'ContractServiceAdjustments')).toEqual([]);
+    expect(buildContractPlan({ ...base, rows: zero, include: ['cost'] }).rows.filter((x) => x.entity === 'ContractServices')).toEqual([]); // …nor its cost
   });
 
   test('cost and price are separate rows; price is a ContractServiceAdjustment effective next month', () => {

@@ -94,6 +94,10 @@ describe('pre-invoice check', () => {
     expect(r.verdict).toBe('review');
     expect(r.duplicateLines).toHaveLength(1);
     expect(r.duplicateLines[0]!.lines.map((l) => l.line)).toEqual([100, 101]);
+    // a service no vendor bills (a domain on several lines) is not a duplicate
+    const domains = analyzePreinvoice(base({ charges: [], lines: [{ id: 300, contractID: 20, serviceID: 9 }, { id: 301, contractID: 20, serviceID: 9 }], serviceNames: new Map([[9, 'Domain registration']]),
+      units: [{ contractServiceID: 300, startDate: '2026-01-01T00:00:00', endDate: '2026-12-31T00:00:00', units: 1, price: 18 }, { contractServiceID: 301, startDate: '2026-01-01T00:00:00', endDate: '2026-12-31T00:00:00', units: 1, price: 16.99 }] }));
+    expect(domains.duplicateLines).toEqual([]);
   });
 
   test('a plan change taking effect this month without a notice → review; nothing found → ready', () => {

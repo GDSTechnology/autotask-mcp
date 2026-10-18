@@ -12,8 +12,8 @@ import { DECIDED_STATUSES, EXCEPTION_STATUSES, ReconStore, type ExceptionStatus 
 import { loadReconInput } from './recon-data.js';
 import { reconcile, type ReconRow } from './reconcile.js';
 import { buildWorkbook } from './workbook.js';
-import { buildContractPlan, CHANGE_KINDS, type ChangeKind } from './contract-plan.js';
-import { inChunks, inEffect, lastPostedFrom, loadContractContext } from './contract-context.js';
+import { buildContractPlan, CHANGE_KINDS, rebaseToEffectiveDate, type ChangeKind } from './contract-plan.js';
+import { inChunks, inEffect, lastPostedFrom, loadContractContext, unitsBefore } from './contract-context.js';
 import { driftEvent, plansToCheck, PLAN_KINDS_WITH_WRITES } from './monitor.js';
 import { DriftStore, checkDrift } from './drift.js';
 import { createEntityIO, planView } from './catalog-tools.js';
@@ -148,12 +148,14 @@ export function reconToolHandlers(s: AutotaskService, getPool: () => Pool | null
       const st = stores(); if (!st) return unavailable;
       const run = await runOf(st, a);
       if (!run) return { result: { status: 'not_found' }, message: 'No reconciliation run yet — autotask_reconcile_vendor_to_autotask.' };
-      const rows = await st.recon.rows(run.id);
+      const runRows = await st.recon.rows(run.id);
       const include = (Array.isArray(a.include) && a.include.length ? a.include.map(String) : CHANGE_KINDS).filter((k: string): k is ChangeKind => (CHANGE_KINDS as string[]).includes(k));
       const now = new Date();
       const effectiveDate = a.effectiveDate ? String(a.effectiveDate).slice(0, 10) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) return { result: { status: 'invalid_value', field: 'effectiveDate' }, message: 'effectiveDate: YYYY-MM-DD.' };
       const io = await createEntityIO(s);
+      // Units as they stand the day before the change — not the reconciled month's (a seat added since would be added twice).
+      const rows = rebaseToEffectiveDate(runRows, await unitsBefore(io.query, [...new Set(runRows.filter((r) => r.lineKind === 'service' && r.contractServiceId != null).map((r) => r.contractServiceId!))], effectiveDate));
       const companyIds = [...new Set(rows.map((r) => r.autotaskCompanyId).filter((x): x is number => x != null))];
       const cc = await loadContractContext(io.query, { companyIds });
       const [links, offerings] = await Promise.all([st.vendor.catalogLinks(), st.vendor.offerings()]);

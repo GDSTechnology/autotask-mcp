@@ -7,7 +7,7 @@
 import ExcelJS from 'exceljs';
 import { reconcile, type ReconInput } from '../src/vendors/reconcile';
 import { priceShouldBe, policyFor, landedCost, DEFAULT_POLICY } from '../src/vendors/policy';
-import { buildContractPlan } from '../src/vendors/contract-plan';
+import { buildContractPlan, rebaseToEffectiveDate } from '../src/vendors/contract-plan';
 import { checkDrift } from '../src/vendors/drift';
 import { buildWorkbook, REQUIRED_COLUMNS } from '../src/vendors/workbook';
 import { pax8ItemToCsvRow, pax8PricingCadence } from '../src/vendors/pax8-api';
@@ -133,6 +133,22 @@ describe('pricing policy', () => {
 describe('contract change plan', () => {
   const rows = reconcile(input()).rows;
   const base = { rows, include: ['cost', 'price', 'quantity', 'missing_line'] as const, effectiveDate: '2026-11-01', contracts: new Map([[1, { contractName: '2026-28 - MSA - Licenses', companyID: 100, startDate: '2026-08-01', endDate: '2028-07-31' }]]), lastPostedThrough: new Map<number, string>(), licenceContracts: new Map<number, number[]>(), standardService: () => 297 };
+
+  test('units are re-based to the day before the effective date: a seat added since is not added again; a 0-unit line gets no price row', () => {
+    // October: the vendor bills 1, the line has no units (it starts in November) → quantity short.
+    const r = reconcile(input({ lines: [line({ quantity: 1, costTotal: 14.112 })], units: [], billed: [] })).rows;
+    expect(r[0]!.exceptions).toContain('qty_short');
+    const short = buildContractPlan({ ...base, include: [...base.include], rows: r, effectiveDate: '2026-12-01' });
+    expect(short.rows.some((x) => /QUANTITY/.test(x.label))).toBe(true);
+    // …but the line already has 1 unit from November: nothing to add in December.
+    const now = rebaseToEffectiveDate(r, new Map([[3482, { units: 1 }]]));
+    expect(now[0]).toMatchObject({ contractQuantity: 1, contractQuantityTotal: 1 });
+    const p = buildContractPlan({ ...base, include: [...base.include], rows: now, effectiveDate: '2026-12-01' });
+    expect(p.rows.some((x) => /QUANTITY/.test(x.label))).toBe(false);
+    // a line with 0 units on the effective date: a price change on it changes no invoice
+    const zero = rebaseToEffectiveDate(reconcile(input()).rows, new Map());
+    expect(buildContractPlan({ ...base, rows: zero, include: ['price'] }).rows.filter((x) => x.entity === 'ContractServiceAdjustments')).toEqual([]);
+  });
 
   test('cost and price are separate rows; price is a ContractServiceAdjustment effective next month', () => {
     const p = buildContractPlan({ ...base, include: [...base.include] });

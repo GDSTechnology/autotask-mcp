@@ -6,8 +6,9 @@
 //   double billing    a back-bill charge ("… — back-bill Sep 2026 – Oct 2026") for
 //                     months another line of the same product ALREADY bills (e.g. a
 //                     prepaid annual line) — STOP: delete the charge or end the line
-//   duplicate lines   one customer billed for the same product on two lines in the
-//                     posting month (two contracts, or an annual + a monthly line)
+//   duplicate lines   one customer billed for the same VENDOR product (linked to an
+//                     offering) on two lines in the posting month (two contracts, or an
+//                     annual + a monthly line) — domains, labour etc. are left out
 //   price changes     contract plan changes taking effect in the month, and whether
 //                     the customer notice was recorded
 //   open exceptions   undecided critical findings of the latest reconciliation
@@ -103,7 +104,7 @@ export function analyzePreinvoice(i: PreinvoiceInput): PreinvoiceReport {
   // 3. Duplicate lines in the posting month: one customer, one product, two lines with units.
   const groups = new Map<string, PreLineRow[]>();
   for (const l of i.lines) {
-    const c = contracts.get(l.contractID); if (!c || !billsIn(l.id, month)) continue;
+    const c = contracts.get(l.contractID); if (!c || !i.offeringOfService.has(l.serviceID) || !billsIn(l.id, month)) continue;
     const k = `${c.companyID}|${productOf(l.serviceID)}`;
     (groups.get(k) ?? groups.set(k, []).get(k)!).push(l);
   }

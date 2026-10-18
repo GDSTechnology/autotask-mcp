@@ -143,3 +143,22 @@ describe('AutotaskService company gates (wiring)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('raw_request writes to Companies pass the same name gate', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { rawCompanyWriteProblem } = require('../src/utils/company-guard');
+  test('a create named after a webmail provider is refused; a real name, a query or another entity is not', () => {
+    expect(rawCompanyWriteProblem('POST', '/Companies', { companyName: 'Gmail', companyType: 1 })).toMatch(/webmail provider/);
+    expect(rawCompanyWriteProblem('post', 'Companies/', { companyName: 'gmail.com' })).toMatch(/webmail provider/);
+    expect(rawCompanyWriteProblem('POST', '/Companies', {})).toMatch(/missing/);
+    expect(rawCompanyWriteProblem('POST', '/Companies', { companyName: 'Contoso Office Centers' })).toBeNull();
+    expect(rawCompanyWriteProblem('POST', '/Companies/query', { filter: [] })).toBeNull();
+    expect(rawCompanyWriteProblem('POST', '/Companies/123/Contacts', { firstName: 'Unknown' })).toBeNull();
+    expect(rawCompanyWriteProblem('GET', '/Companies', null)).toBeNull();
+  });
+  test('a PATCH / PUT that renames to a junk name is refused; one that leaves the name alone is not', () => {
+    expect(rawCompanyWriteProblem('PATCH', '/Companies', { id: 5, companyName: 'Hello there' })).toMatch(/rename/);
+    expect(rawCompanyWriteProblem('PUT', '/Companies/5', { companyName: 'Yahoo' })).toMatch(/webmail/);
+    expect(rawCompanyWriteProblem('PATCH', '/Companies', { id: 5, isActive: false })).toBeNull();
+  });
+});

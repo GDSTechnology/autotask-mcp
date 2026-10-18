@@ -34,7 +34,16 @@ export function priceShouldBe(cost: number | null, vendorSuggested: number | nul
   else { price = vendorSuggested; rule = `vendor suggested (${p.scope})`; }
   const floor = p.marginFloor != null && p.marginFloor < 1 ? cost / (1 - p.marginFloor) : cost;
   if (price == null || price < floor) { price = floor; rule += p.marginFloor ? ` → raised to the ${Math.round(p.marginFloor * 100)}% margin floor` : ' → raised to cost (suggested price is below cost)'; }
-  return { price: r6(price), rule };
+  return { price: customerPrice(price), rule };
+}
+
+/**
+ * A price a customer sees: whole cents, rounded UP so a floor is never undercut ($11.7333 → $11.74).
+ * Sub-dollar unit prices (per-GB storage, $0.252) keep 4 decimals, also rounded up.
+ */
+export function customerPrice(p: number): number {
+  const step = p >= 1 ? 100 : 10000;
+  return Math.ceil(p * step - 1e-6) / step;
 }
 
 /** Landed cost: the vendor unit cost, plus an allocated share of vendor fees when the policy says so. */

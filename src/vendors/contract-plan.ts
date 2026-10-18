@@ -153,7 +153,8 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
     const delta = r.primary && r.quantity != null ? r4(r.quantity - (r.contractQuantityTotal ?? r.contractQuantity ?? 0)) : 0;
 
     // Cost: the contract's unit cost behind the vendor's landed cost.
-    if (want('cost') && serviceLine && r.landedCost != null && r.currentCost != null && Math.abs(r.landedCost - r.currentCost) > 0.005) {
+    // A line with no units on the effective date bills nothing — its cost is noise in the plan.
+    if (want('cost') && serviceLine && (r.contractQuantity ?? 0) > 0 && r.landedCost != null && r.currentCost != null && Math.abs(r.landedCost - r.currentCost) > 0.005) {
       push('cost', {
         meta, action: 'update', entity: 'ContractServices', targetId: r.contractServiceId,
         label: `Cost ${where}: ${r.currentCost} → ${r.landedCost} per ${r.basis}`,

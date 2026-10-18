@@ -122,6 +122,7 @@ This needs migration `0012_reconciliation.sql`. Every step below reads Autotask 
    - **Fees:** `overhead` or `allocate` (allocated fees are spread into the landed cost).
    - **Negotiated prices:** `set_negotiated` records one per customer. A negotiated price always wins: it becomes the target, and a plan moves billing up to it, never past it or away from it.
    - Price Should Be is never below cost.
+   - Prices are whole cents, rounded **up** so a floor is never undercut ($11.7333 → $11.74). Unit prices under $1 (per-GB storage) keep 4 decimals.
 4. `autotask_reconcile_export_workbook` returns the Excel workbook (`contentBase64`). Its sheets are Executive Summary, Exceptions, All Vendor Lines, Customer Contracts, Unmatched Internal NFR, Approved Changes, Execution Audit and Pricing Policy.
 5. `autotask_pricing_build_change_plan` builds a frozen contract plan from the run. The effective date defaults to the 1st of next month; earlier months are never back-billed. Then use `autotask_change_plan_review` and `autotask_change_plan_execute`, the same as for the catalog. Row kinds (`include`):
    - **cost:** updates `ContractServices.unitCost` (cost only).

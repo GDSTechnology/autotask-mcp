@@ -161,7 +161,7 @@ describe('catalog standardization plan', () => {
     const r = buildStandardizePlan({ ...base, policies });
     const aa = r.rows.find((x) => x.action === 'create' && String(x.after?.name).endsWith('- AA'))!; // retail 130 < cost 140
     expect(aa.blocked).toBeNull();
-    expect(aa.after).toMatchObject({ unitCost: 140, unitPrice: 155.555556 }); // 140 / 0.9
+    expect(aa.after).toMatchObject({ unitCost: 140, unitPrice: 155.56 }); // 140 / 0.9, rounded up to the cent
     expect(aa.reason).toMatch(/GDS policy: vendor suggested \+ 5% \(\*\) → raised to the 10% margin floor/);
     const mm = r.rows.find((x) => x.targetId === 297 && x.after?.unitPrice !== undefined)!;
     expect(mm.after).toEqual({ unitCost: 14.112, unitPrice: 17.64 }); // 16.80 × 1.05

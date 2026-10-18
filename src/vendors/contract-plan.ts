@@ -96,6 +96,35 @@ export function moveRows(m: MoveSpec, firstRowNo: number): PlanRowInput[] {
   return [add, end];
 }
 
+/**
+ * The reconciliation counted each line's units in the INVOICE month; a plan changes things from the
+ * effective date. Re-base every standalone line to its units the day before the effective date, so a
+ * change made since (a seat added from the 1st of next month) isn't added a second time, and the
+ * product's contract total follows. Lines with no period on that day bill 0.
+ */
+export function rebaseToEffectiveDate(rows: ReconRow[], unitsNow: Map<number, { units: number }>): ReconRow[] {
+  const delta = new Map<number, number>();
+  for (const r of rows) {
+    if (r.lineKind !== 'service' || r.contractServiceId == null || delta.has(r.contractServiceId)) continue;
+    delta.set(r.contractServiceId, (unitsNow.get(r.contractServiceId)?.units ?? 0) - (r.contractQuantity ?? 0));
+  }
+  // The product's total over every line of it at that customer (what the primary row compares with the vendor).
+  const groupKey = (r: ReconRow) => `${r.autotaskCompanyId}|${r.offeringId}`;
+  const groupDelta = new Map<string, number>();
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (r.contractServiceId == null || !delta.has(r.contractServiceId)) continue;
+    const k = `${groupKey(r)}|${r.contractServiceId}`; if (seen.has(k)) continue; seen.add(k);
+    groupDelta.set(groupKey(r), (groupDelta.get(groupKey(r)) ?? 0) + delta.get(r.contractServiceId)!);
+  }
+  return rows.map((r) => {
+    const d = r.contractServiceId != null ? delta.get(r.contractServiceId) : undefined;
+    const g = groupDelta.get(groupKey(r));
+    if (!d && !g) return r;
+    return { ...r, ...(d ? { contractQuantity: r4((r.contractQuantity ?? 0) + d) } : {}), ...(g && r.contractQuantityTotal != null ? { contractQuantityTotal: r4(r.contractQuantityTotal + g) } : {}) };
+  });
+}
+
 export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[]; summary: Record<string, number> } {
   const out: PlanRowInput[] = [];
   const sum: Record<string, number> = { cost: 0, price: 0, quantity: 0, missing_line: 0, term: 0, end_line: 0, backbill: 0, blocked: 0 };
@@ -170,7 +199,8 @@ export function buildContractPlan(i: ContractPlanInput): { rows: PlanRowInput[];
     // line and date would leave whichever price came last.
     const priceIssue = r.exceptions.some((e) => e === 'below_cost' || e === 'below_target' || e === 'margin_below_policy' || e === 'negotiated');
     let quantityDone = false;
-    if (!termMoved && want('price') && priceIssue && r.priceShouldBe != null && r.currentPrice != null && r.priceShouldBe > r.currentPrice + 0.005 && (serviceLine || isBundlePriceRow(r))) {
+    const billsUnits = (r.contractQuantity ?? 0) > 0 || (qtyWanted && lineChange > 0);
+    if (!termMoved && want('price') && priceIssue && billsUnits && r.priceShouldBe != null && r.currentPrice != null && r.priceShouldBe > r.currentPrice + 0.005 && (serviceLine || isBundlePriceRow(r))) {
       const pct = r.currentPrice > 0 ? Math.round(((r.priceShouldBe - r.currentPrice) / r.currentPrice) * 1000) / 10 : null;
       const bundle = isBundlePriceRow(r);
       const blocked = dateBlock(bundle ? r.contractServiceBundleId : r.contractServiceId, r.contractId, bundle);

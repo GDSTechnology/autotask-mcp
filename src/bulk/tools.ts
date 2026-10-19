@@ -75,6 +75,12 @@ export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null)
 
       if (action === 'status') { const v = await view(st, j); return { result: v, message: `Job ${j.id}: ${j.status}${j.pauseReason ? ` (${j.pauseReason})` : ''} — ${v.pending} write(s) pending, ${JSON.stringify(v.counts)}; now ${(v.rate as { now: number }).now}/hour${(v.rate as { inBusinessHours: boolean }).inBusinessHours ? ' (business hours)' : ''}, ~${v.etaDays} day(s) left.` }; }
       if (action === 'excluded') { const ex = await st.items(j.id, 'excluded', Math.min(Number(a.limit) || 200, 2000)); return { result: { excluded: ex.map((x) => ({ companyId: x.recordId, reason: x.reason, before: x.before })) }, message: `${ex.length} excluded compan(ies) shown — they have history; merge them into the right account in the UI (autotask_merge_build_plan).` }; }
+      if (action === 'items') {
+        // What the job did (or will do) — e.g. the canary's records to spot-check in Autotask.
+        const status = ['done', 'pending', 'skipped', 'failed', 'excluded'].includes(String(a.status)) ? String(a.status) as 'done' : 'done';
+        const list = await st.items(j.id, status, Math.min(Number(a.limit) || 50, 1000));
+        return { result: { status, items: list.map((x) => ({ seq: x.seq, entity: x.entity, id: x.recordId, companyId: x.parentId, doneAt: x.doneAt, reason: x.reason, error: x.error, link: s.getRecordWebUrl(x.entity === 'Companies' ? 'company' : 'contact', x.recordId) })) }, message: `${list.length} ${status} item(s) of job ${j.id} (in order), with Autotask links — open a few to check them.` };
+      }
       if (action === 'failed') { const f = await st.items(j.id, 'failed', Math.min(Number(a.limit) || 100, 1000)); return { result: { failed: f.map((x) => ({ seq: x.seq, entity: x.entity, id: x.recordId, error: x.error, attempts: x.attempts })) }, message: `${f.length} failed item(s) shown.` }; }
 
       if (action === 'approve') {
@@ -94,7 +100,7 @@ export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null)
       if (action === 'pause') { if (j.status !== 'running') return { result: { status: j.status }, message: `Not running (${j.status}).` }; await st.setStatus(j.id, 'paused', { pauseReason: `paused by ${who(ctx) ?? 'a user'}` }); return { result: { status: 'paused' }, message: `Job ${j.id} paused; nothing more is written until resume.` }; }
       if (action === 'cancel') { if (['done', 'cancelled'].includes(j.status)) return { result: { status: j.status }, message: `Already ${j.status}.` }; await st.setStatus(j.id, 'cancelled', { finished: true, pauseReason: `cancelled by ${who(ctx) ?? 'a user'}` }); return { result: { status: 'cancelled' }, message: `Job ${j.id} cancelled. Records already written stay as they are (inactive); the rest are untouched.` }; }
       if (action === 'retry_failed') { const n = await st.requeueFailed(j.id); return { result: { requeued: n }, message: `${n} failed item(s) back in the queue — resume the job to run them.` }; }
-      return { result: { status: 'invalid_value', field: 'action' }, message: 'action: prepare | status | approve | start | pause | resume | cancel | excluded | failed | retry_failed | list | activity.' };
+      return { result: { status: 'invalid_value', field: 'action' }, message: 'action: prepare | status | approve | start | pause | resume | cancel | items | excluded | failed | retry_failed | list | activity.' };
     }],
   ];
 }

@@ -155,6 +155,7 @@ export function catalogToolHandlers(s: AutotaskService, getPool: () => Pool | nu
       const plan = a.planId ? await st.plans.get(String(a.planId)) : null;
       if (!plan) return { result: { status: 'not_found' }, message: `No plan ${a.planId ?? ''}.` };
       if (plan.status !== 'open' && plan.status !== 'executing') return { result: { status: plan.status }, message: `Plan is ${plan.status} — build a new plan.` };
+      if (plan.kind.startsWith('merge_')) return { result: { status: 'manual_plan' }, message: 'A merge plan is a work list of Autotask UI steps (merge, then delete in Admin) — nothing here is executed by the MCP. Do the steps in Autotask, then run autotask_merge_verify { planId }.' };
       if (!plan.rows.some((r) => r.status === 'approved')) return { result: { status: 'nothing_approved' }, message: 'No approved rows — approve rows first (autotask_change_plan_review action=approve).' };
       const by = who(ctx);
       let rowNos = a.rows != null ? parseRows(a.rows, plan.rows.length) : undefined;

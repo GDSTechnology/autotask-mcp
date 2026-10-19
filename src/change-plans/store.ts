@@ -6,7 +6,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 
-export type RowAction = 'create' | 'update' | 'deactivate' | 'info';
+/** manual = a step a person does in the Autotask UI (e.g. a native merge); the executor never runs it. */
+export type RowAction = 'create' | 'update' | 'deactivate' | 'info' | 'manual';
 export type RowStatus = 'pending' | 'approved' | 'excluded' | 'applied' | 'failed' | 'stale' | 'skipped';
 
 export interface PlanRowInput {

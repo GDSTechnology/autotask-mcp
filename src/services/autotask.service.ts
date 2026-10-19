@@ -734,6 +734,16 @@ export class AutotaskService {
     return web ? `${web}Autotask/AutotaskExtend/ExecuteCommand.aspx?Code=OpenTicketDetail&TicketID=${encodeURIComponent(String(ticketId))}` : null;
   }
 
+  /** Deep link to a company (OpenAccount) or contact (OpenContact) in the Autotask web UI; null when the UI base is unknown. */
+  getRecordWebUrl(kind: 'company' | 'contact', id: number): string | null {
+    const { username, apiUrl } = this.config.autotask;
+    const web = resolveAutotaskWebUrl(username, apiUrl);
+    if (!web) return null;
+    return kind === 'company'
+      ? `${web}Autotask/AutotaskExtend/ExecuteCommand.aspx?Code=OpenAccount&AccountID=${encodeURIComponent(String(id))}`
+      : `${web}Autotask/AutotaskExtend/ExecuteCommand.aspx?Code=OpenContact&ContactID=${encodeURIComponent(String(id))}`;
+  }
+
   async getContact(id: number): Promise<AutotaskContact | null> {
     const http = await this.ensureClient();
     try {

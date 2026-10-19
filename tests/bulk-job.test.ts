@@ -79,6 +79,11 @@ describe('business hours', () => {
     const p = activityProfile(hourly, 'America/New_York') as { suggested: { start: number; end: number } };
     expect(p.suggested).toMatchObject({ start: 8, end: 18 });
   });
+  test('background jobs (the nightly mirror check) do not make 3 AM look like business hours', () => {
+    const hourly = [];
+    for (let d = 0; d < 5; d++) for (let h = 0; h < 24; h++) { const t = Date.UTC(2026, 9, 19 + d, h) / 3_600_000; hourly.push({ hour: t, upstream: h === 8 ? 9000 : h >= 12 && h <= 21 ? 1500 : 100, writes: 0, byTools: h >= 12 && h <= 21 ? 1400 : 50 }); }
+    expect((activityProfile(hourly, 'America/New_York') as { suggested: { start: number; end: number } }).suggested).toMatchObject({ start: 8, end: 18 });
+  });
 });
 
 describe('worker', () => {

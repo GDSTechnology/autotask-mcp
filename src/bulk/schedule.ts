@@ -47,13 +47,14 @@ export function weeklyCapacity(offHoursRate: number, s: BusinessSchedule | null 
  * weekends apart, and the weekday hours at or above half the weekday peak — a suggested
  * business window (a person confirms it).
  */
-export function activityProfile(hourly: Array<{ hour: number; upstream: number; writes: number }>, tz: string): Record<string, unknown> {
+export function activityProfile(hourly: Array<{ hour: number; upstream: number; writes: number; byTools?: number }>, tz: string): Record<string, unknown> {
   const sum = { weekday: new Array(24).fill(0), weekend: new Array(24).fill(0) };
   const n = { weekday: new Array(24).fill(0), weekend: new Array(24).fill(0) };
   for (const h of hourly) {
     const { day, hour } = localDayHour(new Date(h.hour * 3_600_000), tz);
     const k = day === 0 || day === 6 ? 'weekend' : 'weekday';
-    sum[k][hour] += h.upstream + h.writes; n[k][hour]++;
+    // What people and their tools cause (n8n, agents, the console) — background mirror jobs run at night and say nothing about business hours.
+    sum[k][hour] += (h.byTools ?? h.upstream) + h.writes; n[k][hour]++;
   }
   const avg = (k: 'weekday' | 'weekend') => sum[k].map((v, i) => (n[k][i] ? Math.round(v / n[k][i]) : null));
   const wd = avg('weekday');
@@ -63,6 +64,6 @@ export function activityProfile(hourly: Array<{ hour: number; upstream: number; 
     tz, hoursOfData: hourly.length,
     weekdayAvgPerHour: wd, weekendAvgPerHour: avg('weekend'),
     suggested: busy.length ? { days: [1, 2, 3, 4, 5], start: Math.min(...busy), end: Math.max(...busy) + 1 } : null,
-    note: 'This MCP’s own Autotask calls per hour (the largest share of the tenant’s usage); other integrations add to it. Hours with no data are null.',
+    note: 'Autotask calls per hour caused by tool calls through this MCP (n8n, agents, people) — the mirror’s background sync / check jobs are left out. Other integrations add to the tenant’s usage. Hours with no data are null. The suggested window is the BUSY hours: the slower business rate applies there.',
   };
 }

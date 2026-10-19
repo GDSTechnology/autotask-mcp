@@ -76,7 +76,7 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
       calls.n++;
       let rows: Array<Record<string, any>>;
       try { rows = await q<Record<string, any>>(sp.entity, [{ op: 'in', field: sp.field, value: ids.slice(i, i + 200) }], { maxRecords: 5000, includeFields: ['id', sp.field] }); }
-      catch (e) { throw new Error(`history check on ${sp.label} failed (${(e instanceof Error ? e.message : String(e)).slice(0, 160)}) — nothing prepared; a company can't be called history-free without it`); }
+      catch (e) { throw new Error(`history check on ${sp.label} failed (${(e instanceof Error ? e.message : String(e)).slice(0, 160)}) — nothing prepared; a company can't be called history-free without it`, { cause: e }); }
       if (rows.length >= 5000) throw new Error(`history check on ${sp.label}: a chunk returned 5,000+ rows (the read cap) — some companies could be missed; nothing prepared`);
       for (const r of rows) hits.set(Number(r[sp.field]), (hits.get(Number(r[sp.field])) ?? 0) + 1);
       await pace(sp.entity);

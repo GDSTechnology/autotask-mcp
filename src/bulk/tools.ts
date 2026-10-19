@@ -13,7 +13,8 @@ import { JOB_ACTIONS, jobAction, jobView, startPrepare, type JobAction } from '.
 
 type Result = { result: unknown; message: string };
 type H = (a: Record<string, any>, ctx: CallerContext) => Promise<Result>;
-const who = (ctx: CallerContext) => ctx.trustedActingUserEmail ?? ctx.requestingUserEmail ?? (ctx.source !== 'unknown' ? ctx.source : null);
+// Who asked: the user, else the declared client, else how it connected (ChatGPT's tunnel says Go-http-client).
+const who = (ctx: CallerContext) => ctx.trustedActingUserEmail ?? ctx.requestingUserEmail ?? (ctx.source !== 'unknown' ? ctx.source : ctx.origin?.userAgent ? `client ${ctx.origin.userAgent.slice(0, 60)}` : null);
 
 export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null): Array<[string, H]> {
   return [

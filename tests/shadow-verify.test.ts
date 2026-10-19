@@ -15,6 +15,11 @@ describe('compareRow', () => {
   test('identical (null and missing are the same) → ok', () => {
     expect(compareRow(tickets, { id: 1, a: null, b: [1] }, { id: 1, b: [1] }, now, now)).toEqual({ status: 'ok', fields: [] });
   });
+  test('userDefinedFields compare as a set: order and empty-vs-missing values do not differ; a changed value does', () => {
+    const m = { id: 1, userDefinedFields: [{ name: 'Nexus-Status', value: '2' }, { name: 'Region', value: null }, { name: 'Site', value: 'A' }] };
+    expect(compareRow(tickets, m, { id: 1, userDefinedFields: [{ name: 'Site', value: 'A' }, { name: 'Region', value: '' }, { name: 'Nexus-Status', value: '2' }] }, now, now).status).toBe('ok');
+    expect(compareRow(tickets, m, { id: 1, userDefinedFields: [{ name: 'Site', value: 'B' }, { name: 'Nexus-Status', value: '2' }] }, now, now).fields).toEqual(['userDefinedFields']);
+  });
   test('watermark entity: newer recent stamp = changed (next sync gets it); old newer stamp = missed; same stamp = differs', () => {
     const m = { id: 1, title: 'a', [wm]: '2026-10-08T11:00:00Z' };
     expect(compareRow(tickets, m, { ...m, title: 'b', [wm]: '2026-10-08T11:55:00Z' }, now, now)).toEqual({ status: 'changed', fields: ['lastTrackedModificationDateTime', 'title'] });

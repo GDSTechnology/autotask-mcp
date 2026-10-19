@@ -25,8 +25,20 @@ import type { ShadowFilter } from './shadow-sql.js';
 
 export type RowStatus = 'ok' | 'changed' | 'pending' | 'differs';
 
-/** Values as JSON for comparison: null and undefined are the same; objects/arrays by content. */
-function norm(v: unknown): string { return v === undefined || v === null ? 'null' : JSON.stringify(v); }
+/**
+ * Values as JSON for comparison: null and undefined are the same; objects/arrays by content.
+ * A list of { name, value } (userDefinedFields) compares as a set: Autotask doesn't keep their
+ * order, and an empty value is the same as no value — otherwise every UDF ticket "differs".
+ */
+function norm(v: unknown): string {
+  if (v === undefined || v === null) return 'null';
+  if (Array.isArray(v) && v.length && v.every((x) => x && typeof x === 'object' && 'name' in (x as object))) {
+    const pairs = (v as Array<{ name: unknown; value?: unknown }>).map((x) => [String(x.name), x.value === undefined || x.value === null || x.value === '' ? null : x.value] as const)
+      .filter(([, val]) => val !== null).sort((p, q) => p[0].localeCompare(q[0]));
+    return JSON.stringify(pairs);
+  }
+  return JSON.stringify(v);
+}
 
 /** How long a modified-stamp change may wait for the next incremental run before it counts as missed. */
 export const CHANGE_LAG_MS = 20 * 60_000;

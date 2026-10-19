@@ -214,7 +214,7 @@ export interface MergeGroup { survivor: number; sources: number[] }
 export function parseMergeMappings(entity: MergeEntity, input: { csv?: unknown; mappings?: unknown }): { ok: true; groups: MergeGroup[] } | { ok: false; errors: string[] } {
   const pairs: Array<{ line: number; source: unknown; survivor: unknown }> = [];
   if (typeof input.csv === 'string' && input.csv.trim()) {
-    const lines = input.csv.replace(/^﻿/, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const lines = input.csv.replace(/^\uFEFF/, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     lines.forEach((l, n) => {
       const cells = l.split(/[,;\t]/).map((c) => c.trim().replace(/^"|"$/g, ''));
       if (n === 0 && !cells.some((c) => /^\d+$/.test(c))) return; // header

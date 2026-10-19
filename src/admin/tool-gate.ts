@@ -21,12 +21,15 @@ for (const [cat, { tools }] of Object.entries(TOOL_CATEGORIES)) for (const t of 
 /** True when a tool can change Autotask data. Errs toward "write": a mislabelled read is merely hidden in read-only mode. */
 export function isWriteTool(name: string): boolean {
   if (name === 'autotask_raw_request') return true; // can send any method
+  if (WRITES_DESPITE_NAME.has(name)) return true;
   if (READS_DESPITE_NAME.has(name) || readOnlyHint.get(name)) return false;
   return isMutatingTool(name) || WRITE_VERB.test(name.replace(/^autotask/, ''));
 }
 
 /** Changes nothing in Autotask (refreshes the local mirror by reading). */
 const READS_DESPITE_NAME = new Set(['autotask_shadow_sync']);
+/** Write to Autotask although the name doesn't say so (the bulk worker inactivates records). */
+const WRITES_DESPITE_NAME = new Set(['autotask_bulk_inactivate']);
 
 /** Why a tool is switched off in the console, or null when it may run. */
 export function toolBlockReason(name: string): string | null {

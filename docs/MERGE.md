@@ -95,8 +95,34 @@ A record is treated as a placeholder when its name is:
 
 Before cleaning up a burst of placeholders, find and stop whatever creates them. Discovery reports the creating resource and the dates for exactly that.
 
+## Bulk cleanup of placeholder companies: `autotask_bulk_inactivate`
+
+For junk at scale (tens of thousands of "Gmail" companies, each with one "Unknown Contact"), merging by hand isn't possible. This tool stages the cleanup in Postgres and pushes it to Autotask at a set pace. No chat ever loops thousands of writes.
+
+1. **Prepare:** `action: "prepare", companyName: "Gmail"`. You can narrow it with `createdByResourceId`, `createdFrom` and `createdTo`.
+   - The name must be a placeholder name; a real company is never targeted.
+   - Runs in the background. Companies and contacts are read page by page from the mirror.
+   - **History check:** tickets, projects, contracts, opportunities, quotes, sales orders, configuration items, service calls, invoices, billing items and child companies. Other entities are read at the job's pace.
+   - A company with history, or with a contact who has a real name, is **excluded**. Those go to the UI merge.
+   - A history check that can't run **fails the preparation**; it never counts as "no history".
+2. **Review:** `action: "status"` shows the counts, exclusions by reason (`action: "excluded"` lists them), the writes, and an ETA.
+3. **Approve** with the job's hash (`action: "approve", hash`). The hash binds the exact records to be written.
+4. **Start:** `action: "start", confirm: true` is required.
+   - The worker inactivates **each active contact, then its company**, one write at a time.
+   - It runs the **canary** first (default 50) and pauses so you can check the records in Autotask. Then you **resume**.
+5. **Pace:**
+   - **Off hours:** `ratePerHour` (default 3,000).
+   - **Business hours:** `businessRate` (default 1,000/hour), during `businessHours` (default Mon–Fri 07:00–19:00 America/New_York; `false` turns it off).
+   - `action: "activity"` shows this MCP's Autotask traffic per local hour over the last 7 days and suggests the window.
+   - Backpressure "slow" halves the pace; "stop" waits; the console's read-only switch also stops it.
+6. **Pause conditions:** a login problem, 20 failures in a row, or `action: "pause"`. Failed items are listed (`action: "failed"`) and can be re-queued (`action: "retry_failed"`).
+   - The job continues after a server restart.
+   - A preparation interrupted by a restart is marked failed; prepare it again.
+
+Inactivated records stay in Autotask (Companies can't be deleted through the API). For a purge, ask Kaseya support with the job's company list.
+
 ## Not yet
 
-- API consolidation of placeholder records with no history (moving links, then inactivating).
+- Moving links of placeholder records (the API marks a contact's company read-only; only the UI merge moves contacts).
 - Bulk progress tracking beyond the plan's steps.
 - Search-before-create locks for the integrations that create contacts.

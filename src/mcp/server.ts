@@ -10,6 +10,7 @@
 import { getShadowRuntime, initShadow } from '../db/shadow-runtime.js';
 import { startNotifyWatch } from '../services/notify-watch.js';
 import { startVendorMonitor } from '../vendors/monitor.js';
+import { startBulkWorker } from '../bulk/worker.js';
 import { flushCallStats, startCallStatsPersistence } from '../db/call-stats-store.js';
 import { ingestAutotaskWebhook } from '../db/webhook-ingest.js';
 import { startAdminConsole, adminHealth, type AdminConsole } from '../admin/server.js';
@@ -323,6 +324,8 @@ export class AutotaskMcpServer {
         startNotifyWatch({ tenant, lastRun: () => getShadowRuntime()?.lastRun() ?? null, lastVerify: () => getShadowRuntime()?.lastVerify() ?? null });
         // Vendor monitor (stale imports, renewals, contracts ending, sync drift) — daily at MCP_VENDOR_MONITOR_HOUR_UTC; off when unset.
         if (isPgEnabled()) startVendorMonitor(this.autotaskService, () => getPool(this.logger), this.logger);
+        // Bulk jobs (placeholder cleanup): pushes approved, running jobs at their pace.
+        if (isPgEnabled()) startBulkWorker(this.autotaskService, () => getPool(this.logger), this.logger, tenant);
         // Console traffic counts (Reads by entity, Tool gaps): kept 7 days across restarts.
         const statsPool = isPgEnabled() ? getPool(this.logger) : null;
         if (statsPool) void startCallStatsPersistence(statsPool, this.logger);

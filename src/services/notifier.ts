@@ -21,7 +21,8 @@ export type NotifyEventType =
   | 'tool.errors'
   | 'sync.drift' | 'reconcile.critical'
   | 'vendor.import_stale' | 'vendor.renewal' | 'vendor.contract_ending'
-  | 'vendor.exception_overdue' | 'vendor.notice_due';
+  | 'vendor.exception_overdue' | 'vendor.notice_due'
+  | 'bulk.paused' | 'bulk.done';
 
 export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; label: string; severity: NotifySeverity }> = [
   { type: 'auth.held', label: 'Autotask login HELD (needs Retry now)', severity: 'critical' },
@@ -40,6 +41,8 @@ export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; labe
   { type: 'vendor.renewal', label: 'Vendor subscriptions renewing within 30 days', severity: 'info' },
   { type: 'vendor.contract_ending', label: 'A contract holding vendor products ends within 45 days', severity: 'warning' },
   { type: 'vendor.exception_overdue', label: 'Reconciliation exceptions past their due date, still undecided', severity: 'warning' },
+  { type: 'bulk.paused', label: 'A bulk job paused (canary done, login problem, repeated failures)', severity: 'warning' },
+  { type: 'bulk.done', label: 'A bulk job finished', severity: 'info' },
   { type: 'vendor.notice_due', label: 'A customer price change takes effect within 30 days with no notice recorded', severity: 'warning' },
 ];
 

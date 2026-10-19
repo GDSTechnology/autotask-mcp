@@ -326,6 +326,15 @@ export interface EntityReadStats {
   topCallers: Array<{ caller: string; count: number }>;
 }
 
+/** This MCP's Autotask traffic per clock hour (epoch hour), the last 7 days: reads sent upstream and writes. */
+export function hourlyActivity(): Array<{ hour: number; upstream: number; writes: number }> {
+  return [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([hour, m]) => {
+    let upstream = 0, writes = 0;
+    for (const c of m.values()) { upstream += c.upstream; writes += c.write; }
+    return { hour, upstream, writes };
+  });
+}
+
 /** Reads per entity over the last `hours` (max 168), busiest-upstream first. */
 export function entityReadStats(hours = 24): { since: string; entities: EntityReadStats[] } {
   const h = Math.min(Math.max(Math.floor(hours), 1), HOURS);

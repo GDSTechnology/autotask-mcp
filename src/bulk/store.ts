@@ -88,6 +88,10 @@ export class BulkStore {
   async items(id: string, status: ItemStatus, limit = 100): Promise<BulkItem[]> {
     return (await this.pool.query('SELECT * FROM bulk_job_item WHERE job_id = $1 AND status = $2 ORDER BY seq LIMIT $3', [id, status, limit])).rows.map(item);
   }
+  /** The newest finished items first (what the job just did). */
+  async recentItems(id: string, status: ItemStatus, limit = 100): Promise<BulkItem[]> {
+    return (await this.pool.query('SELECT * FROM bulk_job_item WHERE job_id = $1 AND status = $2 ORDER BY done_at DESC NULLS LAST, seq DESC LIMIT $3', [id, status, limit])).rows.map(item);
+  }
   async doneSince(id: string, sinceIso: string): Promise<number> {
     return Number((await this.pool.query(`SELECT count(*)::int n FROM bulk_job_item WHERE job_id = $1 AND status IN ('done', 'skipped') AND done_at >= $2`, [id, sinceIso])).rows[0]?.n ?? 0);
   }

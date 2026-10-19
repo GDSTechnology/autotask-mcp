@@ -106,7 +106,7 @@ For junk at scale (tens of thousands of "Gmail" companies, each with one "Unknow
    - A company with history, or with a contact who has a real name, is **excluded**. Those go to the UI merge.
    - A history check that can't run **fails the preparation**; it never counts as "no history".
 2. **Review:** `action: "status"` shows the counts, exclusions by reason (`action: "excluded"` lists them), the writes, and an ETA.
-3. **Approve** with the job's hash (`action: "approve", hash`). The hash binds the exact records to be written.
+3. **Approve** with the job's hash. The hash binds the exact records to be written. A person approves on the console's **Bulk jobs** page (Approve, Start, Pause, Resume, Retry failed, Cancel, with progress and record lists). The tool's `action: "approve"` does the same for clients allowed to.
 4. **Start:** `action: "start", confirm: true` is required.
    - The worker inactivates **each active contact, then its company**, one write at a time.
    - It runs the **canary** first (default 50) and pauses so you can check the records in Autotask. Then you **resume**.

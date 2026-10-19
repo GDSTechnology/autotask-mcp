@@ -298,6 +298,32 @@ ground truth. The same classification (`actorType`, `classificationSource`,
 `reference`) appears on every event from
 `autotask_get_ticket_change_history`, and in `autotask_get_actor_roster`.
 
+### Bulk jobs (mass changes, paced)
+
+Mass changes are prepared from the mirror, **approved by a person here**, and pushed to Autotask by the server at a set pace. Today that means inactivating placeholder companies ("Gmail", "Outlook", "Unknown…") and their contacts. A chat assistant can prepare a job and watch it (`autotask_bulk_inactivate`), but some assistants refuse to approve tens of thousands of writes, and a person should decide that anyway.
+
+- **New placeholder cleanup** (admins). Fields:
+  - the placeholder name;
+  - optionally, the resource that created the records and a creation date range;
+  - whether to include their contacts;
+  - the off-hours rate (default 3,000 writes/hour);
+  - the business-hours rate and window (default 1,000/hour, Mon–Fri 07:00–19:00 America/New_York);
+  - the canary size (default 50).
+
+  **Prepare** writes nothing. It reads the records and checks each for history in the background; companies with history are excluded.
+- **Each job shows:**
+  - status and progress (done / left / failed / excluded);
+  - the pace right now (business or off hours), how many writes happened in the last hour, and the time left;
+  - per-entity counts, who prepared, approved and started it, and the pause reason;
+  - **Recently done / Failed / Excluded / Next up** lists, each record with its Autotask link.
+- **Buttons** (admins; each asks for confirmation):
+  - **Approve:** a ready job, bound to its hash, so it covers exactly the records shown.
+  - **Start:** runs the canary first, then pauses for you to check the records.
+  - **Pause / Resume**, **Retry failed**, **Cancel:** records already written stay as they are.
+- **When is Autotask busy?** shows tool-call traffic through this MCP per local hour on weekdays. It suggests the business window once there are 3 days of data.
+- **Stopping it:** the worker stops for the read-only switch (Settings → writes off). It also stops on backpressure "stop", a login problem, or 20 failures in a row. It continues after a restart.
+- Notifications: `bulk.paused` and `bulk.done` (subscribe a channel under Notifications).
+
 ### Requests (what the MCP can't do yet)
 
 A list of capabilities to build, so a missing tool is captured instead of worked around:

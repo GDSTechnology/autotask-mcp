@@ -59,7 +59,9 @@ export function activityProfile(hourly: Array<{ hour: number; upstream: number; 
   const avg = (k: 'weekday' | 'weekend') => sum[k].map((v, i) => (n[k][i] ? Math.round(v / n[k][i]) : null));
   const wd = avg('weekday');
   const peak = Math.max(0, ...wd.map((v) => v ?? 0));
-  const busy = wd.map((v, i) => (v != null && peak > 0 && v >= peak / 2 ? i : -1)).filter((i) => i >= 0);
+  // Too little traffic to say (e.g. right after a restart, or a quiet tenant): no suggestion.
+  const enough = hourly.length >= 72;
+  const busy = enough ? wd.map((v, i) => (v != null && peak > 0 && v >= peak / 2 ? i : -1)).filter((i) => i >= 0) : [];
   return {
     tz, hoursOfData: hourly.length,
     weekdayAvgPerHour: wd, weekendAvgPerHour: avg('weekend'),

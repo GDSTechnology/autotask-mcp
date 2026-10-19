@@ -327,11 +327,15 @@ export interface EntityReadStats {
 }
 
 /** This MCP's Autotask traffic per clock hour (epoch hour), the last 7 days: reads sent upstream and writes. */
-export function hourlyActivity(): Array<{ hour: number; upstream: number; writes: number }> {
+export function hourlyActivity(): Array<{ hour: number; upstream: number; writes: number; byTools: number }> {
   return [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([hour, m]) => {
-    let upstream = 0, writes = 0;
-    for (const c of m.values()) { upstream += c.upstream; writes += c.write; }
-    return { hour, upstream, writes };
+    let upstream = 0, writes = 0, byTools = 0;
+    for (const c of m.values()) {
+      upstream += c.upstream; writes += c.write;
+      // Reads caused by tool calls (people, n8n, agents) — not the mirror sync / verify jobs.
+      for (const [who, n] of c.callers) if (!who.startsWith('job: ') && who !== 'other background') byTools += n;
+    }
+    return { hour, upstream, writes, byTools };
   });
 }
 

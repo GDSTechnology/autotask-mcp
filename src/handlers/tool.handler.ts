@@ -69,6 +69,7 @@ import { reconToolHandlers } from '../vendors/recon-tools.js';
 import { rawCompanyWriteProblem } from '../utils/company-guard.js';
 import { processToolHandlers } from '../vendors/process-tools.js';
 import { mergeToolHandlers } from '../merge/tools.js';
+import { bulkToolHandlers } from '../bulk/tools.js';
 import { captureGap, gapToolHandlers } from '../gaps/tools.js';
 import { pax8ToolHandlers } from '../vendors/pax8-tools.js';
 import { contractToolHandlers } from '../vendors/contract-tools.js';
@@ -1157,6 +1158,8 @@ export class AutotaskToolHandler {
       ...processToolHandlers(s, () => getPool(this.logger)),
       // Safe company / contact merges (ID-only work lists of Autotask UI steps; read-only toward Autotask).
       ...mergeToolHandlers(s, () => getPool(this.logger)),
+      // Bulk placeholder cleanup (staged in Postgres, pushed by the background worker at a set pace).
+      ...bulkToolHandlers(s, () => getPool(this.logger)),
       // Capability gaps → console Requests page.
       ...gapToolHandlers(() => getPool(this.logger)),
       // Connection

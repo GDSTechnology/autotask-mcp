@@ -1524,7 +1524,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       type: 'object',
       properties: {
         entity: { type: 'string', description: 'Tickets, TimeEntries, Tasks, Projects, Companies, Contacts, Contracts, ContractServices, ContractBlocks or Resources' },
-        filters: { type: 'array', items: { type: 'object' }, description: 'Autotask-style filters, AND-ed. E.g. [{"op":"eq","field":"contractID","value":29685345},{"op":"gte","field":"dateWorked","value":"2026-04-01"}]' },
+        filters: { type: 'array', items: { type: 'object' }, description: 'Autotask-style filters, AND-ed. E.g. [{"op":"eq","field":"contractID","value":29685345},{"op":"gte","field":"dateWorked","value":"2026-04-01"}]. A UDF filter adds "udf": true with the UDF name as field: {"op":"eq","field":"Nexus-Status","value":"7","udf":true}.' },
         fields: { type: 'array', items: { type: 'string' }, description: 'Only these fields (id always included). Omit for whole records.' },
         orderBy: { type: 'string', description: 'Field to sort by (default newest id first); "month:dateWorked" style also works' },
         desc: { type: 'boolean', description: 'Sort descending' },
@@ -1542,8 +1542,8 @@ export const TOOL_DEFINITIONS: McpTool[] = [
       type: 'object',
       properties: {
         entity: { type: 'string', description: 'Shadow entity (see autotask_shadow_query)' },
-        filters: { type: 'array', items: { type: 'object' }, description: 'Autotask-style filters, AND-ed' },
-        groupBy: { type: 'array', items: { type: 'string' }, description: 'Fields or month:/day:/year:<dateField>' },
+        filters: { type: 'array', items: { type: 'object' }, description: 'Autotask-style filters, AND-ed; UDF filters add "udf": true (field = the UDF name)' },
+        groupBy: { type: 'array', items: { type: 'string' }, description: 'Fields, month:/day:/year:<dateField>, or udf:<UDF name> (e.g. "udf:Nexus-Status" counts tickets per lifecycle state)' },
         sum: { type: 'array', items: { type: 'string' }, description: 'Numeric fields to sum' },
         limit: { type: 'number', description: 'Max groups (default 1000)' }
       },

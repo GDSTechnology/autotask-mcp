@@ -4,7 +4,7 @@
 // Pure (no database) — unit-tested directly. Field names are validated, every
 // value is a bind parameter; nothing user-supplied is spliced into SQL.
 
-export interface ShadowFilter { op: string; field?: string; value?: unknown; items?: ShadowFilter[] }
+export interface ShadowFilter { op: string; field?: string; value?: unknown; items?: ShadowFilter[]; /** Autotask's UDF filter: field is the UDF name (migration 0016 udf column). */ udf?: boolean }
 
 const FIELD = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
 export function assertField(f: unknown): string {
@@ -22,6 +22,15 @@ export class SqlBuilder {
 
 const text = (f: string) => `(data->>'${f}')`;
 
+/** UDF names are labels ("Nexus-Status", "Opp Tag #2"): letters, digits, space and a few marks. */
+const UDF_NAME = /^[A-Za-z0-9][A-Za-z0-9 _\-.#/()&]{0,99}$/;
+export function assertUdfName(n: unknown): string {
+  if (typeof n !== 'string' || !UDF_NAME.test(n)) throw new Error(`Invalid UDF name: ${JSON.stringify(n)}`);
+  return n;
+}
+/** A UDF's value from the structured column (null = no value). */
+const udfText = (b: SqlBuilder, name: string) => `(udf->>${b.bind(assertUdfName(name))})`;
+
 /**
  * One filter → a SQL boolean expression. Strings compare case-insensitively
  * (as Autotask does); numbers numerically; ISO dates compare as text, which
@@ -34,6 +43,7 @@ export function filterToSql(f: ShadowFilter, b: SqlBuilder): string {
     if (!parts.length) return op === 'and' ? 'TRUE' : 'FALSE';
     return `(${parts.join(op === 'and' ? ' AND ' : ' OR ')})`;
   }
+  if (f.udf) return udfFilterToSql(op, f, b);
   const field = assertField(f.field);
   const v = f.value;
   const t = text(field);
@@ -65,6 +75,31 @@ export function filterToSql(f: ShadowFilter, b: SqlBuilder): string {
   }
 }
 
+/** A UDF filter over the udf column. Values compare as text, case-insensitively (UDF values are text). */
+function udfFilterToSql(op: string, f: ShadowFilter, b: SqlBuilder): string {
+  const t = udfText(b, String(f.field));
+  const v = f.value;
+  switch (op) {
+    case 'eq': return v === null ? `${t} IS NULL` : `lower(${t}) = lower(${b.bind(String(v))})`;
+    case 'noteq': return v === null ? `${t} IS NOT NULL` : `(${t} IS NULL OR lower(${t}) <> lower(${b.bind(String(v))}))`;
+    case 'beginswith': return `${t} ILIKE ${b.bind(likeEscape(String(v)) + '%')}`;
+    case 'endswith': return `${t} ILIKE ${b.bind('%' + likeEscape(String(v)))}`;
+    case 'contains': return `${t} ILIKE ${b.bind('%' + likeEscape(String(v)) + '%')}`;
+    case 'exist': case 'isnotnull': return `${t} IS NOT NULL`;
+    case 'notexist': case 'isnull': return `${t} IS NULL`;
+    case 'in': case 'notin': {
+      const list = Array.isArray(v) ? v.map((x) => String(x).toLowerCase()) : [];
+      const expr = `lower(${t}) = ANY(${b.bind(list)}::text[])`;
+      return op === 'in' ? expr : `(${t} IS NULL OR NOT ${expr})`;
+    }
+    case 'gt': case 'gte': case 'lt': case 'lte': {
+      const sym = { gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
+      return typeof v === 'number' ? `(CASE WHEN ${t} ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${t})::numeric END) ${sym} ${b.bind(v)}` : `${t} ${sym} ${b.bind(String(v))}`;
+    }
+    default: throw new Error(`Unsupported UDF filter op "${f.op}"`);
+  }
+}
+
 /** A list of top-level filters is AND-ed, like the Autotask API. */
 export function whereClause(filters: ShadowFilter[], b: SqlBuilder): string {
   return filters.length ? filters.map((f) => filterToSql(f, b)).join(' AND ') : 'TRUE';
@@ -72,6 +107,9 @@ export function whereClause(filters: ShadowFilter[], b: SqlBuilder): string {
 
 /** Group key: a field, or "month:field" / "day:field" / "year:field" on a date field. */
 export function groupExpr(spec: string): { sql: string; alias: string } {
+  // "udf:Nexus-Status": group by a UDF's value (the name is validated, then quoted as a literal).
+  const u = spec.match(/^udf:(.+)$/);
+  if (u) { const n = assertUdfName(u[1]); return { sql: `(udf->>'${n.replace(/'/g, "''")}')`, alias: `udf_${n}` }; }
   const m = spec.match(/^(month|day|year):(.+)$/);
   if (m) {
     const f = assertField(m[2]);

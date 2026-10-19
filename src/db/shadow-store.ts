@@ -37,6 +37,12 @@ export class ShadowStore {
   constructor(private readonly pool: Pool) {}
 
   /** The field names a mirrored row carries (Autotask returns every field, nulls included). */
+  /** UDF names that have a value on some live row of this entity (migration 0016 udf column). */
+  async udfNames(entity: string): Promise<string[]> {
+    const r = await this.pool.query<{ k: string }>(`SELECT DISTINCT jsonb_object_keys(udf) AS k FROM shadow_record WHERE entity = $1 AND deleted_at IS NULL AND udf IS NOT NULL AND udf <> '{}'::jsonb`, [entity]);
+    return r.rows.map((x) => x.k);
+  }
+
   async fieldNames(entity: string): Promise<string[]> {
     const r = await this.pool.query<{ k: string }>(`SELECT jsonb_object_keys(data) AS k FROM (SELECT data FROM shadow_record WHERE entity = $1 AND deleted_at IS NULL LIMIT 1) s`, [entity]);
     return r.rows.map((x) => x.k);

@@ -241,6 +241,22 @@ usage-pause threshold.
 - `autotask_shadow_sync` — run now / re-read ids / reconcile one entity.
 - `/health` shows `shadow.lastRunAt` / `lastRunCalls` (no DB round-trip).
 
+### User-defined fields (migration 0016)
+
+Autotask returns UDFs as an unordered list (`[{ "name": "Nexus-Status", "value": "2" }, …]`). Each mirrored row also keeps them **structured**: `udf jsonb`, e.g. `{ "Nexus-Status": "2", "Opp-Tag": "…" }`.
+
+- It holds only UDFs that have a value; null and "" mean no value.
+- It's a stored generated column, computed by Postgres from the record (`shadow_udf_map(data)`), so every sync keeps it right. It's GIN-indexed.
+- `data` keeps Autotask's own shape for callers.
+
+**Filters:** an Autotask UDF filter, `{ "op": "eq", "field": "Nexus-Status", "value": "7", "udf": true }`, is answered from the mirror when that UDF has values there. An unknown UDF name goes to Autotask. Supported ops: eq, noteq, contains, beginsWith, endsWith, in, notIn, exist / notExist, and numeric gt / lt.
+
+**Grouping:** `autotask_shadow_aggregate` takes `groupBy: ["udf:Nexus-Status"]`, for example tickets per lifecycle state.
+
+**Mirror check:** it compares UDFs as a set, so order and empty-vs-missing don't count as differences.
+
+Adding the column rewrites `shadow_record` once when the migration runs (about a minute per ~50k rows). Reads go to Autotask meanwhile.
+
 ## Per-endpoint concurrency gate (always on)
 
 Autotask allows **3 concurrent requests per integration per object endpoint**

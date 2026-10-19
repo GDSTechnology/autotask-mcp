@@ -206,13 +206,13 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
 }
 
 const freshCache = new Map<string, { at: number; f: Freshness }>();
-const fieldCache = new Map<string, { at: number; names: Set<string> }>();
+const fieldCache = new Map<string, { at: number; names: Set<string>; udfLoaded?: boolean }>();
 
-/** Every field a filter names (walking and/or groups); udf filters are reported as unknown. */
+/** Every field a filter names (walking and/or groups); a UDF filter is "udf:<name>". */
 function filterFields(filters: ShadowFilter[], out: string[] = []): string[] {
   for (const f of filters as Array<ShadowFilter & { items?: ShadowFilter[]; udf?: boolean }>) {
     if (f.items) filterFields(f.items, out);
-    else if (f.udf) out.push('\u0000udf');
+    else if (f.udf) out.push(`udf:${String(f.field)}`);
     else if (f.field != null) out.push(String(f.field));
   }
   return out;
@@ -229,6 +229,11 @@ async function fieldsKnown(rt: ShadowRuntime, name: string, filters: ShadowFilte
   if (!want.length) return true;
   let c = fieldCache.get(name);
   if (!c || Date.now() - c.at > 600_000) { c = { at: Date.now(), names: new Set(await rt.store.fieldNames(name)) }; fieldCache.set(name, c); }
+  // UDF filters (migration 0016): served when the mirror holds that UDF with values; an unknown name goes live.
+  if (!c.udfLoaded && want.some((w) => w.startsWith('udf:'))) {
+    for (const n of await rt.store.udfNames(name).catch(() => [] as string[])) c.names.add(`udf:${n}`);
+    c.udfLoaded = true;
+  }
   return c.names.size > 0 && want.every((f) => c!.names.has(f));
 }
 /**

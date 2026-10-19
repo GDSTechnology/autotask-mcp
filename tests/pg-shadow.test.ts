@@ -35,6 +35,14 @@ describe('filter → SQL', () => {
     expect(() => sql({ op: 'regex', field: 'x', value: 1 })).toThrow(/Unsupported filter op/);
     expect(groupExpr('month:dateWorked')).toEqual({ sql: "substr((data->>'dateWorked'), 1, 7)", alias: 'month_dateWorked' });
   });
+  test('UDF filters use the structured udf column (migration 0016); names bound, values as text; group by a UDF', () => {
+    expect(sql({ op: 'eq', field: 'Nexus-Status', value: 2, udf: true })).toEqual({ s: 'lower((udf->>$1)) = lower($2)', p: ['Nexus-Status', '2'] });
+    expect(sql({ op: 'isnull', field: 'Opp Tag #2', udf: true })).toEqual({ s: '(udf->>$1) IS NULL', p: ['Opp Tag #2'] });
+    expect(sql({ op: 'in', field: 'BP-Status', value: ['Open', 'Hold'], udf: true }).p).toEqual(['BP-Status', ['open', 'hold']]);
+    expect(() => sql({ op: 'eq', field: "x'); DROP TABLE t;--", value: 1, udf: true })).toThrow(/Invalid UDF name/);
+    expect(groupExpr('udf:Nexus-Status')).toEqual({ sql: "(udf->>'Nexus-Status')", alias: 'udf_Nexus-Status' });
+    expect(() => groupExpr("udf:a'; drop")).toThrow(/Invalid UDF name/);
+  });
 });
 
 describe('entities + write detection', () => {

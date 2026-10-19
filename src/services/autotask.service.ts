@@ -793,6 +793,9 @@ export class AutotaskService {
         'Companies/{companyID}/Contacts child route).'
       );
     }
+    // Contacts.isActive is an integer (0 / 1) — a boolean fails the request (HTTP 500).
+    const c0 = contact as Record<string, any>;
+    if (c0.isActive !== undefined) c0.isActive = c0.isActive === true || c0.isActive === 1 || c0.isActive === '1' || String(c0.isActive).toLowerCase() === 'true' ? 1 : 0;
     // Enforce the 50-char contact note limit (§6.2); `truncateNote` is an
     // MCP-only opt-in, not an Autotask field, so strip it from the payload.
     const { truncateNote, ...rest } = contact as Record<string, any>;
@@ -865,6 +868,12 @@ export class AutotaskService {
     return { id, created: true };
   }
 
+  /** Tenants (API usernames) whose zone takes only the child route — learned when PATCH /Contacts and PUT /Contacts/{id} fail with 404 / 405 and the child route works. */
+  private static contactChildRouteTenants = new Set<string>();
+  /** Tests only. */
+  static _resetContactRoute(): void { AutotaskService.contactChildRouteTenants.clear(); }
+  private get contactRouteKey(): string { return String(this.config.autotask.username ?? '').toLowerCase(); }
+
   async updateContact(id: number, updates: Partial<AutotaskContact>): Promise<void> {
     const http = await this.ensureClient();
     // Enforce the 50-char contact note limit (§6.2). `truncateNote` is MCP-only.
@@ -876,8 +885,23 @@ export class AutotaskService {
     } else if (upd.note !== undefined) {
       upd.note = normalizeContactNote(upd.note);
     }
+    // Contacts.isActive is an INTEGER (0 / 1), unlike Companies' boolean: `false` fails the whole
+    // update with HTTP 500 "Unexpected character … Path 'isActive'" (seen live deactivating contacts).
+    if (upd.isActive !== undefined) {
+      const v = upd.isActive;
+      upd.isActive = v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true' ? 1 : 0;
+    }
     try {
       this.logger.debug(`Updating contact ${id}:`, updates);
+      // This zone only takes the child route (learned on the first update): go straight there.
+      if (AutotaskService.contactChildRouteTenants.has(this.contactRouteKey)) {
+        let companyID = upd.companyID as number | null | undefined;
+        if (companyID == null) companyID = ((await this.getContact(id)) as Record<string, any> | null)?.companyID;
+        if (companyID == null) throw new Error(`Cannot update contact ${id}: unable to resolve its companyID (does the contact still exist?)`);
+        await http.childUpdate('Companies', companyID, 'Contacts', id, updates as Record<string, any>);
+        this.logger.info(`Contact ${id} updated successfully`);
+        return;
+      }
       try {
         await http.update('Contacts', id, updates as Record<string, any>);
       } catch (err) {
@@ -909,6 +933,7 @@ export class AutotaskService {
           `Contact ${id}: update() failed with HTTP ${status} — retrying via Companies/${companyID}/Contacts child route`
         );
         await http.childUpdate('Companies', companyID, 'Contacts', id, updates as Record<string, any>);
+        AutotaskService.contactChildRouteTenants.add(this.contactRouteKey); // skip the two failing routes from now on
       }
       this.logger.info(`Contact ${id} updated successfully`);
     } catch (error) {

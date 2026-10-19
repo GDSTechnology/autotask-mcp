@@ -76,6 +76,7 @@ const HTML_404 = {
 
 beforeEach(() => {
   _resetZoneUrlCache();
+  AutotaskService._resetContactRoute();
 });
 
 afterEach(() => {
@@ -83,6 +84,25 @@ afterEach(() => {
 });
 
 describe('AutotaskService.updateContact() child-route fallback (PR #197)', () => {
+  test('isActive goes as 0 / 1 (Contacts.isActive is an integer); once the child route is needed, later updates go straight to it', async () => {
+    const fetchMock = mockFetchRoutes([
+      { method: 'PATCH', path: /v1\.0\/Contacts$/, response: HTML_404 },
+      { method: 'PUT', path: /\/Contacts\/1234[56]$/, response: { status: 405, body: { errors: ["does not support http method 'PUT'"] } } },
+      { method: 'PATCH', path: /\/Companies\/777\/Contacts$/, response: { status: 200, body: { itemId: 12345 } } },
+    ]);
+    const service = new AutotaskService(config, logger);
+    await service.updateContact(12345, { companyID: 777, isActive: false } as any);
+    await service.updateContact(12346, { companyID: 777, isActive: true } as any);
+    expect(calledRoutes(fetchMock)).toEqual([
+      'PATCH /ATServicesRest/v1.0/Contacts',
+      'PUT /ATServicesRest/v1.0/Contacts/12345',
+      'PATCH /ATServicesRest/v1.0/Companies/777/Contacts',
+      'PATCH /ATServicesRest/v1.0/Companies/777/Contacts', // second update: no failing routes first
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toMatchObject({ id: 12345, isActive: 0 });
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toMatchObject({ id: 12346, isActive: 1 });
+  });
+
   test('falls back to PATCH /Companies/{companyID}/Contacts when PATCH returns 404 and PUT returns 405, resolving companyID via getContact', async () => {
     const fetchMock = mockFetchRoutes([
       { method: 'PATCH', path: /v1\.0\/Contacts$/, response: HTML_404 },

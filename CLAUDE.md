@@ -4,6 +4,17 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-19
+
+- **`Contacts.isActive` is an INTEGER (0 / 1)**; `Companies.isActive` is a boolean. Sending `false` to a
+  contact fails the whole update with HTTP 500 "Unexpected character encountered while parsing value: f.
+  Path 'isActive'" (seen live: ChatGPT deactivating placeholder contacts). update/create_contact now send 0 / 1.
+- This zone updates contacts ONLY via PATCH /Companies/{id}/Contacts (PATCH /Contacts 404, PUT 405);
+  the service remembers that per tenant after the first fallback, so bulk updates don't pay 2 failing calls each.
+- **No REST merge** for Companies / Contacts, Companies can't be deleted, and `Contacts.companyID` is
+  read-only: only the web UI merge moves a contact. 48,355 "Gmail" placeholder companies (Nexus Z - API,
+  2026-08-27 → 10-08) — see docs/MERGE.md.
+
 ## Learnings - 2026-10-13
 
 - **Company 0 is the tenant's OWN company** (Autotask's owner account): internal

@@ -55,7 +55,8 @@ export const dependsOn = (r: Pick<PlanRow, 'meta'>): number[] => (Array.isArray(
 export async function executePlan(plans: PlanStore, plan: Plan, io: EntityIO, o: { maxRows?: number; rowNos?: number[]; onApplied?: (row: PlanRow, id: number | null) => Promise<void> } = {}): Promise<ExecuteReport> {
   const rep: ExecuteReport = { planId: plan.id, attempted: 0, applied: 0, failed: 0, stale: 0, skipped: 0, waiting: 0, rows: [] };
   const statusNow = new Map<number, RowStatus>(plan.rows.map((r) => [r.rowNo, r.status]));
-  const todo = plan.rows.filter((r) => r.status === 'approved' && (!o.rowNos?.length || o.rowNos.includes(r.rowNo))).slice(0, Math.min(Math.max(o.maxRows ?? 25, 1), 100));
+  // Manual rows (UI steps such as a native merge) are never executed here.
+  const todo = plan.rows.filter((r) => r.status === 'approved' && r.action !== 'manual' && (!o.rowNos?.length || o.rowNos.includes(r.rowNo))).slice(0, Math.min(Math.max(o.maxRows ?? 25, 1), 100));
   await plans.setStatus(plan.id, 'executing');
   for (const r of todo) {
     // Rows this one depends on must be in first.

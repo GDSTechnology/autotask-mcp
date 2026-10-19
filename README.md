@@ -349,6 +349,7 @@ The server provides 171 tools for interacting with Autotask:
 
 #### Company Operations
 - `autotask_search_companies` - Search companies by name / active state, by **Classification** (exact label or id from the tenant picklist — list them with `autotask_get_field_info { entityType: "Companies", fieldName: "classification" }`), or in identity mode (domain, phone, company number); rows carry `classification: {id, label}` or `null`
+- `autotask_merge_discover` / `autotask_merge_dependency_inventory` / `autotask_merge_build_plan` / `autotask_merge_verify` - Safe company and contact merges by numeric IDs only (one pair, or a CSV of old id → correct id): find duplicates, inventory what is attached, a work list of Autotask UI merge steps with links, then verify. See [docs/MERGE.md](docs/MERGE.md)
 - `autotask_create_company` - Create new company
 - `autotask_update_company` - Update existing company
 

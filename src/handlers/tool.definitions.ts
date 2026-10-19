@@ -294,6 +294,30 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: { type: 'object', properties: { companyID: { type: 'number', description: 'The company to look around' } }, required: ['companyID'] }
   },
   {
+    name: 'autotask_merge_discover',
+    description: 'READ-ONLY. Find candidate duplicate companies / contacts before a merge: by email (exact, across ALL THREE contact email fields, active and inactive, every page — no 200 cap), by company name (exact), or around given companyIds / contactIds (with their contacts). Returns exact totals, placeholders ("Gmail" companies, "Unknown Contact"), who created them (createdByResourceID → name) and when (per day, first / latest), each company\u2019s contact ids, deep links, and survivor HINTS (real, active, oldest) — a person decides; nothing is chosen. Same email is a candidate, never proof of the same person.',
+    annotations: { title: 'Merge: discover duplicates', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { email: { type: 'string' }, name: { type: 'string', description: 'Exact company name, e.g. "Gmail"' }, companyIds: { type: 'array', items: { type: 'number' } }, contactIds: { type: 'array', items: { type: 'number' } }, includeInactive: { type: 'boolean', description: 'Default true' }, limit: { type: 'number', description: 'Rows listed (totals are always complete); default 500' } }, required: [] }
+  },
+  {
+    name: 'autotask_merge_dependency_inventory',
+    description: 'READ-ONLY. For each company id (and / or contact id): every record pointing at it, per entity — contacts, tickets, projects, contracts (active ones counted), opportunities, quotes, sales orders, configuration items, service calls, notes, to-dos, locations, alerts, invoices and billing items (financial history), child companies; for contacts: tickets, projects, contracts, opportunities, quotes, CIs, to-dos. Counts, the first 50 ids, whether the API could change the link (from live field info), and BLOCKERS (active contracts → billing review; financial history; parent of other companies; an entity that could not be checked). Up to 500 ids.',
+    annotations: { title: 'Merge: dependency inventory', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { companyIds: { type: 'array', items: { type: 'number' } }, contactIds: { type: 'array', items: { type: 'number' } } }, required: [] }
+  },
+  {
+    name: 'autotask_merge_build_plan',
+    description: 'Build a MERGE PLAN — addressed ONLY by numeric Autotask ids, one kind per plan. entityType "company": survivorCompanyId + sourceCompanyIds; entityType "contact": survivorContactId + sourceContactIds; or a BATCH: csv (two columns per line: old id, correct id; header optional) or mappings [{ sourceId, survivorId }]. Names, emails and searches are refused as identifiers; so are repeated ids, a survivor among its sources, chains (A→B while B→C), company 0, and ids that are not that kind of record. The survivor must be a real (non-placeholder), active record. Autotask has no API merge, so the plan is a WORK LIST of Autotask UI steps with deep links: per source "MERGE #source → #survivor" (blocked while it has active contracts until billingReviewed: true), then "DELETE #source in Admin"; plus survivor fields a source could fill (suggestions) and, for companies, a reminder that their contacts are decided separately. Saved with a hash (autotask_change_plan_review shows it; execute refuses it — nothing is written by the MCP). Afterwards: autotask_merge_verify.',
+    annotations: { title: 'Merge: build plan (ID-only)', readOnlyHint: false },
+    inputSchema: { type: 'object', properties: { entityType: { type: 'string', enum: ['company', 'contact'] }, survivorCompanyId: { type: 'number' }, sourceCompanyIds: { type: 'array', items: { type: 'number' } }, survivorContactId: { type: 'number' }, sourceContactIds: { type: 'array', items: { type: 'number' } }, csv: { type: 'string', description: 'old_id,correct_id per line' }, mappings: { type: 'array', items: { type: 'object', properties: { sourceId: { type: 'number' }, survivorId: { type: 'number' } } } }, mode: { type: 'string', enum: ['native_ui'] }, billingReviewed: { type: 'boolean' }, allowInactiveSurvivor: { type: 'boolean' } }, required: ['entityType'] }
+  },
+  {
+    name: 'autotask_merge_verify',
+    description: 'READ-ONLY toward Autotask. After the UI merges: re-reads every survivor and source of a merge plan and everything that pointed at the sources. Per source: gone (merged and deleted — done), nothing left but still there (delete it in Admin), or still has records attached (not merged yet / the merge left them — listed per entity). Fails if a survivor is missing or inactive (merged the wrong way round?). Marks the plan\u2019s steps done (autotask_change_plan_review shows progress) and returns passed | partial | not_started | failed with the evidence. Deactivation alone is never reported as a merge.',
+    annotations: { title: 'Merge: verify', readOnlyHint: true },
+    inputSchema: { type: 'object', properties: { planId: { type: 'string' } }, required: ['planId'] }
+  },
+  {
     name: 'autotask_create_company',
     description: 'Create new company record. Returns the new id; read it with autotask_get_company.',
     inputSchema: {
@@ -6350,7 +6374,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   companies: {
     description: 'Search, create, and update companies',
-    tools: ['autotask_search_companies', 'autotask_get_company', 'autotask_find_company_contact_candidates', 'autotask_find_duplicate_companies', 'autotask_create_company', 'autotask_update_company', 'autotask_get_company_site_configuration', 'autotask_update_company_site_configuration']
+    tools: ['autotask_search_companies', 'autotask_get_company', 'autotask_find_company_contact_candidates', 'autotask_find_duplicate_companies', 'autotask_merge_discover', 'autotask_merge_dependency_inventory', 'autotask_merge_build_plan', 'autotask_merge_verify', 'autotask_create_company', 'autotask_update_company', 'autotask_get_company_site_configuration', 'autotask_update_company_site_configuration']
   },
   contacts: {
     description: 'Search and create contacts',

@@ -40,6 +40,10 @@ import { authBlockStatus, clearAuthBlock } from '../services/autotask-http.js';
 import { recentLogs } from '../utils/logger.js';
 import { getNotifier, NOTIFY_EVENTS, type NotifyChannel } from '../services/notifier.js';
 import { GapStore, GAP_PRIORITIES, GAP_STATUSES, type GapPriority, type GapStatus } from '../gaps/store.js';
+import { BulkStore, type ItemStatus } from '../bulk/store.js';
+import { JOB_ACTIONS, jobAction, jobView, startPrepare, type JobAction } from '../bulk/service.js';
+import { activityProfile, DEFAULT_SCHEDULE } from '../bulk/schedule.js';
+import { hourlyActivity } from '../services/call-log.js';
 import { CHANNEL_KINDS, ChannelInputError, NOTIFY_SETTING_KEY, channelFromInput, channelLogDetails, channelView, parseStoredChannels } from './notifications.js';
 
 export interface AdminConsoleOptions {
@@ -646,6 +650,60 @@ export function adminHandler(deps: AdminDeps) {
         void log(ctx, 'notify.channel_removed', channelLogDetails(existing));
         return send(res, 200, { ok: true });
       }
+    }
+
+    // ── bulk jobs: mass changes staged in Postgres, pushed by the worker at a set pace ──
+    if (path === '/api/bulk-jobs' && method === 'GET') {
+      requireUser(ctx);
+      if (!deps.pool) return send(res, 200, { jobs: [], available: false });
+      const st = new BulkStore(deps.pool);
+      const jobs = await st.list(30).catch((e) => { if (/bulk_job/.test(String(e))) throw new HttpError(503, 'The bulk job tables are missing — run the migrations (0015).', 'migration'); throw e; });
+      return send(res, 200, { jobs: await Promise.all(jobs.map((j) => jobView(st, j))), available: true, defaults: DEFAULT_SCHEDULE });
+    }
+    if (path === '/api/bulk-jobs/activity' && method === 'GET') {
+      requireUser(ctx);
+      const tz = new URL(req.url ?? '/', 'http://x').searchParams.get('tz') || DEFAULT_SCHEDULE.tz;
+      return send(res, 200, activityProfile(hourlyActivity(), tz));
+    }
+    if (path === '/api/bulk-jobs' && method === 'POST') {
+      const u = requireUser(ctx, 'admin');
+      if (!deps.pool) throw new HttpError(503, 'Needs Postgres.');
+      const b = await readJson(req, 16 * 1024);
+      let job;
+      try {
+        job = await startPrepare(opts.service, new BulkStore(deps.pool), {
+          companyName: String(b.companyName ?? ''), createdByResourceId: b.createdByResourceId != null && b.createdByResourceId !== '' ? Number(b.createdByResourceId) : null,
+          createdFrom: b.createdFrom ? String(b.createdFrom) : null, createdTo: b.createdTo ? String(b.createdTo) : null, includeContacts: b.includeContacts !== false,
+          ratePerHour: Number(b.ratePerHour) || 3000, canary: Number(b.canary) || 50,
+          ...(b.businessHours === false ? { businessHours: false as const } : b.businessHours && typeof b.businessHours === 'object' ? { businessHours: b.businessHours as Record<string, unknown> } : {}),
+        }, u.username);
+      } catch (e) { throw new HttpError(400, e instanceof Error ? e.message : String(e), 'invalid'); }
+      void log(ctx, 'bulk.prepared', { id: job.id, title: job.title });
+      return send(res, 200, { ok: true, id: job.id });
+    }
+    const bulkItems = /^\/api\/bulk-jobs\/([0-9a-f-]{36})\/items$/.exec(path);
+    if (bulkItems && method === 'GET') {
+      requireUser(ctx);
+      if (!deps.pool) throw new HttpError(503, 'Needs Postgres.');
+      const q = new URL(req.url ?? '/', 'http://x').searchParams;
+      const status = (['done', 'pending', 'skipped', 'failed', 'excluded'].includes(q.get('status') ?? '') ? q.get('status') : 'done') as ItemStatus;
+      const limit = Math.min(Math.max(Number(q.get('limit')) || 50, 1), 500);
+      const st = new BulkStore(deps.pool);
+      const items = status === 'done' || status === 'skipped' ? await st.recentItems(bulkItems[1]!, status, limit) : await st.items(bulkItems[1]!, status, limit);
+      return send(res, 200, { status, items: items.map((x) => ({ ...x, link: opts.service.getRecordWebUrl(x.entity === 'Companies' ? 'company' : 'contact', x.recordId) })) });
+    }
+    const bulkAct = /^\/api\/bulk-jobs\/([0-9a-f-]{36})\/([a-z_]+)$/.exec(path);
+    if (bulkAct && method === 'POST' && (JOB_ACTIONS as string[]).includes(bulkAct[2]!)) {
+      const u = requireUser(ctx, 'admin');
+      if (!deps.pool) throw new HttpError(503, 'Needs Postgres.');
+      const st = new BulkStore(deps.pool);
+      const j = await st.get(bulkAct[1]!);
+      if (!j) throw new HttpError(404, 'No such job.');
+      const b = await readJson(req, 4 * 1024);
+      const r = await jobAction(st, j, bulkAct[2] as JobAction, { hash: b.hash != null ? String(b.hash) : undefined, by: u.username });
+      void log(ctx, `bulk.${bulkAct[2]}`, { id: j.id, ok: r.ok, status: r.status });
+      if (!r.ok) throw new HttpError(409, r.message, r.status);
+      return send(res, 200, { ok: true, status: r.status, message: r.message });
     }
 
     // ── requests: capabilities the MCP is missing (agents, people, auto-captured) ──

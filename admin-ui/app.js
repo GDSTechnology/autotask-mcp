@@ -76,6 +76,7 @@ const ROUTES = [
   { hash: '#/calls', label: 'Calls', view: calls },
   { hash: '#/actors', label: 'Actors', view: actors },
   { hash: '#/requests', label: 'Requests', view: requests },
+  { hash: '#/bulk', label: 'Bulk jobs', view: bulk },
   { hash: '#/notifications', label: 'Notifications', view: notifications },
   { hash: '#/settings', label: 'Settings', view: settings },
   { hash: '#/users', label: 'Users', view: users, admin: true },
@@ -586,6 +587,131 @@ async function actors(body) {
     h('p', { class: 'muted' }, 'Who changed a ticket: a person, or automation. Ticket history and the activity feed use this, and anything learning from technicians (Hermes) must only learn from "Person" — never from automation, including this MCP\'s own n8n / Nexus changes. "Unknown" needs confirming. ★ Reference technicians are the trusted standard.'),
     h('section', { class: 'panel' }, h('div', { class: 'row', style: 'margin-bottom:10px' }, search, typeSel, inactive), content));
   await draw();
+}
+
+// ── bulk jobs: staged mass changes, pushed by the worker at a set pace ────
+const BULK_STATUS = { preparing: ['Preparing', 'accent'], ready: ['Ready to approve', 'warn'], approved: ['Approved', 'accent'], running: ['Running', 'ok'], paused: ['Paused', 'warn'], done: ['Done', 'ok'], cancelled: ['Cancelled', ''], failed: ['Failed', 'bad'] };
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+async function bulk(body) {
+  const isAdmin = me.role === 'admin';
+  const open = new Map(); // job id → items tab shown
+  const list = h('div');
+  const act = async (j, action) => {
+    const p = j.progress;
+    const confirmText = {
+      approve: `Approve "${j.title}"?\n\n${fmt(p.pending)} write(s) to Autotask (${Object.entries(j.counts).map(([e, c]) => `${e}: ${fmt(c.pending || 0)}`).join(', ')}), ${fmt(p.excluded)} excluded.\nHash ${j.hash}.\n\nNothing is written until you Start it.`,
+      start: `Start "${j.title}"?\n\nIt writes to Autotask: the canary (${j.canary.size}) first, then it pauses for you to check.`,
+      resume: `Resume "${j.title}"?\n\n${fmt(p.pending)} write(s) left, about ${j.etaDays} day(s) at the set pace.`,
+      cancel: `Cancel "${j.title}"?\n\nRecords already written stay as they are; the rest are not touched.`,
+    }[action];
+    if (confirmText && !confirm(confirmText)) return;
+    try { const r = await api('POST', `/api/bulk-jobs/${j.id}/${action}`, action === 'approve' ? { hash: j.hash } : {}); toast(r.message); await draw(); } catch (x) { toast(x.message); }
+  };
+  const itemsBox = (j, tab) => {
+    const box = h('div', { class: 'muted' }, 'Loading…');
+    api('GET', `/api/bulk-jobs/${j.id}/items?status=${tab}&limit=50`).then((r) => {
+      box.replaceChildren(r.items.length ? h('table', null,
+        h('thead', null, h('tr', null, h('th', { class: 'num' }, '#'), h('th', null, 'Record'), h('th', null, tab === 'excluded' ? 'Why' : tab === 'failed' ? 'Error' : 'When'), h('th', null, ''))),
+        h('tbody', null, r.items.map((x) => h('tr', null,
+          h('td', { class: 'num mono' }, String(x.seq)),
+          h('td', null, `${x.entity === 'Companies' ? 'Company' : 'Contact'} #${x.recordId}`, x.parentId ? h('span', { class: 'muted' }, ` (company #${x.parentId})`) : null),
+          h('td', { class: tab === 'failed' ? 'error' : 'muted', style: 'font-size:13px' }, tab === 'excluded' ? x.reason || '' : tab === 'failed' ? `${x.error || ''} (${x.attempts} tries)` : x.doneAt ? ago(x.doneAt) : ''),
+          h('td', null, x.link ? h('a', { href: x.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open ↗') : null)))))
+        : h('p', { class: 'muted' }, 'None.'));
+    }).catch((x) => box.replaceChildren(h('div', { class: 'error' }, x.message)));
+    return box;
+  };
+  const card = (j) => {
+    const [label, cls] = BULK_STATUS[j.status] || [j.status, ''];
+    const p = j.progress;
+    const btn = (action, text, kind) => h('button', { class: `small ${kind || ''}`, onclick: () => act(j, action) }, text);
+    const buttons = isAdmin ? [
+      j.status === 'ready' ? btn('approve', 'Approve…', '') : null,
+      j.status === 'approved' ? btn('start', 'Start (canary first)…', '') : null,
+      j.status === 'running' ? btn('pause', 'Pause', 'secondary') : null,
+      j.status === 'paused' ? btn('resume', 'Resume…', '') : null,
+      p.failed ? btn('retry_failed', `Retry ${fmt(p.failed)} failed`, 'secondary') : null,
+      !['done', 'cancelled', 'failed'].includes(j.status) ? btn('cancel', 'Cancel…', 'secondary') : null,
+    ].filter(Boolean) : [];
+    const tab = open.get(j.id);
+    const tabs = ['done', 'failed', 'excluded', 'pending'].map((t) => h('button', { class: `small ${tab === t ? '' : 'secondary'}`, onclick: () => { open.set(j.id, tab === t ? null : t); draw(); } },
+      { done: 'Recently done', failed: `Failed (${fmt(p.failed)})`, excluded: `Excluded (${fmt(p.excluded)})`, pending: 'Next up' }[t]));
+    const sched = j.schedule;
+    return h('section', { class: 'panel' },
+      h('div', { class: 'row', style: 'justify-content:space-between;align-items:flex-start' },
+        h('div', null, h('h2', { style: 'margin:0' }, j.title), h('div', { class: 'muted mono', style: 'font-size:12px' }, j.id)),
+        h('span', { class: `badge ${cls}` }, label)),
+      j.status === 'preparing' ? h('p', { class: 'muted' }, 'Reading the records and checking each for history (paced). This page updates by itself.') : null,
+      j.pauseReason ? h('div', { class: `banner ${/canary/.test(j.pauseReason) ? '' : 'bad'}`, style: 'margin:8px 0' }, j.pauseReason) : null,
+      j.lastError && j.status !== 'done' ? h('div', { class: 'error', style: 'font-size:13px' }, `Last error: ${j.lastError}`) : null,
+      p.total ? h('div', { style: 'margin:10px 0' },
+        h('div', { class: 'row', style: 'justify-content:space-between' }, h('strong', null, `${p.pct}%`), h('span', { class: 'muted' }, `${fmt(p.done + p.skipped)} of ${fmt(p.total)} writes · ${fmt(p.pending)} left${p.failed ? ` · ${fmt(p.failed)} failed` : ''}${p.excluded ? ` · ${fmt(p.excluded)} excluded` : ''}`)),
+        h('div', { class: 'bar' }, h('span', { style: `width:${Math.min(100, p.pct)}%` }))) : null,
+      h('div', { class: 'table-wrap' }, h('table', null, h('tbody', null,
+        h('tr', null, h('th', null, 'Pace now'), h('td', null, `${fmt(j.rate.now)}/hour ${j.rate.inBusinessHours ? '(business hours)' : '(off hours)'} · ${fmt(j.rate.doneLastHour)} done in the last hour`)),
+        h('tr', null, h('th', null, 'Schedule'), h('td', null, sched ? `${fmt(j.rate.businessHours)}/hour ${sched.days.map((d) => DAY_NAMES[d]).join(' ')} ${String(sched.start).padStart(2, '0')}:00–${String(sched.end).padStart(2, '0')}:00 (${sched.tz}); ${fmt(j.rate.offHours)}/hour otherwise` : `${fmt(j.rate.offHours)}/hour, all day`)),
+        p.pending && ['running', 'paused', 'approved', 'ready'].includes(j.status) ? h('tr', null, h('th', null, 'Time left'), h('td', null, j.etaDays >= 1 ? `about ${j.etaDays} day(s) at this schedule` : `about ${Math.max(1, Math.round(j.etaDays * 24))} hour(s) at this schedule`)) : null,
+        h('tr', null, h('th', null, 'Per entity'), h('td', null, Object.entries(j.counts).map(([e, c]) => h('div', null, h('strong', null, e), `: ${Object.entries(c).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ')}`)))),
+        h('tr', null, h('th', null, 'Canary'), h('td', null, `${j.canary.size} write(s) first${j.canary.done ? ' — done' : ''}`)),
+        h('tr', null, h('th', null, 'Who'), h('td', { class: 'muted' }, `prepared by ${j.createdBy || '?'} ${ago(j.createdAt)}${j.approvedBy ? ` · approved by ${j.approvedBy} ${ago(j.approvedAt)}` : ''}${j.startedAt ? ` · started ${ago(j.startedAt)}` : ''}${j.finishedAt ? ` · finished ${ago(j.finishedAt)}` : ''}`)),
+        j.hash && j.status === 'ready' ? h('tr', null, h('th', null, 'Hash'), h('td', { class: 'mono' }, j.hash, h('span', { class: 'muted' }, ' — approval binds exactly these records'))) : null))),
+      buttons.length ? h('div', { class: 'row', style: 'margin-top:10px' }, ...buttons) : null,
+      p.total || p.excluded ? h('div', { style: 'margin-top:12px' }, h('div', { class: 'row' }, ...tabs), tab ? h('div', { style: 'margin-top:8px' }, itemsBox(j, tab)) : null) : null);
+  };
+  async function draw() {
+    const r = await api('GET', '/api/bulk-jobs');
+    if (!r.available) { list.replaceChildren(h('p', { class: 'muted' }, 'Needs Postgres (MCP_PG_ENABLED) and migration 0015.')); return; }
+    list.replaceChildren(...(r.jobs.length ? r.jobs.map(card) : [h('p', { class: 'muted' }, 'No bulk jobs yet.')]));
+  }
+
+  // New cleanup (admins): prepared in the background, approved here, then run by the worker.
+  const v = (name) => form.querySelector(`[name="${name}"]`);
+  const form = h('form', { onsubmit: async (e) => {
+    e.preventDefault();
+    const days = [...form.querySelectorAll('[name="day"]:checked')].map((x) => Number(x.value));
+    const body = {
+      companyName: v('companyName').value.trim(), createdByResourceId: v('createdBy').value.trim() || null, createdFrom: v('from').value || null, createdTo: v('to').value || null,
+      includeContacts: v('contacts').checked, ratePerHour: Number(v('rate').value), canary: Number(v('canary').value),
+      businessHours: v('bizOn').checked ? { tz: v('tz').value.trim(), days, start: Number(v('start').value), end: Number(v('end').value), businessRate: Number(v('bizRate').value) } : false,
+    };
+    try { const r = await api('POST', '/api/bulk-jobs', body); toast(`Preparing job ${r.id.slice(0, 8)}… — it shows below.`); await draw(); } catch (x) { toast(x.message); }
+  } },
+    h('div', { class: 'row' },
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Placeholder company name', h('input', { name: 'companyName', value: 'Gmail', required: true, style: 'max-width:180px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Created by resource ID (optional)', h('input', { name: 'createdBy', inputmode: 'numeric', style: 'max-width:160px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Created from', h('input', { name: 'from', type: 'date' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Created to', h('input', { name: 'to', type: 'date' }))),
+    h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, h('input', { name: 'contacts', type: 'checkbox', checked: true }), 'Also inactivate their contacts'),
+    h('div', { class: 'row' },
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Off-hours rate (writes/hour)', h('input', { name: 'rate', type: 'number', value: '3000', min: '60', max: '6000', style: 'max-width:120px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Canary (writes, then pause)', h('input', { name: 'canary', type: 'number', value: '50', min: '1', max: '1000', style: 'max-width:100px' }))),
+    h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, h('input', { name: 'bizOn', type: 'checkbox', checked: true }), 'Slower during business hours'),
+    h('div', { class: 'row' },
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Business-hours rate', h('input', { name: 'bizRate', type: 'number', value: '1000', min: '60', max: '6000', style: 'max-width:110px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'From hour', h('input', { name: 'start', type: 'number', value: '7', min: '0', max: '23', style: 'max-width:80px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'To hour', h('input', { name: 'end', type: 'number', value: '19', min: '1', max: '24', style: 'max-width:80px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Time zone', h('input', { name: 'tz', value: 'America/New_York', style: 'max-width:180px' })),
+      h('div', null, h('div', { style: 'font-size:13px;margin-bottom:4px' }, 'Days'), h('div', { class: 'row' }, DAY_NAMES.map((d, i) => h('label', { style: 'font-weight:400;display:flex;gap:4px;align-items:center;margin:0' }, h('input', { type: 'checkbox', name: 'day', value: String(i), checked: i >= 1 && i <= 5 }), d))))),
+    h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { type: 'submit' }, 'Prepare (nothing is written)'), h('span', { class: 'muted' }, 'Only placeholder names (Gmail, Outlook, Unknown…). Records with history are excluded. You approve the exact list before anything runs.')));
+
+  const activity = h('div', { class: 'muted' }, 'Loading…');
+  api('GET', '/api/bulk-jobs/activity').then((a) => {
+    const wd = a.weekdayAvgPerHour || [];
+    const max = Math.max(1, ...wd.map((x) => x || 0));
+    activity.replaceChildren(
+      h('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:70px' }, wd.map((x, i) => h('div', { title: `${String(i).padStart(2, '0')}:00 — ${x == null ? 'no data' : `${fmt(x)} calls/hour`}`, style: `flex:1;background:${a.suggested && i >= a.suggested.start && i < a.suggested.end ? 'var(--accent, #4f8cff)' : 'var(--muted, #888)'};opacity:${x == null ? 0.15 : 0.85};height:${Math.max(2, Math.round(((x || 0) / max) * 70))}px` }))),
+      h('div', { class: 'row', style: 'justify-content:space-between;font-size:12px' }, h('span', null, '00:00'), h('span', null, '12:00'), h('span', null, '23:00')),
+      h('p', { style: 'font-size:13px' }, a.suggested ? `Busiest weekday hours (${a.tz}): ${String(a.suggested.start).padStart(2, '0')}:00–${String(a.suggested.end).padStart(2, '0')}:00 — use them as the business hours (the slower rate).` : 'Not enough traffic yet to suggest business hours.', ' ', h('span', { class: 'muted' }, `Tool-call traffic through this MCP, weekdays, ${a.hoursOfData} hour(s) of data.`)));
+  }).catch((x) => activity.replaceChildren(h('div', { class: 'error' }, x.message)));
+
+  body.replaceChildren(
+    h('h1', null, 'Bulk jobs'),
+    h('p', { class: 'muted' }, 'Mass changes (e.g. inactivating tens of thousands of "Gmail" placeholder companies and their contacts) are prepared from the mirror, approved here, and pushed to Autotask by the server at a set pace — slower in business hours, a canary first, pausing itself on trouble. The console\'s read-only switch stops them too.'),
+    list,
+    isAdmin ? h('section', { class: 'panel' }, h('h2', null, 'New placeholder cleanup'), form) : null,
+    h('section', { class: 'panel' }, h('h2', null, 'When is Autotask busy?'), activity));
+  await draw();
+  refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') draw().catch(() => undefined); }, 10_000);
 }
 
 // ── requests: what the MCP can't do yet ───────────────────────────────────

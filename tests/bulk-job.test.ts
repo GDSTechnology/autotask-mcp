@@ -162,3 +162,31 @@ describe('tool guards', () => {
     expect((await h({ action: 'prepare' }, ctx)).message).toMatch(/companyName/);
   });
 });
+
+describe('job actions (console + tool share them)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { jobAction, scheduleOf } = require('../src/bulk/service');
+  const mk = (status: string) => {
+    const calls: string[] = [];
+    const job = { id: 'j', kind: 'k', title: 't', params: {}, status, hash: itemsHash('k', [{ entity: 'Companies', recordId: 1, action: 'inactivate' }]), ratePerHour: 3000, canarySize: 50, pauseReason: null, lastError: null, stats: {} };
+    const st = { allItemKeys: async () => [{ entity: 'Companies', recordId: 1, action: 'inactivate', status: 'pending' }], setStatus: async (_: string, s: string) => { calls.push(s); }, requeueFailed: async () => 3 };
+    return { job, st, calls };
+  };
+  test('approve needs ready + the exact hash; start needs approved; resume needs paused; cancel not twice', async () => {
+    let m = mk('ready');
+    expect(await jobAction(m.st, m.job, 'approve', { hash: 'nope', by: 'a' })).toMatchObject({ ok: false, status: 'hash_mismatch' });
+    expect(await jobAction(m.st, m.job, 'approve', { hash: m.job.hash, by: 'a' })).toMatchObject({ ok: true, status: 'approved' });
+    expect(m.calls).toEqual(['approved']);
+    m = mk('ready'); expect(await jobAction(m.st, m.job, 'start', { by: 'a' })).toMatchObject({ ok: false });
+    m = mk('approved'); expect(await jobAction(m.st, m.job, 'start', { by: 'a' })).toMatchObject({ ok: true, status: 'running' });
+    m = mk('running'); expect(await jobAction(m.st, m.job, 'resume', { by: 'a' })).toMatchObject({ ok: false });
+    m = mk('paused'); expect(await jobAction(m.st, m.job, 'resume', { by: 'a' })).toMatchObject({ ok: true, status: 'running' });
+    m = mk('done'); expect(await jobAction(m.st, m.job, 'cancel', { by: 'a' })).toMatchObject({ ok: false });
+    m = mk('paused'); expect((await jobAction(m.st, m.job, 'retry_failed', { by: 'a' })).message).toMatch(/3 failed item\(s\) back in the queue — resume/);
+  });
+  test('business hours: defaults, custom, or off', () => {
+    expect(scheduleOf({})).toEqual(DEFAULT_SCHEDULE);
+    expect(scheduleOf({ businessHours: false })).toBeNull();
+    expect(scheduleOf({ businessHours: { start: 8, end: 17, days: [1, 2] }, businessRate: 500 })).toMatchObject({ start: 8, end: 17, days: [1, 2], businessRate: 500, tz: 'America/New_York' });
+  });
+});

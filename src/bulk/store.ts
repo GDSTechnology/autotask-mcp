@@ -36,6 +36,7 @@ export class BulkStore {
       [randomUUID(), j.kind, j.title, JSON.stringify(j.params), j.ratePerHour, j.canarySize, j.by]);
     return job(r.rows[0]);
   }
+  async setTitle(id: string, title: string): Promise<void> { await this.pool.query('UPDATE bulk_job SET title = $2, updated_at = now() WHERE id = $1', [id, title]); }
   async get(id: string): Promise<BulkJob | null> { const r = await this.pool.query('SELECT * FROM bulk_job WHERE id = $1', [id]); return r.rows[0] ? job(r.rows[0]) : null; }
   async list(limit = 20): Promise<BulkJob[]> { return (await this.pool.query('SELECT * FROM bulk_job ORDER BY created_at DESC LIMIT $1', [limit])).rows.map(job); }
   async running(): Promise<BulkJob[]> { return (await this.pool.query(`SELECT * FROM bulk_job WHERE status = 'running' ORDER BY created_at`)).rows.map(job); }

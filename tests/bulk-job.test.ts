@@ -3,6 +3,7 @@
 // handling), approval by hash, and the tool's guards.
 
 import { preparePlaceholderJob } from '../src/bulk/prepare';
+import { prepareCompanyContactsJob } from '../src/bulk/prepare-contacts';
 import { activityProfile, currentRate, inBusinessHours, weeklyCapacity, DEFAULT_SCHEDULE } from '../src/bulk/schedule';
 import { BulkWorker, applyItem, writeGapMs } from '../src/bulk/worker';
 import { itemsHash, type BulkItem, type BulkJob } from '../src/bulk/store';
@@ -188,5 +189,58 @@ describe('job actions (console + tool share them)', () => {
     expect(scheduleOf({})).toEqual(DEFAULT_SCHEDULE);
     expect(scheduleOf({ businessHours: false })).toBeNull();
     expect(scheduleOf({ businessHours: { start: 8, end: 17, days: [1, 2] }, businessRate: 500 })).toMatchObject({ start: 8, end: 17, days: [1, 2], businessRate: 500, tz: 'America/New_York' });
+  });
+});
+
+describe('junk contacts on one company', () => {
+  const company = { id: 4242, companyName: 'Example Insurance', isActive: true, webAddress: 'https://www.example-ins.com' };
+  const ct = (id: number, email: string | null, extra: Row = {}) => ({ id, companyID: 4242, isActive: 1, firstName: 'P', lastName: String(id), emailAddress: email, createDate: '2026-09-10T12:00:00', ...extra });
+  const contacts = [
+    ct(1, 'owner@example-ins.com', { primaryContact: true }),
+    ct(2, 'agent@example-ins.com'),
+    ct(3, 'random1@gmail.com'),
+    ct(4, 'spam@junkmail.biz'),
+    ct(5, 'spam2@junkmail.biz'),
+    ct(6, 'partner@broker-partner.com'),
+    ct(7, null),
+    ct(8, 'old@hotmail.com', { isActive: 0 }),
+    ct(9, 'quoted@gmail.com'),
+    ct(10, 'early@gmail.com', { createDate: '2025-01-01T00:00:00' }),
+    { ...ct(11, 'other@gmail.com'), companyID: 999 },
+  ];
+  const tables = { Companies: [company], Contacts: contacts, Tickets: [{ id: 70, contactID: 4 }, { id: 71, contactID: 6 }], Quotes: [{ id: 80, contactID: 9 }] };
+
+  test('domain rule: keeps the company domains (web address + history), excludes primary / history, skips no-email and inactive', async () => {
+    const { q } = fakeQ(tables);
+    const r = await prepareCompanyContactsJob(q, { companyId: 4242 });
+    const write = r.items.filter((i: Row) => i.status !== 'excluded').map((i: Row) => i.recordId);
+    const excluded = Object.fromEntries(r.items.filter((i: Row) => i.status === 'excluded').map((i: Row) => [i.recordId, i.reason]));
+    // 6 is on a ticket → its domain counts as the company's own; 4's junk domain too (tickets aren't ok by default)
+    expect(r.stats.companyDomains).toMatchObject({ 'example-ins.com': 'web address', 'broker-partner.com': expect.stringMatching(/history/) });
+    expect(write).toEqual([3, 10]);
+    expect(excluded).toEqual({ 9: '1 quotes' });
+    expect(r.items.every((i: Row) => i.parentId === 4242 && i.entity === 'Contacts')).toBe(true);
+    expect(r.stats.kept).toMatchObject({ 'company domain': 5, 'no email address': 1 });
+    expect((r.stats.byDomain as Row)['gmail.com']).toMatchObject({ inactivate: 2, excluded: 1 });
+  });
+
+  test('ticketsOk: ticket-only history neither protects the contact nor its domain; window and onlyDomains narrow it', async () => {
+    const { q } = fakeQ(tables);
+    const r = await prepareCompanyContactsJob(q, { companyId: 4242, ticketsOk: true, createdFrom: '2026-09-01' });
+    expect(r.items.filter((i: Row) => i.status !== 'excluded').map((i: Row) => i.recordId)).toEqual([3, 4, 5, 6]);
+    expect(r.items.find((i: Row) => i.recordId === 4)!.before).toMatchObject({ tickets: 1, email: 'spam@junkmail.biz' });
+    const only = await prepareCompanyContactsJob(fakeQ(tables).q, { companyId: 4242, ticketsOk: true, onlyDomains: ['junkmail.biz'], keepDomains: ['broker-partner.com'] });
+    expect(only.items.filter((i: Row) => i.status !== 'excluded').map((i: Row) => i.recordId)).toEqual([4, 5]);
+  });
+
+  test('explicit list: only those, still never the primary contact; ids from another company refuse the job', async () => {
+    const r = await prepareCompanyContactsJob(fakeQ(tables).q, { companyId: 4242, contactIds: [1, 2, 7] });
+    expect(r.items.map((i: Row) => [i.recordId, i.status ?? 'pending'])).toEqual([[1, 'excluded'], [2, 'pending'], [7, 'pending']]);
+    await expect(prepareCompanyContactsJob(fakeQ(tables).q, { companyId: 4242, contactIds: [2, 11] })).rejects.toThrow(/not on company 4242/);
+    await expect(prepareCompanyContactsJob(fakeQ(tables).q, { companyId: 0 })).rejects.toThrow(/your own company/);
+  });
+
+  test('a failed history check prepares nothing', async () => {
+    await expect(prepareCompanyContactsJob(fakeQ(tables, { fail: 'Opportunities' }).q, { companyId: 4242 })).rejects.toThrow(/history check on opportunities failed/);
   });
 });

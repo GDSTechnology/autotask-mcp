@@ -121,6 +121,19 @@ For junk at scale (tens of thousands of "Gmail" companies, each with one "Unknow
 
 Inactivated records stay in Autotask (Companies can't be deleted through the API). For a purge, ask Kaseya support with the job's company list.
 
+### Junk contacts on one real company: `companyId`
+
+A real customer account can also collect contacts that don't belong to it (spam senders, webmail addresses, a mail lane that filed everyone under one account). Same tool, same approval and pacing, one company:
+
+1. **Prepare:** `action: "prepare", companyId: <id>`, then either:
+   - `contactIds: [...]`: exactly these contacts (every id must be on that company), or
+   - the **domain rule**: every active contact whose email domain is not the company's own. The company's own domains are its web address, `keepDomains`, and the (non-webmail) domains of contacts with history. Narrow it with `onlyDomains` (e.g. `["gmail.com"]`), `createdFrom` / `createdTo`. Contacts with no email are kept unless `includeNoEmail: true`.
+2. **Always excluded:** the primary contact, and contacts with projects, contracts, opportunities, quotes, configuration items or to-dos. Contacts on **tickets** are excluded too, unless `ticketsOk: true` (a spam sender is usually the contact on its own spam tickets; inactivating it leaves the tickets as they are). Without `ticketsOk`, a junk domain with tickets is treated as the company's own, so check `stats.companyDomains`.
+3. **Review:** `action: "status"` → `stats.byDomain` (per domain: inactivate / kept / excluded / already inactive) and `stats.companyDomains` (what was kept as the company's own, and why). The console shows both on the job card.
+4. **Approve, start, canary** (default 25), **pace**: as above. Only contacts are written; the company is never touched.
+
+Company 0 (your own company) is refused.
+
 ## Not yet
 
 - Moving links of placeholder records (the API marks a contact's company read-only; only the UI merge moves contacts).

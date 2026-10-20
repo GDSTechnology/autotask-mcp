@@ -41,7 +41,7 @@ import { recentLogs } from '../utils/logger.js';
 import { getNotifier, NOTIFY_EVENTS, type NotifyChannel } from '../services/notifier.js';
 import { GapStore, GAP_PRIORITIES, GAP_STATUSES, type GapPriority, type GapStatus } from '../gaps/store.js';
 import { BulkStore, type ItemStatus } from '../bulk/store.js';
-import { JOB_ACTIONS, jobAction, jobView, startPrepare, type JobAction } from '../bulk/service.js';
+import { JOB_ACTIONS, jobAction, jobView, startPrepare, startPrepareCompanyContacts, type JobAction } from '../bulk/service.js';
 import { activityProfile, DEFAULT_SCHEDULE } from '../bulk/schedule.js';
 import { hourlyActivity } from '../services/call-log.js';
 import { CHANNEL_KINDS, ChannelInputError, NOTIFY_SETTING_KEY, channelFromInput, channelLogDetails, channelView, parseStoredChannels } from './notifications.js';
@@ -668,10 +668,16 @@ export function adminHandler(deps: AdminDeps) {
     if (path === '/api/bulk-jobs' && method === 'POST') {
       const u = requireUser(ctx, 'admin');
       if (!deps.pool) throw new HttpError(503, 'Needs Postgres.');
-      const b = await readJson(req, 16 * 1024);
+      const b = await readJson(req, 256 * 1024);
       let job;
+      const sched = b.businessHours === false ? { businessHours: false as const } : b.businessHours && typeof b.businessHours === 'object' ? { businessHours: b.businessHours as Record<string, unknown> } : {};
       try {
-        job = await startPrepare(opts.service, new BulkStore(deps.pool), {
+        if (b.companyId != null && b.companyId !== '') job = await startPrepareCompanyContacts(opts.service, new BulkStore(deps.pool), {
+          companyId: Number(b.companyId), contactIds: (b.contactIds ?? null) as never, keepDomains: (b.keepDomains ?? null) as never, onlyDomains: (b.onlyDomains ?? null) as never,
+          includeNoEmail: b.includeNoEmail === true, ticketsOk: b.ticketsOk === true, createdFrom: b.createdFrom ? String(b.createdFrom) : null, createdTo: b.createdTo ? String(b.createdTo) : null,
+          ratePerHour: Number(b.ratePerHour) || 3000, canary: Number(b.canary) || 25, ...sched,
+        }, u.username);
+        else job = await startPrepare(opts.service, new BulkStore(deps.pool), {
           companyName: String(b.companyName ?? ''), createdByResourceId: b.createdByResourceId != null && b.createdByResourceId !== '' ? Number(b.createdByResourceId) : null,
           createdFrom: b.createdFrom ? String(b.createdFrom) : null, createdTo: b.createdTo ? String(b.createdTo) : null, includeContacts: b.includeContacts !== false,
           ratePerHour: Number(b.ratePerHour) || 3000, canary: Number(b.canary) || 50,

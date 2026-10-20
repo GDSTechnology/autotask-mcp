@@ -9,7 +9,7 @@ import type { CallerContext } from '../types/context.js';
 import { hourlyActivity } from '../services/call-log.js';
 import { BulkStore } from './store.js';
 import { DEFAULT_SCHEDULE, activityProfile } from './schedule.js';
-import { JOB_ACTIONS, jobAction, jobView, startPrepare, type JobAction } from './service.js';
+import { JOB_ACTIONS, jobAction, jobView, startPrepare, startPrepareCompanyContacts, type JobAction } from './service.js';
 
 type Result = { result: unknown; message: string };
 type H = (a: Record<string, any>, ctx: CallerContext) => Promise<Result>;
@@ -29,6 +29,14 @@ export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null)
       const st = new BulkStore(pool);
       if (action === 'list') { const jobs = await st.list(20); return { result: { jobs: jobs.map((j) => ({ id: j.id, title: j.title, status: j.status, createdAt: j.createdAt })) }, message: `${jobs.length} bulk job(s).` }; }
 
+      if (action === 'prepare' && a.companyId != null) {
+        // Junk contacts on ONE real company (by contact list or the domain rule).
+        let job;
+        try {
+          job = await startPrepareCompanyContacts(s, st, { companyId: Number(a.companyId), contactIds: a.contactIds ?? null, keepDomains: a.keepDomains ?? null, onlyDomains: a.onlyDomains ?? null, includeNoEmail: a.includeNoEmail === true, ticketsOk: a.ticketsOk === true, createdFrom: a.createdFrom ?? null, createdTo: a.createdTo ?? null, ratePerHour: Number(a.ratePerHour) || 3000, canary: Number(a.canary) || 25, ...(a.businessHours === false ? { businessHours: false as const } : a.businessHours && typeof a.businessHours === 'object' ? { businessHours: a.businessHours } : {}), ...(a.businessRate != null ? { businessRate: Number(a.businessRate) } : {}) }, who(ctx));
+        } catch (e) { return { result: { status: 'refused' }, message: e instanceof Error ? e.message : String(e) }; }
+        return { result: { jobId: job.id, status: 'preparing' }, message: `Preparing job ${job.id}: the company's contacts and their history. Check it with action=status — stats.byDomain shows per domain what would be inactivated / kept, stats.companyDomains the domains treated as the company's own (and why). Excluded (primary contact, history): action=excluded. A person approves it (console → Bulk jobs, or approve with its hash).` };
+      }
       if (action === 'prepare') {
         let job;
         try {
@@ -41,7 +49,9 @@ export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null)
       if (!j) return { result: { status: 'not_found' }, message: `No bulk job ${a.jobId ?? ''} (action=list shows them).` };
 
       if (action === 'status') { const v = await jobView(st, j); return { result: v, message: `Job ${j.id}: ${j.status}${j.pauseReason ? ` (${j.pauseReason})` : ''} — ${v.pending} write(s) pending, ${JSON.stringify(v.counts)}; now ${(v.rate as { now: number }).now}/hour${(v.rate as { inBusinessHours: boolean }).inBusinessHours ? ' (business hours)' : ''}, ~${v.etaDays} day(s) left.` }; }
-      if (action === 'excluded') { const ex = await st.items(j.id, 'excluded', Math.min(Number(a.limit) || 200, 2000)); return { result: { excluded: ex.map((x) => ({ companyId: x.recordId, reason: x.reason, before: x.before })) }, message: `${ex.length} excluded compan(ies) shown — they have history; merge them into the right account in the UI (autotask_merge_build_plan).` }; }
+      if (action === 'excluded') { const ex = await st.items(j.id, 'excluded', Math.min(Number(a.limit) || 200, 2000)); return j.kind === 'inactivate_company_contacts'
+        ? { result: { excluded: ex.map((x) => ({ contactId: x.recordId, companyId: x.parentId, reason: x.reason, before: x.before, link: s.getRecordWebUrl('contact', x.recordId) })) }, message: `${ex.length} excluded contact(s) shown — the primary contact or contacts with history; a person decides on each (inactivate in the UI, or prepare again with contactIds).` }
+        : { result: { excluded: ex.map((x) => ({ companyId: x.recordId, reason: x.reason, before: x.before })) }, message: `${ex.length} excluded compan(ies) shown — they have history; merge them into the right account in the UI (autotask_merge_build_plan).` }; }
       if (action === 'items') {
         // What the job did (or will do) — e.g. the canary's records to spot-check in Autotask.
         const status = ['done', 'pending', 'skipped', 'failed', 'excluded'].includes(String(a.status)) ? String(a.status) as 'done' : 'done';

@@ -614,7 +614,7 @@ async function bulk(body) {
         h('thead', null, h('tr', null, h('th', { class: 'num' }, '#'), h('th', null, 'Record'), h('th', null, tab === 'excluded' ? 'Why' : tab === 'failed' ? 'Error' : 'When'), h('th', null, ''))),
         h('tbody', null, r.items.map((x) => h('tr', null,
           h('td', { class: 'num mono' }, String(x.seq)),
-          h('td', null, `${x.entity === 'Companies' ? 'Company' : 'Contact'} #${x.recordId}`, x.parentId ? h('span', { class: 'muted' }, ` (company #${x.parentId})`) : null),
+          h('td', null, `${x.entity === 'Companies' ? 'Company' : 'Contact'} #${x.recordId}`, x.before && (x.before.name || x.before.email) ? h('div', { style: 'font-size:13px' }, [x.before.name, x.before.email].filter(Boolean).join(' · ')) : null, x.parentId ? h('span', { class: 'muted' }, ` (company #${x.parentId})`) : null),
           h('td', { class: tab === 'failed' ? 'error' : 'muted', style: 'font-size:13px' }, tab === 'excluded' ? x.reason || '' : tab === 'failed' ? `${x.error || ''} (${x.attempts} tries)` : x.doneAt ? ago(x.doneAt) : ''),
           h('td', null, x.link ? h('a', { href: x.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open ↗') : null)))))
         : h('p', { class: 'muted' }, 'None.'));
@@ -652,6 +652,10 @@ async function bulk(body) {
         h('tr', null, h('th', null, 'Schedule'), h('td', null, sched ? `${fmt(j.rate.businessHours)}/hour ${sched.days.map((d) => DAY_NAMES[d]).join(' ')} ${String(sched.start).padStart(2, '0')}:00–${String(sched.end).padStart(2, '0')}:00 (${sched.tz}); ${fmt(j.rate.offHours)}/hour otherwise` : `${fmt(j.rate.offHours)}/hour, all day`)),
         p.pending && ['running', 'paused', 'approved', 'ready'].includes(j.status) ? h('tr', null, h('th', null, 'Time left'), h('td', null, j.etaDays >= 1 ? `about ${j.etaDays} day(s) at this schedule` : `about ${Math.max(1, Math.round(j.etaDays * 24))} hour(s) at this schedule`)) : null,
         h('tr', null, h('th', null, 'Per entity'), h('td', null, Object.entries(j.counts).map(([e, c]) => h('div', null, h('strong', null, e), `: ${Object.entries(c).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ')}`)))),
+        j.kind === 'inactivate_company_contacts' && j.stats.companyDomains ? h('tr', null, h('th', null, 'Kept as the company\'s own'), h('td', null, Object.keys(j.stats.companyDomains).length ? Object.entries(j.stats.companyDomains).map(([d, why]) => h('div', null, h('strong', null, d), h('span', { class: 'muted' }, ` — ${why}`))) : h('span', { class: 'muted' }, 'none (no web address, no contact with history)'))) : null,
+        j.kind === 'inactivate_company_contacts' && j.stats.byDomain ? h('tr', null, h('th', null, 'By email domain'), h('td', null, h('table', null, h('thead', null, h('tr', null, h('th', null, 'Domain'), h('th', { class: 'num' }, 'Inactivate'), h('th', { class: 'num' }, 'Kept'), h('th', { class: 'num' }, 'Excluded'), h('th', { class: 'num' }, 'Already inactive'))),
+          h('tbody', null, Object.entries(j.stats.byDomain).slice(0, 25).map(([d, c]) => h('tr', null, h('td', null, d), h('td', { class: 'num' }, fmt(c.inactivate)), h('td', { class: 'num' }, fmt(c.kept)), h('td', { class: 'num' }, fmt(c.excluded)), h('td', { class: 'num' }, fmt(c.alreadyInactive)))))),
+          j.stats.domains > 25 ? h('div', { class: 'muted', style: 'font-size:12px' }, `${j.stats.domains - 25} more domain(s)`) : null)) : null,
         h('tr', null, h('th', null, 'Canary'), h('td', null, `${j.canary.size} write(s) first${j.canary.done ? ' — done' : ''}`)),
         h('tr', null, h('th', null, 'Who'), h('td', { class: 'muted' }, `prepared by ${j.createdBy || '?'} ${ago(j.createdAt)}${j.approvedBy ? ` · approved by ${j.approvedBy} ${ago(j.approvedAt)}` : ''}${j.startedAt ? ` · started ${ago(j.startedAt)}` : ''}${j.finishedAt ? ` · finished ${ago(j.finishedAt)}` : ''}`)),
         j.hash && j.status === 'ready' ? h('tr', null, h('th', null, 'Hash'), h('td', { class: 'mono' }, j.hash, h('span', { class: 'muted' }, ' — approval binds exactly these records'))) : null))),
@@ -694,6 +698,33 @@ async function bulk(body) {
       h('div', null, h('div', { style: 'font-size:13px;margin-bottom:4px' }, 'Days'), h('div', { class: 'row' }, DAY_NAMES.map((d, i) => h('label', { style: 'font-weight:400;display:flex;gap:4px;align-items:center;margin:0' }, h('input', { type: 'checkbox', name: 'day', value: String(i), checked: i >= 1 && i <= 5 }), d))))),
     h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { type: 'submit' }, 'Prepare (nothing is written)'), h('span', { class: 'muted' }, 'Only placeholder names (Gmail, Outlook, Unknown…). Records with history are excluded. You approve the exact list before anything runs.')));
 
+  // Junk contacts on one real company (by the domain rule or a list of contact ids).
+  const cv = (name) => cform.querySelector(`[name="${name}"]`);
+  const ids = (s) => s.split(/[\s,;]+/).filter(Boolean);
+  const cform = h('form', { onsubmit: async (e) => {
+    e.preventDefault();
+    const days = [...form.querySelectorAll('[name="day"]:checked')].map((x) => Number(x.value));
+    const body = {
+      companyId: cv('companyId').value.trim(), contactIds: ids(cv('contactIds').value).map(Number), keepDomains: ids(cv('keep').value), onlyDomains: ids(cv('only').value),
+      createdFrom: cv('from').value || null, createdTo: cv('to').value || null, includeNoEmail: cv('noEmail').checked, ticketsOk: cv('ticketsOk').checked,
+      ratePerHour: Number(v('rate').value), canary: Number(cv('canary').value),
+      businessHours: v('bizOn').checked ? { tz: v('tz').value.trim(), days, start: Number(v('start').value), end: Number(v('end').value), businessRate: Number(v('bizRate').value) } : false,
+    };
+    try { const r = await api('POST', '/api/bulk-jobs', body); toast(`Preparing job ${r.id.slice(0, 8)}… — it shows above.`); await draw(); } catch (x) { toast(x.message); }
+  } },
+    h('div', { class: 'row' },
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Company ID', h('input', { name: 'companyId', inputmode: 'numeric', required: true, style: 'max-width:140px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Also the company\'s own domains (optional)', h('input', { name: 'keep', placeholder: 'example.com, example.net', style: 'max-width:260px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Only these domains (optional)', h('input', { name: 'only', placeholder: 'gmail.com, hotmail.com', style: 'max-width:260px' }))),
+    h('div', { class: 'row' },
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Created from', h('input', { name: 'from', type: 'date' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Created to', h('input', { name: 'to', type: 'date' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Canary', h('input', { name: 'canary', type: 'number', value: '25', min: '1', max: '1000', style: 'max-width:100px' }))),
+    h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Or exactly these contact IDs (optional — replaces the domain rule)', h('textarea', { name: 'contactIds', rows: 2, placeholder: '30012345, 30012346 …' })),
+    h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, h('input', { name: 'noEmail', type: 'checkbox' }), 'Include contacts with no email address'),
+    h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, h('input', { name: 'ticketsOk', type: 'checkbox' }), 'Inactivate contacts that are on tickets too (spam senders; the tickets stay as they are)'),
+    h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { type: 'submit' }, 'Prepare (nothing is written)'), h('span', { class: 'muted' }, 'Rates and business hours from the form above. Contacts on the company\'s own domains are kept; the primary contact and contacts with projects, contracts, opportunities, quotes, CIs or to-dos are always excluded. Review "By email domain" before approving.')));
+
   const activity = h('div', { class: 'muted' }, 'Loading…');
   api('GET', '/api/bulk-jobs/activity').then((a) => {
     const wd = a.weekdayAvgPerHour || [];
@@ -709,6 +740,7 @@ async function bulk(body) {
     h('p', { class: 'muted' }, 'Mass changes (e.g. inactivating tens of thousands of "Gmail" placeholder companies and their contacts) are prepared from the mirror, approved here, and pushed to Autotask by the server at a set pace — slower in business hours, a canary first, pausing itself on trouble. The console\'s read-only switch stops them too.'),
     list,
     isAdmin ? h('section', { class: 'panel' }, h('h2', null, 'New placeholder cleanup'), form) : null,
+    isAdmin ? h('section', { class: 'panel' }, h('h2', null, 'Junk contacts on one company'), cform) : null,
     h('section', { class: 'panel' }, h('h2', null, 'When is Autotask busy?'), activity));
   await draw();
   refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') draw().catch(() => undefined); }, 10_000);

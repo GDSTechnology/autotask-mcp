@@ -300,7 +300,7 @@ ground truth. The same classification (`actorType`, `classificationSource`,
 
 ### Bulk jobs (mass changes, paced)
 
-Mass changes are prepared from the mirror, **approved by a person here**, and pushed to Autotask by the server at a set pace. Today that means inactivating placeholder companies ("Gmail", "Outlook", "Unknown…") and their contacts. A chat assistant can prepare a job and watch it (`autotask_bulk_inactivate`), but some assistants refuse to approve tens of thousands of writes, and a person should decide that anyway.
+Mass changes are prepared from the mirror, **approved by a person here**, and pushed to Autotask by the server at a set pace. Today that means inactivating placeholder companies ("Gmail", "Outlook", "Unknown…") and their contacts, or the junk contacts on one real company. A chat assistant can prepare a job and watch it (`autotask_bulk_inactivate`), but some assistants refuse to approve tens of thousands of writes, and a person should decide that anyway.
 
 - **New placeholder cleanup** (admins). Fields:
   - the placeholder name;
@@ -311,6 +311,7 @@ Mass changes are prepared from the mirror, **approved by a person here**, and pu
   - the canary size (default 50).
 
   **Prepare** writes nothing. It reads the records and checks each for history in the background; companies with history are excluded.
+- **Junk contacts on one company** (admins): a company ID, then either a list of contact IDs or the domain rule (every active contact not on the company's own domains). Optional: extra own domains, only some domains, a creation date range, contacts with no email, contacts on tickets. Rates and business hours come from the form above; the canary defaults to 25. The primary contact and contacts with projects, contracts, opportunities, quotes, CIs or to-dos are always excluded. The job card shows **Kept as the company's own** (each domain and why) and **By email domain** (inactivate / kept / excluded / already inactive) to review before approving. Details: [MERGE.md](MERGE.md).
 - **Each job shows:**
   - status and progress (done / left / failed / excluded);
   - the pace right now (business or off hours), how many writes happened in the last hour, and the time left;

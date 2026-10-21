@@ -9,7 +9,7 @@ import type { CallerContext } from '../types/context.js';
 import { hourlyActivity } from '../services/call-log.js';
 import { BulkStore } from './store.js';
 import { DEFAULT_SCHEDULE, activityProfile } from './schedule.js';
-import { teamActivityProfile } from './activity.js';
+import { mirrorClassifier, teamActivityProfile } from './activity.js';
 import { JOB_ACTIONS, jobAction, jobView, startPrepare, startPrepareCompanyContacts, type JobAction } from './service.js';
 
 type Result = { result: unknown; message: string };
@@ -25,7 +25,7 @@ export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null)
         const tz = String(a.tz ?? DEFAULT_SCHEDULE.tz);
         // When the team works (time entries + notes by people, from the mirror); this MCP's own traffic only without Postgres.
         const pool = getPool();
-        const p = (pool ? await teamActivityProfile(pool, tz).catch(() => activityProfile(hourlyActivity(), tz)) : activityProfile(hourlyActivity(), tz)) as { suggested: unknown; source: string };
+        const p = (pool ? await mirrorClassifier(pool).then((c) => teamActivityProfile(pool, tz, c)).catch(() => activityProfile(hourlyActivity(), tz)) : activityProfile(hourlyActivity(), tz)) as { suggested: unknown; source: string };
         return { result: p, message: `${p.source} by local hour (${tz}); suggested business window: ${JSON.stringify(p.suggested)} — confirm it, then pass businessHours on prepare.` };
       }
       const pool = getPool(); if (!pool) return { result: { status: 'unavailable' }, message: 'Needs the Postgres store (migration 0015).' };

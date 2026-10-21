@@ -5,7 +5,7 @@
 import { preparePlaceholderJob } from '../src/bulk/prepare';
 import { prepareCompanyContactsJob } from '../src/bulk/prepare-contacts';
 import { activityProfile, currentRate, inBusinessHours, suggestWindow, weeklyCapacity, DEFAULT_SCHEDULE } from '../src/bulk/schedule';
-import { profileFromCounts } from '../src/bulk/activity';
+import { profileFromRows } from '../src/bulk/activity';
 import { BulkWorker, BULK_THRESHOLDS, applyItem, writeGapMs } from '../src/bulk/worker';
 import { assessBackpressure } from '../src/services/backpressure';
 import { itemsHash, type BulkItem, type BulkJob } from '../src/bulk/store';
@@ -89,16 +89,27 @@ describe('business hours', () => {
     expect(suggestWindow(new Array(24).fill(5))).toBeNull();
     expect(suggestWindow([0, 0, 0, 0, 0, 0, 0, 1, 9, 10, 12, 11, 8, 10, 11, 9, 7, 2, 1, 0, 0, 0, 0, 0])).toEqual({ days: [1, 2, 3, 4, 5], start: 8, end: 17 });
   });
-  test('team activity: per-day averages from time entries + notes; the window from the exact counts', () => {
-    const rows = [];
-    for (let dow = 1; dow <= 5; dow++) for (let hour = 8; hour < 17; hour++) rows.push({ dow, hour, n: 40 });
-    rows.push({ dow: 6, hour: 22, n: 8 }, { dow: 2, hour: 2, n: 3 });
-    const p = profileFromCounts(rows, 'America/New_York', 28) as Record<string, any>;
-    expect(p.events).toBe(1811); expect(p.personHours).toBe(1811);
-    expect(p.weekdayAvgPerHour[9]).toBe(10); // 200 over 20 weekdays
-    expect(p.weekendAvgPerHour[22]).toBe(1); // 8 over 8 weekend days
-    expect(p.suggested).toEqual({ days: [1, 2, 3, 4, 5], start: 8, end: 17 });
-    expect((profileFromCounts([{ dow: 1, hour: 9, n: 50 }], 'UTC') as Record<string, any>).suggested).toBeNull(); // too few events to say
+  test('team activity: people, integrations and writes via this MCP apart; only people set the window', () => {
+    // 101 = a person, 202 = an API user, 303 = a person whose notes were also written through this MCP at night.
+    const classify = (id: number) => (id === 202 ? { name: 'RMM Z - API', kind: 'integration' as const } : { name: id === 101 ? 'Avery Lee' : 'Sam Roe', kind: 'person' as const });
+    const rows: Array<{ dow: number; hour: number; who: string; via: string | null; n: number; events: number }> = [];
+    for (let dow = 1; dow <= 5; dow++) for (let hour = 8; hour < 17; hour++) rows.push({ dow, hour, who: '101', via: null, n: 4, events: 40 });
+    for (let dow = 1; dow <= 5; dow++) for (let hour = 0; hour < 24; hour++) rows.push({ dow, hour, who: '202', via: null, n: 4, events: 20 });
+    rows.push({ dow: 1, hour: 23, who: '303', via: 'n8n', n: 4, events: 400 });
+    const p = profileFromRows(rows, 'America/New_York', classify, 28) as Record<string, any>;
+    const byKey = Object.fromEntries(p.series.map((s: any) => [s.key, s]));
+    expect(byKey['person:101']).toMatchObject({ label: 'Avery Lee', kind: 'person' });
+    expect(byKey['integration:202']).toMatchObject({ label: 'RMM Z - API', kind: 'integration' });
+    expect(byKey['mcp:303']).toMatchObject({ label: 'Sam Roe via this MCP (n8n)', kind: 'mcp' });
+    expect(byKey['person:101'].weekday[9]).toBe(10); // 200 records over 20 weekdays
+    expect(p.peopleActivePerHour[9]).toBe(1); // 20 person-days over 20 weekdays
+    expect(p.peopleActivePerHour[23]).toBe(0); // the MCP's night writes are not people working
+    expect(p.suggested).toEqual({ days: [1, 2, 3, 4, 5], start: 8, end: 17 }); // integrations run 24h: ignored
+    expect((profileFromRows([{ dow: 1, hour: 9, who: '101', via: null, n: 5, events: 5 }], 'UTC', classify) as Record<string, any>).suggested).toBeNull(); // too little to say
+    // More than 8 of a kind fold into "Other …".
+    const many = Array.from({ length: 12 }, (_, k) => ({ dow: 2, hour: 10, who: String(500 + k), via: null, n: 1, events: 12 - k }));
+    const q = profileFromRows(many, 'UTC', () => ({ name: null, kind: 'person' }), 28) as Record<string, any>;
+    expect(q.series.map((s: any) => s.label).slice(-1)).toEqual(['Other people (4)']);
   });
   test('background jobs (the nightly mirror check) do not make 3 AM look like business hours', () => {
     const hourly = [];

@@ -64,7 +64,12 @@ health() {
     out="$(curl -s --max-time 3 "http://127.0.0.1:${PORT}/health" || true)"
     if [ -n "$out" ]; then
       printf '%s\n' "$out" | sed -n 's/.*"version":"\([^"]*\)".*/version: \1/p'
-      printf '%s\n' "$out" | sed -n 's/.*"backpressure":{"level":"\([a-z]*\)".*"usedPct":\([0-9.]*\).*/backpressure: \1, Autotask API usage \2%/p'
+      local level pct
+      level="$(printf '%s\n' "$out" | sed -n 's/.*"backpressure":{"level":"\([a-z]*\)".*/\1/p')"
+      pct="$(printf '%s\n' "$out" | sed -n 's/.*"backpressure":{.*"usedPct":\([0-9][0-9.]*\).*/\1/p')"
+      # Right after a restart there is no usage reading yet (usedPct null): say so rather than print a blank.
+      [ -n "$pct" ] && pct="${pct}%" || pct="not read yet (just restarted — the first sync takes it)"
+      [ -n "$level" ] && echo "backpressure: ${level}, Autotask API usage ${pct}"
       return 0
     fi
     sleep 2

@@ -6,10 +6,11 @@
 // Env (defaults):
 //   MCP_PG_SHADOW_INTERVAL_SECONDS   300   how often a sync run starts
 //   MCP_PG_SHADOW_MAX_CALLS_PER_RUN  100   Autotask calls one run may spend
-//   MCP_PG_SHADOW_PAUSE_AT_PCT       50    skip a run when the tenant's hourly
-//                                           usage is at/above this % (Autotask
-//                                           adds latency nearing its 10,000/h
-//                                           per-database limit)
+//   MCP_PG_SHADOW_PAUSE_AT_PCT       85    skip a run when the tenant's hourly
+//                                           usage is at/above this %. Kept HIGH on
+//                                           purpose: a run costs ≤100 calls, while a
+//                                           stale mirror sends every read live —
+//                                           pausing at 50% turned busy hours into 429s.
 //   MCP_PG_SHADOW_RECONCILE_HOUR_UTC 7     hour of the nightly deletion sweep
 //   MCP_PG_SHADOW_SERVE_READS        false answer search_* from the shadow
 //   MCP_PG_SHADOW_MAX_AGE_SECONDS    900   ...only while it is at most this old
@@ -92,7 +93,7 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
   store.onDiff = (events) => ledger.insert(events);
   const sync = new ShadowSync(() => service.httpClient(), store, logger, {
     maxCallsPerRun: intEnv(env.MCP_PG_SHADOW_MAX_CALLS_PER_RUN, 100),
-    pauseAtPct: intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50),
+    pauseAtPct: intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 85),
     historyMonths: intEnv(env.MCP_PG_SHADOW_HISTORY_MONTHS, 6),
     refreshDays: intEnv(env.MCP_PG_SHADOW_REFRESH_DAYS, 30),
     usagePct: async () => { const u = await service.getApiUsage(); return 'usedPct' in u.autotask ? (u.autotask.usedPct ?? null) : null; },
@@ -127,7 +128,8 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
     };
     const report: VerifyReport = { at: now.toISOString(), trigger: o.trigger ?? 'manual', status: 'ok', calls: 0, sample: o.sample ?? verifySample, entities: [] };
     const pct = await service.getApiUsage().then((u) => ('usedPct' in u.autotask ? u.autotask.usedPct : null)).catch(() => null);
-    if (pct != null && pct >= sync.pauseAtPct) { report.status = 'skipped'; report.skipped = `Autotask API usage ${pct}% ≥ ${sync.pauseAtPct}% — check skipped`; }
+    // The mirror check is optional extra reads: it keeps the old, lower threshold.
+    if (pct != null && pct >= Math.min(sync.pauseAtPct, 50)) { report.status = 'skipped'; report.skipped = `Autotask API usage ${pct}% ≥ ${sync.pauseAtPct}% — check skipped`; }
     else {
       const wanted = o.entities?.length ? SHADOW_ENTITIES.filter((e) => o.entities!.some((n) => n.toLowerCase() === e.name.toLowerCase())) : SHADOW_ENTITIES;
       for (const e of wanted) {
@@ -201,7 +203,7 @@ export function initShadow(service: AutotaskService, logger: Logger, env: NodeJS
     query: async (t, entity, filter, limit) => (t === tenant ? (await shadowRead(entity, filter as ShadowFilter[], limit))?.rows ?? null : null),
     get: async (t, entity, id) => (t === tenant ? shadowGet(entity, id) : undefined),
   });
-  logger.info(`Postgres shadow enabled: sync every ${intervalMs / 1000}s, ≤${intEnv(env.MCP_PG_SHADOW_MAX_CALLS_PER_RUN, 100)} calls/run, pause at ${intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50)}% usage, serve reads: ${runtime.serveReads}`);
+  logger.info(`Postgres shadow enabled: sync every ${intervalMs / 1000}s, ≤${intEnv(env.MCP_PG_SHADOW_MAX_CALLS_PER_RUN, 100)} calls/run, pause at ${intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 85)}% usage, serve reads: ${runtime.serveReads}`);
   return runtime;
 }
 

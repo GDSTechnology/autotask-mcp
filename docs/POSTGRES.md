@@ -169,8 +169,12 @@ TicketCharges, ProjectCharges and ContractCharges.
 - **Own writes** — rows the MCP writes are re-read at the start of the next run.
 - **Deletions** — a nightly id-only sweep (`MCP_PG_SHADOW_RECONCILE_HOUR_UTC`).
 - **Budget** — at most `MCP_PG_SHADOW_MAX_CALLS_PER_RUN` (100) calls per run; a
-  run is **skipped** when tenant usage ≥ `MCP_PG_SHADOW_PAUSE_AT_PCT` (50 — below
-  Autotask's latency zone). Calls are strictly sequential (1 of the 3 threads).
+  run is **skipped** when tenant usage ≥ `MCP_PG_SHADOW_PAUSE_AT_PCT` (85), or while
+  Autotask holds calls (a 429 cooldown or a login pause). The threshold is high on
+  purpose: a run costs at most 100 calls, but a stale mirror sends every read to
+  Autotask live. At the old 50%, a busy hour paused the sync, reads went live, and
+  usage climbed to 429s. The nightly mirror check still skips from 50%. Calls are
+  strictly sequential (1 of the 3 threads).
 - **One instance** — a Postgres advisory lock means only one MCP syncs.
 - **History window** — `MCP_PG_SHADOW_HISTORY_MONTHS` (6): Tickets backfill only
   rows active or created in the window **plus every open ticket**; TimeEntries

@@ -81,6 +81,8 @@ COPY --chown=autotask:autotask migrations ./migrations
 # and its host-side setup wizard (extract with: docker run --rm --entrypoint cat <image> /app/deploy/admin-setup.sh).
 COPY --chown=autotask:autotask admin-ui ./admin-ui
 COPY --chown=autotask:autotask deploy/admin-setup.sh ./deploy/admin-setup.sh
+# Host-side updater (install: docker run --rm --entrypoint cat <image> /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp).
+COPY --chown=autotask:autotask deploy/update-autotask-mcp.sh ./deploy/update-autotask-mcp.sh
 COPY --from=deps --chown=autotask:autotask /app/node_modules ./node_modules
 
 # Remove the npm CLI from the production image — the runtime only needs `node`

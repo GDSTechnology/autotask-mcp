@@ -16,7 +16,8 @@ Autotask's limits, per the official docs:
 | **429** (threshold) | A cooldown starts for the `Retry-After` time (default 60 s, capped at 5 min). Every call for that tenant fails **locally**, with no upstream request, until it passes. The error says "Do NOT retry". | No |
 | **Concurrency** | Each endpoint has a gate, `AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT` (default 2, max 3). Extra calls **queue**; they do not fail. Cached and coalesced reads take no slot. | n/a |
 | **Truncated / empty 2xx body** | Fails closed with a retryable `AutotaskResponseError`. It is never treated as "no records". | Caller decides |
-| **Shadow sync** | Skips a run when tenant usage is at or above `MCP_PG_SHADOW_PAUSE_AT_PCT` (default 50%). Each run is capped at `MCP_PG_SHADOW_MAX_CALLS_PER_RUN`. | Next run |
+| **Shadow sync** | Skips a run when tenant usage is at or above `MCP_PG_SHADOW_PAUSE_AT_PCT` (default 85%; kept high because a stale mirror sends reads live), and during a 429 cooldown or login pause. Each run is capped at `MCP_PG_SHADOW_MAX_CALLS_PER_RUN`. | Next run |
+| **Bulk jobs** | The worker halves its pace from 40% tenant usage and stops at 65% (`MCP_BULK_SLOW_AT_PCT`, `MCP_BULK_STOP_AT_PCT`), well before the dispatcher thresholds (50% / 90%). It also stops during a 429 cooldown or login pause, and for the read-only switch. | Resumes by itself |
 | **Bulk tools** | The activity feed, history backfill and audit tools take `maxApiCalls` and report anything they cut off as pending. The backfill also pauses at `pauseAtUsagePct`. | Caller continues |
 
 There is **no per-client call budget**. Budgets are per call (`maxApiCalls`)

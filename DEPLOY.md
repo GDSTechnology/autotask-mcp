@@ -138,10 +138,27 @@ comes to that):
 curl -s http://127.0.0.1:18080/health > ~/autotask-mcp-prev-health.json
 ```
 
-Then run the deploy. It is **one re-run-safe command**: it pulls, and *only if the
-pull brought a new image* it tags the previous one `:rollback`, recreates the
-service, and prunes the old untagged image. Re-running it with nothing new
-released changes nothing.
+Then run the deploy: **`update-autotask-mcp`**. It is re-run-safe: it pulls, and *only if the
+pull brought a new image* it tags the previous one `:rollback`, runs the migrations,
+recreates the service, prunes the old untagged image, waits for `/health` and prints
+the version. With nothing new released it changes nothing. It also refuses while a
+bulk job is **preparing** (a restart fails the preparation; `--force` overrides).
+`update-autotask-mcp --recreate` restarts on the same image after an env-file change;
+`update-autotask-mcp --help` lists the options.
+
+Install it once (from the image, no download from the internet). After that it
+refreshes itself from each new image:
+
+```bash
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp && chmod +x /usr/local/bin/update-autotask-mcp
+```
+
+```bash
+update-autotask-mcp
+```
+
+The same steps as one command, for a host without the script (or an image older
+than the script):
 
 ```bash
 cd /opt/n8n && OLD=$(docker inspect n8n-autotask-mcp-1 --format '{{.Image}}') && docker compose pull autotask-mcp && NEW=$(docker image inspect ghcr.io/gdstechnology/autotask-mcp:latest --format '{{.Id}}') && if [ "$OLD" != "$NEW" ]; then docker tag "$OLD" ghcr.io/gdstechnology/autotask-mcp:rollback && docker compose run --rm --no-deps -T autotask-mcp node dist/db/migrate.js && docker compose up -d autotask-mcp && docker image prune -f; else echo "Already on the latest image - nothing changed"; fi; sleep 3; curl -s http://127.0.0.1:18080/health

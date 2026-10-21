@@ -59,8 +59,8 @@ export const SETTINGS: SettingDef[] = [
   },
   {
     key: 'shadow.pauseAtPct', group: 'Postgres shadow', type: 'integer', min: 1, max: 100, requires: 'shadow', label: 'Pause sync at API usage %',
-    description: "Skip a sync run while the tenant's hourly Autotask API usage is at or above this percentage.",
-    envDefault: (env) => intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 50),
+    description: "Skip a sync run while the tenant's hourly Autotask API usage is at or above this percentage. Keep it high (85): a run costs at most 100 calls, while a stale mirror sends every read to Autotask live.",
+    envDefault: (env) => intEnv(env.MCP_PG_SHADOW_PAUSE_AT_PCT, 85),
   },
   {
     key: 'callers.labels', group: 'Diagnostics', type: 'lines', label: 'Caller names',

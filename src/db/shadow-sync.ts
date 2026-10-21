@@ -113,7 +113,11 @@ export class ShadowSync {
   async runOnce(now: Date = new Date()): Promise<RunReport> {
     this.calls = 0;
     if (this.opts.usagePct) {
-      const pct = await this.opts.usagePct().catch(() => null);
+      // A 429 cooldown (or a login pause) answers the usage check locally: nothing would get through, so skip the run
+      // instead of failing every entity in turn.
+      let held: string | null = null;
+      const pct = await this.opts.usagePct().catch((e: unknown) => { const m = e instanceof Error ? e.message : String(e); if (/429|cooldown|threshold exceeded|login (is )?(paused|held)/i.test(m)) held = m.slice(0, 120); return null; });
+      if (held) return { skipped: `Autotask is holding calls (${held}) — sync skipped this run`, calls: 0, entities: [] };
       if (pct != null && pct >= this.opts.pauseAtPct) return { skipped: `Autotask API usage ${pct}% ≥ ${this.opts.pauseAtPct}% — sync paused this run`, calls: 0, entities: [] };
     }
     const entities: EntityReport[] = [];

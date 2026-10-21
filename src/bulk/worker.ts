@@ -5,7 +5,7 @@
 
 import type { Pool } from 'pg';
 import type { AutotaskService } from '../services/autotask.service.js';
-import { backpressure } from '../services/backpressure.js';
+import { backpressure, DEFAULT_THRESHOLDS } from '../services/backpressure.js';
 import { notify } from '../services/notifier.js';
 import type { Logger } from '../utils/logger.js';
 import { BulkStore, type BulkItem, type BulkJob } from './store.js';
@@ -13,7 +13,10 @@ import { currentRate, type BusinessSchedule } from './schedule.js';
 import { settingValue } from '../admin/settings.js';
 
 export const MAX_ATTEMPTS = 3;
+/** Bulk jobs yield early: half pace from 40% tenant usage, stop at 65% (Autotask adds +1 s per call from 75%, and 10,000/h is the hard limit). */
+export const BULK_THRESHOLDS = { ...DEFAULT_THRESHOLDS, slowPct: 40, stopPct: 65 };
 export const PAUSE_AFTER_FAILURES = 20;
+const intEnv = (v: string | undefined, d: number): number => { const n = Number(v); return v != null && v !== '' && Number.isFinite(n) && n > 0 ? n : d; };
 
 export interface ApplyFns {
   inactivateContact: (id: number, companyId: number) => Promise<void>;
@@ -126,7 +129,7 @@ export function startBulkWorker(s: AutotaskService, getPool: () => Pool | null, 
       inactivateCompany: (id) => s.updateCompany(id, { isActive: false } as never),
     },
     // The console's read-only switch stops the worker too (it writes in the background, not through a tool call).
-    level: () => (settingValue<boolean>('tools.writesEnabled') === false ? 'stop' : backpressure(tenant).level),
+    level: () => (settingValue<boolean>('tools.writesEnabled') === false ? 'stop' : backpressure(tenant, { ...BULK_THRESHOLDS, slowPct: intEnv(process.env.MCP_BULK_SLOW_AT_PCT, BULK_THRESHOLDS.slowPct), stopPct: intEnv(process.env.MCP_BULK_STOP_AT_PCT, BULK_THRESHOLDS.stopPct) }).level),
     now: () => Date.now(), notify, logger,
   });
   // A preparation interrupted by a restart can't finish: say so (running jobs simply continue).

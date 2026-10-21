@@ -138,23 +138,23 @@ comes to that):
 curl -s http://127.0.0.1:18080/health > ~/autotask-mcp-prev-health.json
 ```
 
-Then run the deploy: **`update-mcp`**. It is re-run-safe: it pulls, and *only if the
+Then run the deploy: **`update-autotask-mcp`**. It is re-run-safe: it pulls, and *only if the
 pull brought a new image* it tags the previous one `:rollback`, runs the migrations,
 recreates the service, prunes the old untagged image, waits for `/health` and prints
 the version. With nothing new released it changes nothing. It also refuses while a
 bulk job is **preparing** (a restart fails the preparation; `--force` overrides).
-`update-mcp --recreate` restarts on the same image after an env-file change;
-`update-mcp --help` lists the options.
+`update-autotask-mcp --recreate` restarts on the same image after an env-file change;
+`update-autotask-mcp --help` lists the options.
 
 Install it once (from the image, no download from the internet). After that it
 refreshes itself from each new image:
 
 ```bash
-docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-mcp.sh > /usr/local/bin/update-mcp && chmod +x /usr/local/bin/update-mcp
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp && chmod +x /usr/local/bin/update-autotask-mcp
 ```
 
 ```bash
-update-mcp
+update-autotask-mcp
 ```
 
 The same steps as one command, for a host without the script (or an image older

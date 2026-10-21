@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Autotask MCP — update the running server to the latest published image.
+# update-autotask-mcp — update the AUTOTASK MCP (only) to its latest published image.
+#
+# Named for this one server: a host often runs several MCPs, and this touches nothing but
+# the Autotask MCP service. It refuses a container that isn't running the Autotask MCP image.
 #
 # Run on the Docker host, as the user that runs the compose project. It:
 #   1. refuses while a bulk job is PREPARING (a restart would fail the preparation;
@@ -11,9 +14,9 @@
 #   6. refreshes this script from the new image.
 #
 # Install once (the copy in the image — no download from the internet):
-#   docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-mcp.sh > /usr/local/bin/update-mcp
-#   chmod +x /usr/local/bin/update-mcp
-# Then:   update-mcp
+#   docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp
+#   chmod +x /usr/local/bin/update-autotask-mcp
+# Then:   update-autotask-mcp
 #
 # Options:
 #   --recreate     restart even without a new image (after an env-file change)
@@ -39,7 +42,7 @@ while [ $# -gt 0 ]; do
     --container) CONTAINER="$2"; shift ;;
     --port) PORT="$2"; shift ;;
     --image) IMAGE="$2"; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -47,6 +50,13 @@ done
 
 cd "$DIR"
 [ -n "$CONTAINER" ] || CONTAINER="$(basename "$DIR")-${SERVICE}-1"
+# Only ever the Autotask MCP: the container must exist and run an image from ${IMAGE}.
+RUNNING_IMAGE="$(docker inspect "$CONTAINER" --format '{{.Config.Image}}' 2>/dev/null || true)"
+if [ -z "$RUNNING_IMAGE" ]; then echo "No container ${CONTAINER} — pass --dir / --service / --container for the Autotask MCP." >&2; exit 1; fi
+case "$RUNNING_IMAGE" in
+  "${IMAGE}"|"${IMAGE}:"*) ;;
+  *) echo "${CONTAINER} runs ${RUNNING_IMAGE}, not the Autotask MCP (${IMAGE}) — refusing." >&2; exit 1 ;;
+esac
 say() { printf '\n== %s\n' "$*"; }
 health() {
   local i out
@@ -85,7 +95,7 @@ if [ "$ROLLBACK" = 1 ]; then
   exit 0
 fi
 
-say "Running now: $(running_version || echo unknown)"
+say "Autotask MCP (${CONTAINER}) running now: $(running_version || echo unknown)"
 if [ "$FORCE" = 0 ]; then
   n="$(preparing)"
   if [ "${n:-0}" != "0" ]; then
@@ -100,7 +110,7 @@ docker compose pull "$SERVICE"
 NEW="$(docker image inspect "${IMAGE}:latest" --format '{{.Id}}')"
 
 if [ "$OLD" = "$NEW" ] && [ "$RECREATE" = 0 ]; then
-  say "Already on the latest image — nothing changed"
+  say "Autotask MCP is already on the latest image — nothing changed"
   health
   exit 0
 fi
@@ -123,6 +133,6 @@ health
 
 # Keep this script current: take the copy from the image that now runs.
 SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-if [ -w "$SELF" ] && docker run --rm --entrypoint cat "${IMAGE}:latest" /app/deploy/update-mcp.sh > "${SELF}.new" 2>/dev/null && [ -s "${SELF}.new" ]; then
-  if ! cmp -s "${SELF}.new" "$SELF"; then chmod +x "${SELF}.new" && mv "${SELF}.new" "$SELF" && echo "(update-mcp itself was updated from the new image)"; else rm -f "${SELF}.new"; fi
+if [ -w "$SELF" ] && docker run --rm --entrypoint cat "${IMAGE}:latest" /app/deploy/update-autotask-mcp.sh > "${SELF}.new" 2>/dev/null && [ -s "${SELF}.new" ]; then
+  if ! cmp -s "${SELF}.new" "$SELF"; then chmod +x "${SELF}.new" && mv "${SELF}.new" "$SELF" && echo "(update-autotask-mcp itself was updated from the new image)"; else rm -f "${SELF}.new"; fi
 else rm -f "${SELF}.new" 2>/dev/null || true; fi

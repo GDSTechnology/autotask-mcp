@@ -43,6 +43,7 @@ import { GapStore, GAP_PRIORITIES, GAP_STATUSES, type GapPriority, type GapStatu
 import { BulkStore, type ItemStatus } from '../bulk/store.js';
 import { JOB_ACTIONS, jobAction, jobView, startPrepare, startPrepareCompanyContacts, type JobAction } from '../bulk/service.js';
 import { activityProfile, DEFAULT_SCHEDULE } from '../bulk/schedule.js';
+import { teamActivityHour, teamActivityProfile } from '../bulk/activity.js';
 import { hourlyActivity } from '../services/call-log.js';
 import { CHANNEL_KINDS, ChannelInputError, NOTIFY_SETTING_KEY, channelFromInput, channelLogDetails, channelView, parseStoredChannels } from './notifications.js';
 
@@ -663,6 +664,13 @@ export function adminHandler(deps: AdminDeps) {
     if (path === '/api/bulk-jobs/activity' && method === 'GET') {
       requireUser(ctx);
       const tz = new URL(req.url ?? '/', 'http://x').searchParams.get('tz') || DEFAULT_SCHEDULE.tz;
+      // When the TEAM works (mirror: time entries + notes by people); this MCP's traffic only without Postgres.
+      const hourParam = new URL(req.url ?? '/', 'http://x').searchParams.get('hour');
+      if (hourParam != null && hourParam !== '') {
+        if (!deps.pool) throw new HttpError(503, 'Needs the Postgres mirror.');
+        return send(res, 200, await teamActivityHour(deps.pool, tz, Number(hourParam)));
+      }
+      if (deps.pool) { try { return send(res, 200, await teamActivityProfile(deps.pool, tz)); } catch { /* mirror tables missing — fall back */ } }
       return send(res, 200, activityProfile(hourlyActivity(), tz));
     }
     if (path === '/api/bulk-jobs' && method === 'POST') {

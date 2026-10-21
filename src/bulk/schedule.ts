@@ -43,6 +43,24 @@ export function weeklyCapacity(offHoursRate: number, s: BusinessSchedule | null 
 }
 
 /**
+ * The business window from an hourly profile: the longest run of consecutive hours at or above
+ * 35% of the peak. No suggestion when nothing stands out (20+ hours qualify — a flat profile; the
+ * old "every hour above half the peak, first to last" rule answered 00:00–24:00 then).
+ */
+export function suggestWindow(perHour: Array<number | null>): { days: number[]; start: number; end: number } | null {
+  const v = perHour.map((x) => x ?? 0);
+  const peak = Math.max(0, ...v);
+  if (peak <= 0) return null;
+  let best = { start: 0, len: 0 }, cur = { start: 0, len: 0 };
+  for (let i = 0; i < 24; i++) {
+    if (v[i]! >= peak * 0.35) { cur = cur.len ? { start: cur.start, len: cur.len + 1 } : { start: i, len: 1 }; if (cur.len > best.len) best = cur; }
+    else cur = { start: 0, len: 0 };
+  }
+  if (best.len === 0 || best.len >= 20) return null;
+  return { days: [1, 2, 3, 4, 5], start: best.start, end: best.start + best.len };
+}
+
+/**
  * Busy hours from traffic: average Autotask calls per local hour of the day, weekdays and
  * weekends apart, and the weekday hours at or above half the weekday peak — a suggested
  * business window (a person confirms it).
@@ -54,18 +72,17 @@ export function activityProfile(hourly: Array<{ hour: number; upstream: number; 
     const { day, hour } = localDayHour(new Date(h.hour * 3_600_000), tz);
     const k = day === 0 || day === 6 ? 'weekend' : 'weekday';
     // What people and their tools cause (n8n, agents, the console) — background mirror jobs run at night and say nothing about business hours.
-    sum[k][hour] += (h.byTools ?? h.upstream) + h.writes; n[k][hour]++;
+    // Writes are left out: the bulk worker's own writes would measure the job itself (faster off hours).
+    sum[k][hour] += h.byTools ?? h.upstream; n[k][hour]++;
   }
   const avg = (k: 'weekday' | 'weekend') => sum[k].map((v, i) => (n[k][i] ? Math.round(v / n[k][i]) : null));
   const wd = avg('weekday');
-  const peak = Math.max(0, ...wd.map((v) => v ?? 0));
   // Too little traffic to say (e.g. right after a restart, or a quiet tenant): no suggestion.
   const enough = hourly.length >= 72;
-  const busy = enough ? wd.map((v, i) => (v != null && peak > 0 && v >= peak / 2 ? i : -1)).filter((i) => i >= 0) : [];
   return {
     tz, hoursOfData: hourly.length,
     weekdayAvgPerHour: wd, weekendAvgPerHour: avg('weekend'),
-    suggested: busy.length ? { days: [1, 2, 3, 4, 5], start: Math.min(...busy), end: Math.max(...busy) + 1 } : null,
+    source: 'MCP traffic', suggested: enough ? suggestWindow(wd) : null,
     note: 'Autotask calls per hour caused by tool calls through this MCP (n8n, agents, people) — the mirror’s background sync / check jobs are left out. Other integrations add to the tenant’s usage. Hours with no data are null. The suggested window is the BUSY hours: the slower business rate applies there.',
   };
 }

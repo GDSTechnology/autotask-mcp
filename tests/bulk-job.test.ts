@@ -149,6 +149,20 @@ describe('worker', () => {
     expect(h.writes).toEqual([]);
   });
 
+  test('a 429 is a wait, not a failure: no attempt used, no failure streak, the record stays pending', async () => {
+    const t429 = () => Object.assign(new Error('Autotask API threshold exceeded (HTTP 429) — this tenant is in a 30s cooldown'), { status: 429 });
+    expect(await applyItem(item(1, { attempts: 2 }), { inactivateCompany: async () => { throw t429(); }, inactivateContact: async () => undefined })).toMatchObject({ status: 'wait' });
+    let throttled = true;
+    const h = harness([item(1), item(2)], mkJob({ canarySize: 99 }), () => (throttled ? t429() : null));
+    for (let i = 0; i < 30; i++) { h.advance(61_000); await h.w.tick(); }
+    expect(h.state.job.status).toBe('running'); // 30 throttled writes never trip the 20-in-a-row pause
+    expect(h.state.items.map((x) => [x.status, x.attempts])).toEqual([['pending', 0], ['pending', 0]]);
+    h.advance(1000); expect(await h.w.tick()).toBe('pacing'); // waits after a throttled write
+    throttled = false; h.advance(61_000);
+    expect(await h.w.tick()).toBe('done');
+    expect(h.writes).toEqual(['co:1001']);
+  });
+
   test('a contact is inactivated through its company (the child route)', async () => {
     const h = harness([item(1, { entity: 'Contacts', recordId: 31, parentId: 900 })], mkJob({ canarySize: 99 }));
     h.advance(10_000); await h.w.tick();

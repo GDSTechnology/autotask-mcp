@@ -115,7 +115,7 @@ For junk at scale (tens of thousands of "Gmail" companies, each with one "Unknow
    - **Business hours:** `businessRate` (default 1,000/hour), during `businessHours` (default Mon–Fri 07:00–19:00 America/New_York; `false` turns it off).
    - `action: "activity"` shows this MCP's Autotask traffic per local hour over the last 7 days and suggests the window.
    - Tenant usage from **40%** halves the pace; from **65%** it waits (`MCP_BULK_SLOW_AT_PCT` / `MCP_BULK_STOP_AT_PCT`). A 429 cooldown, a login pause and the console's read-only switch also stop it. It resumes by itself.
-6. **Pause conditions:** a login problem, 20 failures in a row, or `action: "pause"`. Failed items are listed (`action: "failed"`) and can be re-queued (`action: "retry_failed"`).
+6. **Pause conditions:** a login problem, 20 failures in a row, or `action: "pause"`. A 429 (Autotask throttling) is not a failure: the record stays pending with no attempt used, and the worker waits out the cooldown plus a minute. Failed items are listed (`action: "failed"`) and can be re-queued (`action: "retry_failed"`).
    - The job continues after a server restart.
    - A preparation interrupted by a restart is marked failed; prepare it again.
 

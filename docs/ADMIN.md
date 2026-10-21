@@ -321,7 +321,7 @@ Mass changes are prepared from the mirror, **approved by a person here**, and pu
   - **Approve:** a ready job, bound to its hash, so it covers exactly the records shown.
   - **Start:** runs the canary first, then pauses for you to check the records.
   - **Pause / Resume**, **Retry failed**, **Cancel:** records already written stay as they are.
-- **When is Autotask busy?** shows tool-call traffic through this MCP per local hour on weekdays. It suggests the business window once there are 3 days of data.
+- **When does the team work?** shows how many people are active (writing time entries or ticket notes, not automation) per local hour on an average weekday, over the last 28 days, from the mirror (no Autotask calls). One person catching up 20 entries in an hour counts once. It suggests the business window: the longest run of hours at 35% of the peak or more, and nothing when no pattern stands out. **Click an hour** to drill down: entries vs notes, day of week, who, and the latest records. (This MCP's own traffic was a poor proxy: technicians work in the Autotask UI, and the bulk worker's own writes made evenings look busy.)
 - **Stopping it:** the worker stops for the read-only switch (Settings → writes off). It halves its pace from 40% tenant API usage and waits from 65%, so the rest of the tenant keeps room. It also stops during a 429 cooldown, on a login problem, or after 20 failures in a row. It continues after a restart.
 - Notifications: `bulk.paused` and `bulk.done` (subscribe a channel under Notifications).
 

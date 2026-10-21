@@ -16,6 +16,8 @@ export const MAX_ATTEMPTS = 3;
 /** Bulk jobs yield early: half pace from 40% tenant usage, stop at 65% (Autotask adds +1 s per call from 75%, and 10,000/h is the hard limit). */
 export const BULK_THRESHOLDS = { ...DEFAULT_THRESHOLDS, slowPct: 40, stopPct: 65 };
 export const PAUSE_AFTER_FAILURES = 20;
+/** After a throttled write, at least this long before the next one (on top of the cooldown). */
+export const WAIT_AFTER_THROTTLE_MS = 60_000;
 const intEnv = (v: string | undefined, d: number): number => { const n = Number(v); return v != null && v !== '' && Number.isFinite(n) && n > 0 ? n : d; };
 
 export interface ApplyFns {
@@ -23,7 +25,8 @@ export interface ApplyFns {
   inactivateCompany: (id: number) => Promise<void>;
 }
 
-export type ItemOutcome = { status: 'done' | 'skipped' | 'failed' | 'retry' | 'pause'; error?: string; reason?: string };
+/** 'wait': Autotask is throttling the tenant (429 / cooldown) — the record is fine; try it again later, no attempt used. */
+export type ItemOutcome = { status: 'done' | 'skipped' | 'failed' | 'retry' | 'wait' | 'pause'; error?: string; reason?: string };
 
 const statusOf = (e: unknown): number | null => { const s = (e as { status?: number })?.status; if (typeof s === 'number') return s; const m = /HTTP (\d{3})/.exec(String((e as Error)?.message ?? '')); return m ? Number(m[1]) : null; };
 
@@ -41,7 +44,10 @@ export async function applyItem(item: BulkItem, fns: ApplyFns): Promise<ItemOutc
     if (st === 401 || /auth.*(paused|held)|login/i.test(msg)) return { status: 'pause', error: msg, reason: 'Autotask login problem — check Settings → Autotask login, then resume' };
     if (st === 404) return { status: 'skipped', reason: 'not found in Autotask (deleted or merged already)' };
     if (/protected|refusing/i.test(msg)) return { status: 'failed', error: msg };
-    if (st === 429 || (st != null && st >= 500) || st === 0 || /timeout|ECONN|fetch failed|cooldown/i.test(msg)) return item.attempts + 1 >= MAX_ATTEMPTS ? { status: 'failed', error: msg } : { status: 'retry', error: msg };
+    // Throttling says nothing about the record: wait, never a failure (it used to burn attempts and trip the
+    // 20-in-a-row pause during a 429 storm).
+    if (st === 429 || /\b429\b|cooldown|threshold exceeded/i.test(msg)) return { status: 'wait', error: msg };
+    if ((st != null && st >= 500) || st === 0 || /timeout|ECONN|fetch failed/i.test(msg)) return item.attempts + 1 >= MAX_ATTEMPTS ? { status: 'failed', error: msg } : { status: 'retry', error: msg };
     return item.attempts + 1 >= MAX_ATTEMPTS ? { status: 'failed', error: msg } : { status: 'retry', error: msg };
   }
 }
@@ -102,6 +108,12 @@ export class BulkWorker {
       await s.setStatus(job.id, 'paused', { pauseReason: out.reason ?? 'paused', lastError: out.error ?? null });
       this.d.notify({ type: 'bulk.paused', severity: 'warning', title: `Bulk job paused: ${out.reason}`, detail: `${job.title} — item ${item.seq} (${item.entity} ${item.recordId}): ${out.error}`, fields: { job: job.id }, dedupeKey: `bulk.paused:${job.id}:${item.seq}` });
       return 'paused';
+    }
+    if (out.status === 'wait') {
+      // The item stays pending untouched; the 429 armed the cooldown, so backpressure holds the next write.
+      this.lastWrite.set(job.id, this.d.now() + WAIT_AFTER_THROTTLE_MS);
+      await s.setStatus(job.id, 'running', { lastError: out.error ?? null });
+      return 'wait';
     }
     if (out.status === 'retry') { await s.retryLater(job.id, item.seq, out.error ?? ''); }
     else await s.markItem(job.id, item.seq, out.status, { error: out.error ?? null, reason: out.reason ?? null });

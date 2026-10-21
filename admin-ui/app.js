@@ -726,13 +726,29 @@ async function bulk(body) {
     h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { type: 'submit' }, 'Prepare (nothing is written)'), h('span', { class: 'muted' }, 'Rates and business hours from the form above. Contacts on the company\'s own domains are kept; the primary contact and contacts with projects, contracts, opportunities, quotes, CIs or to-dos are always excluded. Review "By email domain" before approving.')));
 
   const activity = h('div', { class: 'muted' }, 'Loading…');
+  const drillBox = h('div');
+  const drill = (hour) => {
+    drillBox.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
+    api('GET', `/api/bulk-jobs/activity?hour=${hour}`).then((d) => {
+      const hh = (n) => String(n).padStart(2, '0');
+      const tbl = (head, rows) => h('table', null, h('thead', null, h('tr', null, head.map((x, i) => h('th', i === head.length - 1 ? { class: 'num' } : null, x)))), h('tbody', null, rows.map((r) => h('tr', null, r.map((c, i) => h('td', i === r.length - 1 ? { class: 'num' } : null, c))))));
+      drillBox.replaceChildren(
+        h('div', { class: 'row', style: 'justify-content:space-between;margin-top:10px' }, h('strong', null, `${hh(d.hour)}:00–${hh(d.hour)}:59 (${d.tz}), last ${d.days} days`), h('button', { class: 'small secondary', onclick: () => drillBox.replaceChildren() }, 'Close')),
+        h('div', { class: 'row', style: 'align-items:flex-start;gap:24px' },
+          h('div', null, h('h3', null, 'What'), tbl(['Kind', 'Count'], d.byKind.map((x) => [x.kind, fmt(x.n)]))),
+          h('div', null, h('h3', null, 'Day of week'), tbl(['Day', 'Count'], d.byDay.map((x) => [DAY_NAMES[x.dow], fmt(x.n)]))),
+          h('div', null, h('h3', null, 'Who'), tbl(['Resource', 'Count'], d.byPerson.map((x) => [x.name || `#${x.who}`, fmt(x.n)])))),
+        h('h3', null, 'Latest in this hour'),
+        d.latest.length ? tbl(['When', 'Kind', 'Who', 'Ticket', 'Record'], d.latest.map((x) => [x.at, x.kind, x.name || `#${x.who}`, x.ticket ? `#${x.ticket}` : '', x.id])) : h('p', { class: 'muted' }, 'Nothing in this hour.'));
+    }).catch((x) => drillBox.replaceChildren(h('div', { class: 'error' }, x.message)));
+  };
   api('GET', '/api/bulk-jobs/activity').then((a) => {
     const wd = a.weekdayAvgPerHour || [];
     const max = Math.max(1, ...wd.map((x) => x || 0));
     activity.replaceChildren(
-      h('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:70px' }, wd.map((x, i) => h('div', { title: `${String(i).padStart(2, '0')}:00 — ${x == null ? 'no data' : `${fmt(x)} calls/hour`}`, style: `flex:1;background:${a.suggested && i >= a.suggested.start && i < a.suggested.end ? 'var(--accent, #4f8cff)' : 'var(--muted, #888)'};opacity:${x == null ? 0.15 : 0.85};height:${Math.max(2, Math.round(((x || 0) / max) * 70))}px` }))),
+      h('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:70px' }, wd.map((x, i) => h('div', { onclick: a.source === 'team activity' ? () => drill(i) : null, title: `${String(i).padStart(2, '0')}:00 — ${x == null ? 'no data' : a.source === 'team activity' ? `${x} people active on an average weekday` : `${fmt(x)} calls/hour`}`, style: `flex:1;background:${a.suggested && i >= a.suggested.start && i < a.suggested.end ? 'var(--accent, #4f8cff)' : 'var(--muted, #888)'};cursor:${a.source === 'team activity' ? 'pointer' : 'default'};opacity:${x == null ? 0.15 : 0.85};height:${Math.max(2, Math.round(((x || 0) / max) * 70))}px` }))),
       h('div', { class: 'row', style: 'justify-content:space-between;font-size:12px' }, h('span', null, '00:00'), h('span', null, '12:00'), h('span', null, '23:00')),
-      h('p', { style: 'font-size:13px' }, a.suggested ? `Busiest weekday hours (${a.tz}): ${String(a.suggested.start).padStart(2, '0')}:00–${String(a.suggested.end).padStart(2, '0')}:00 — use them as the business hours (the slower rate).` : 'Not enough traffic yet to suggest business hours.', ' ', h('span', { class: 'muted' }, `Tool-call traffic through this MCP, weekdays, ${a.hoursOfData} hour(s) of data.`)));
+      h('p', { style: 'font-size:13px' }, a.suggested ? `The team works ${String(a.suggested.start).padStart(2, '0')}:00–${String(a.suggested.end).padStart(2, '0')}:00 on weekdays (${a.tz}) — use that as the business hours (the slower rate).` : a.source === 'team activity' ? 'No clear working hours in the data yet.' : 'Not enough data yet to suggest business hours.', ' ', h('span', { class: 'muted' }, a.source === 'team activity' ? `People active per hour on an average weekday (writing time entries or ticket notes — not automation), last ${a.days} days, ${fmt(a.events)} records — from the mirror.` : `Tool-call traffic through this MCP, weekdays, ${a.hoursOfData} hour(s) of data (no Postgres mirror for team activity).`)));
   }).catch((x) => activity.replaceChildren(h('div', { class: 'error' }, x.message)));
 
   body.replaceChildren(
@@ -741,7 +757,7 @@ async function bulk(body) {
     list,
     isAdmin ? h('section', { class: 'panel' }, h('h2', null, 'New placeholder cleanup'), form) : null,
     isAdmin ? h('section', { class: 'panel' }, h('h2', null, 'Junk contacts on one company'), cform) : null,
-    h('section', { class: 'panel' }, h('h2', null, 'When is Autotask busy?'), activity));
+    h('section', { class: 'panel' }, h('h2', null, 'When does the team work?'), activity, h('p', { class: 'muted', style: 'font-size:12px' }, 'Click an hour to see what is in it.'), drillBox));
   await draw();
   refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') draw().catch(() => undefined); }, 10_000);
 }

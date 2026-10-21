@@ -4,7 +4,8 @@
 
 import { preparePlaceholderJob } from '../src/bulk/prepare';
 import { prepareCompanyContactsJob } from '../src/bulk/prepare-contacts';
-import { activityProfile, currentRate, inBusinessHours, weeklyCapacity, DEFAULT_SCHEDULE } from '../src/bulk/schedule';
+import { activityProfile, currentRate, inBusinessHours, suggestWindow, weeklyCapacity, DEFAULT_SCHEDULE } from '../src/bulk/schedule';
+import { profileFromCounts } from '../src/bulk/activity';
 import { BulkWorker, BULK_THRESHOLDS, applyItem, writeGapMs } from '../src/bulk/worker';
 import { assessBackpressure } from '../src/services/backpressure';
 import { itemsHash, type BulkItem, type BulkJob } from '../src/bulk/store';
@@ -81,6 +82,24 @@ describe('business hours', () => {
     const p = activityProfile(hourly, 'America/New_York') as { suggested: { start: number; end: number } };
     expect(p.suggested).toMatchObject({ start: 8, end: 18 });
   });
+  test('bulk worker writes never shape the profile; a flat profile suggests nothing (it used to say 00:00–24:00)', () => {
+    const hourly = [];
+    for (let d = 0; d < 5; d++) for (let h = 0; h < 24; h++) { const t = Date.UTC(2026, 9, 19 + d, h) / 3_600_000; hourly.push({ hour: t, upstream: 100, writes: h >= 23 || h <= 3 ? 3000 : 1000, byTools: 100 }); }
+    expect((activityProfile(hourly, 'America/New_York') as { suggested: unknown }).suggested).toBeNull();
+    expect(suggestWindow(new Array(24).fill(5))).toBeNull();
+    expect(suggestWindow([0, 0, 0, 0, 0, 0, 0, 1, 9, 10, 12, 11, 8, 10, 11, 9, 7, 2, 1, 0, 0, 0, 0, 0])).toEqual({ days: [1, 2, 3, 4, 5], start: 8, end: 17 });
+  });
+  test('team activity: per-day averages from time entries + notes; the window from the exact counts', () => {
+    const rows = [];
+    for (let dow = 1; dow <= 5; dow++) for (let hour = 8; hour < 17; hour++) rows.push({ dow, hour, n: 40 });
+    rows.push({ dow: 6, hour: 22, n: 8 }, { dow: 2, hour: 2, n: 3 });
+    const p = profileFromCounts(rows, 'America/New_York', 28) as Record<string, any>;
+    expect(p.events).toBe(1811); expect(p.personHours).toBe(1811);
+    expect(p.weekdayAvgPerHour[9]).toBe(10); // 200 over 20 weekdays
+    expect(p.weekendAvgPerHour[22]).toBe(1); // 8 over 8 weekend days
+    expect(p.suggested).toEqual({ days: [1, 2, 3, 4, 5], start: 8, end: 17 });
+    expect((profileFromCounts([{ dow: 1, hour: 9, n: 50 }], 'UTC') as Record<string, any>).suggested).toBeNull(); // too few events to say
+  });
   test('background jobs (the nightly mirror check) do not make 3 AM look like business hours', () => {
     const hourly = [];
     for (let d = 0; d < 5; d++) for (let h = 0; h < 24; h++) { const t = Date.UTC(2026, 9, 19 + d, h) / 3_600_000; hourly.push({ hour: t, upstream: h === 8 ? 9000 : h >= 12 && h <= 21 ? 1500 : 100, writes: 0, byTools: h >= 12 && h <= 21 ? 1400 : 50 }); }
@@ -147,6 +166,20 @@ describe('worker', () => {
     expect(h.state.job.status).toBe('paused');
     expect(h.state.items[0]!.status).toBe('pending');
     expect(h.writes).toEqual([]);
+  });
+
+  test('a 429 is a wait, not a failure: no attempt used, no failure streak, the record stays pending', async () => {
+    const t429 = () => Object.assign(new Error('Autotask API threshold exceeded (HTTP 429) — this tenant is in a 30s cooldown'), { status: 429 });
+    expect(await applyItem(item(1, { attempts: 2 }), { inactivateCompany: async () => { throw t429(); }, inactivateContact: async () => undefined })).toMatchObject({ status: 'wait' });
+    let throttled = true;
+    const h = harness([item(1), item(2)], mkJob({ canarySize: 99 }), () => (throttled ? t429() : null));
+    for (let i = 0; i < 30; i++) { h.advance(61_000); await h.w.tick(); }
+    expect(h.state.job.status).toBe('running'); // 30 throttled writes never trip the 20-in-a-row pause
+    expect(h.state.items.map((x) => [x.status, x.attempts])).toEqual([['pending', 0], ['pending', 0]]);
+    h.advance(1000); expect(await h.w.tick()).toBe('pacing'); // waits after a throttled write
+    throttled = false; h.advance(61_000);
+    expect(await h.w.tick()).toBe('done');
+    expect(h.writes).toEqual(['co:1001']);
   });
 
   test('a contact is inactivated through its company (the child route)', async () => {

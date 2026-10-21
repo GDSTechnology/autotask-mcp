@@ -725,31 +725,66 @@ async function bulk(body) {
     h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, h('input', { name: 'ticketsOk', type: 'checkbox' }), 'Inactivate contacts that are on tickets too (spam senders; the tickets stay as they are)'),
     h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { type: 'submit' }, 'Prepare (nothing is written)'), h('span', { class: 'muted' }, 'Rates and business hours from the form above. Contacts on the company\'s own domains are kept; the primary contact and contacts with projects, contracts, opportunities, quotes, CIs or to-dos are always excluded. Review "By email domain" before approving.')));
 
+  // When does the team work? Stacked per resource; people / via this MCP / integrations apart.
+  const KIND_LABEL = { person: 'Person', mcp: 'Via this MCP', integration: 'Integration', unknown: 'Unknown' };
+  const PALETTE = {
+    person: ['#4f8cff', '#2bb3a3', '#7c6cf0', '#3fa34d', '#1f6fd1', '#5ec8e5', '#9b8cff', '#68c08a', '#8aa4c8'],
+    mcp: ['#f0a030', '#e07b20', '#f5c060', '#c86a10', '#f0b878', '#d89040', '#f8d090', '#b05810', '#e0a868'],
+    integration: ['#d65c5c', '#b84a7a', '#e07a8a', '#a04040', '#c87aa0', '#e89090', '#903060', '#d0a0a0', '#a87070'],
+    unknown: ['#8a8f98', '#a0a4ab', '#6f747c', '#b8bbc0', '#5a5e66', '#c8cace', '#7c8088', '#9498a0', '#686c74'],
+  };
+  const kindBadge = (k) => h('span', { class: `badge ${k === 'person' ? 'ok' : k === 'mcp' ? 'warn' : k === 'integration' ? 'bad' : ''}`, style: 'font-size:11px' }, KIND_LABEL[k] || k);
+  const hh = (n) => String(n).padStart(2, '0');
   const activity = h('div', { class: 'muted' }, 'Loading…');
   const drillBox = h('div');
+  const view = { show: 'person' }; // person | all | mcp | integration
+  let profile = null;
   const drill = (hour) => {
     drillBox.replaceChildren(h('p', { class: 'muted' }, 'Loading…'));
     api('GET', `/api/bulk-jobs/activity?hour=${hour}`).then((d) => {
-      const hh = (n) => String(n).padStart(2, '0');
-      const tbl = (head, rows) => h('table', null, h('thead', null, h('tr', null, head.map((x, i) => h('th', i === head.length - 1 ? { class: 'num' } : null, x)))), h('tbody', null, rows.map((r) => h('tr', null, r.map((c, i) => h('td', i === r.length - 1 ? { class: 'num' } : null, c))))));
+      const tbl = (head, rows, numLast = true) => h('table', null, h('thead', null, h('tr', null, head.map((x, i) => h('th', numLast && i === head.length - 1 ? { class: 'num' } : null, x)))), h('tbody', null, rows.map((r) => h('tr', null, r.map((c, i) => h('td', numLast && i === r.length - 1 ? { class: 'num' } : null, c))))));
       drillBox.replaceChildren(
         h('div', { class: 'row', style: 'justify-content:space-between;margin-top:10px' }, h('strong', null, `${hh(d.hour)}:00–${hh(d.hour)}:59 (${d.tz}), last ${d.days} days`), h('button', { class: 'small secondary', onclick: () => drillBox.replaceChildren() }, 'Close')),
         h('div', { class: 'row', style: 'align-items:flex-start;gap:24px' },
           h('div', null, h('h3', null, 'What'), tbl(['Kind', 'Count'], d.byKind.map((x) => [x.kind, fmt(x.n)]))),
           h('div', null, h('h3', null, 'Day of week'), tbl(['Day', 'Count'], d.byDay.map((x) => [DAY_NAMES[x.dow], fmt(x.n)]))),
-          h('div', null, h('h3', null, 'Who'), tbl(['Resource', 'Count'], d.byPerson.map((x) => [x.name || `#${x.who}`, fmt(x.n)])))),
+          h('div', null, h('h3', null, 'Who'), tbl(['Resource', 'Type', 'Count'], d.byWho.map((x) => [x.name, kindBadge(x.kind), fmt(x.n)])))),
         h('h3', null, 'Latest in this hour'),
-        d.latest.length ? tbl(['When', 'Kind', 'Who', 'Ticket', 'Record'], d.latest.map((x) => [x.at, x.kind, x.name || `#${x.who}`, x.ticket ? `#${x.ticket}` : '', x.id])) : h('p', { class: 'muted' }, 'Nothing in this hour.'));
+        d.latest.length ? h('div', { class: 'table-wrap' }, tbl(['When', 'Ticket Number', 'Ticket Title', 'Company Name', 'Kind', 'Who', 'Type'],
+          d.latest.map((x) => [x.at, x.ticketNumber || (x.ticketId ? `#${x.ticketId}` : ''), x.title || '', x.company || '', x.type, x.name, kindBadge(x.kind)]), false)) : h('p', { class: 'muted' }, 'Nothing in this hour.'));
     }).catch((x) => drillBox.replaceChildren(h('div', { class: 'error' }, x.message)));
   };
-  api('GET', '/api/bulk-jobs/activity').then((a) => {
-    const wd = a.weekdayAvgPerHour || [];
-    const max = Math.max(1, ...wd.map((x) => x || 0));
+  const drawActivity = () => {
+    const a = profile;
+    if (a.source !== 'team activity' || !a.series) {
+      // No mirror: this MCP's own traffic, one colour.
+      const wd = a.weekdayAvgPerHour || []; const max = Math.max(1, ...wd.map((x) => x || 0));
+      activity.replaceChildren(h('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:70px' }, wd.map((x, i) => h('div', { title: `${hh(i)}:00 — ${x == null ? 'no data' : `${fmt(x)} calls/hour`}`, style: `flex:1;background:var(--muted, #888);opacity:0.85;height:${Math.max(2, Math.round(((x || 0) / max) * 70))}px` }))),
+        h('p', { class: 'muted', style: 'font-size:13px' }, `Tool-call traffic through this MCP (no Postgres mirror for team activity).`));
+      return;
+    }
+    const shown = a.series.filter((s) => view.show === 'all' || s.kind === view.show || (view.show === 'integration' && s.kind === 'unknown'));
+    const colour = new Map(); const used = {};
+    for (const s of a.series) { const p = PALETTE[s.kind] || PALETTE.unknown; colour.set(s.key, p[(used[s.kind] = (used[s.kind] ?? -1) + 1) % p.length]); }
+    const totals = new Array(24).fill(0).map((_, i) => shown.reduce((t, s) => t + (s.weekday[i] || 0), 0));
+    const max = Math.max(0.01, ...totals);
+    const inWin = (i) => a.suggested && i >= a.suggested.start && i < a.suggested.end;
+    const bars = h('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:110px' }, totals.map((tot, i) => {
+      const parts = shown.filter((s) => s.weekday[i] > 0).map((s) => h('div', { style: `background:${colour.get(s.key)};height:${(s.weekday[i] / tot) * 100}%` }));
+      const tip = [`${hh(i)}:00 — ${fmt(Math.round(tot * 10) / 10)} records on an average weekday${view.show === 'person' ? `, ${a.peopleActivePerHour[i]} people active` : ''}`, ...shown.filter((s) => s.weekday[i] > 0).sort((x, y) => y.weekday[i] - x.weekday[i]).slice(0, 8).map((s) => `  ${s.label}: ${s.weekday[i]}`)].join('\n');
+      return h('div', { onclick: () => drill(i), title: tip, style: `flex:1;cursor:pointer;display:flex;flex-direction:column-reverse;height:${Math.max(2, Math.round((tot / max) * 110))}px;outline:${inWin(i) ? '2px solid var(--accent, #4f8cff)' : 'none'};outline-offset:1px` }, parts);
+    }));
+    const tabs = ['person', 'mcp', 'integration', 'all'].map((k) => h('button', { class: `small ${view.show === k ? '' : 'secondary'}`, onclick: () => { view.show = k; drawActivity(); } }, { person: 'People', mcp: 'Via this MCP', integration: 'Integrations', all: 'Everything' }[k]));
+    const legend = h('div', { class: 'row', style: 'flex-wrap:wrap;gap:10px;font-size:12px;margin-top:6px' }, shown.map((s) => h('span', { style: 'display:inline-flex;align-items:center;gap:4px' }, h('span', { style: `display:inline-block;width:10px;height:10px;border-radius:2px;background:${colour.get(s.key)}` }), `${s.label} (${fmt(s.total)})`)));
     activity.replaceChildren(
-      h('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:70px' }, wd.map((x, i) => h('div', { onclick: a.source === 'team activity' ? () => drill(i) : null, title: `${String(i).padStart(2, '0')}:00 — ${x == null ? 'no data' : a.source === 'team activity' ? `${x} people active on an average weekday` : `${fmt(x)} calls/hour`}`, style: `flex:1;background:${a.suggested && i >= a.suggested.start && i < a.suggested.end ? 'var(--accent, #4f8cff)' : 'var(--muted, #888)'};cursor:${a.source === 'team activity' ? 'pointer' : 'default'};opacity:${x == null ? 0.15 : 0.85};height:${Math.max(2, Math.round(((x || 0) / max) * 70))}px` }))),
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, ...tabs),
+      bars,
       h('div', { class: 'row', style: 'justify-content:space-between;font-size:12px' }, h('span', null, '00:00'), h('span', null, '12:00'), h('span', null, '23:00')),
-      h('p', { style: 'font-size:13px' }, a.suggested ? `The team works ${String(a.suggested.start).padStart(2, '0')}:00–${String(a.suggested.end).padStart(2, '0')}:00 on weekdays (${a.tz}) — use that as the business hours (the slower rate).` : a.source === 'team activity' ? 'No clear working hours in the data yet.' : 'Not enough data yet to suggest business hours.', ' ', h('span', { class: 'muted' }, a.source === 'team activity' ? `People active per hour on an average weekday (writing time entries or ticket notes — not automation), last ${a.days} days, ${fmt(a.events)} records — from the mirror.` : `Tool-call traffic through this MCP, weekdays, ${a.hoursOfData} hour(s) of data (no Postgres mirror for team activity).`)));
-  }).catch((x) => activity.replaceChildren(h('div', { class: 'error' }, x.message)));
+      legend,
+      h('p', { style: 'font-size:13px' }, a.suggested ? `People work ${hh(a.suggested.start)}:00–${hh(a.suggested.end)}:00 on weekdays (${a.tz}), outlined — use that as the business hours (the slower rate).` : 'No clear working hours in the data yet.', ' ',
+        h('span', { class: 'muted' }, `Time entries and ticket notes on an average weekday, last ${a.days} days, ${fmt(a.events)} records, from the mirror. "Via this MCP" = written through this MCP (n8n, Nexus, ChatGPT), even when Autotask credits a person. Only people set the business hours.`)));
+  };
+  api('GET', '/api/bulk-jobs/activity').then((a) => { profile = a; drawActivity(); }).catch((x) => activity.replaceChildren(h('div', { class: 'error' }, x.message)));
 
   body.replaceChildren(
     h('h1', null, 'Bulk jobs'),

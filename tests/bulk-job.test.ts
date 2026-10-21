@@ -130,7 +130,7 @@ describe('worker', () => {
       next: async () => state.items.filter((i) => i.status === 'pending').slice(0, 1),
       markItem: async (_: string, seq: number, status: any, o: any = {}) => { const i = state.items.find((x) => x.seq === seq)!; i.status = status; i.attempts++; i.error = o.error ?? null; i.reason = o.reason ?? i.reason; },
       retryLater: async (_: string, seq: number, error: string) => { const i = state.items.find((x) => x.seq === seq)!; i.attempts++; i.error = error; },
-      setStatus: async (_: string, status: any, o: any = {}) => { state.job = { ...state.job, status, ...(o.pauseReason !== undefined ? { pauseReason: o.pauseReason } : {}), stats: { ...state.job.stats, ...(o.stats ?? {}) } }; },
+      setStatus: async (_: string, status: any, o: any = {}) => { state.job = { ...state.job, status, ...(o.pauseReason !== undefined ? { pauseReason: o.pauseReason } : {}), ...(o.lastError !== undefined ? { lastError: o.lastError } : {}), stats: { ...state.job.stats, ...(o.stats ?? {}) } }; },
       counts: async () => ({}),
     };
     const fns = {
@@ -186,11 +186,13 @@ describe('worker', () => {
     const h = harness([item(1), item(2)], mkJob({ canarySize: 99 }), () => (throttled ? t429() : null));
     for (let i = 0; i < 30; i++) { h.advance(61_000); await h.w.tick(); }
     expect(h.state.job.status).toBe('running'); // 30 throttled writes never trip the 20-in-a-row pause
+    expect(h.state.job.lastError).toMatch(/^\[\d{4}-\d\d-\d\d \d\d:\d\d UTC\] waiting out Autotask throttling/);
     expect(h.state.items.map((x) => [x.status, x.attempts])).toEqual([['pending', 0], ['pending', 0]]);
     h.advance(1000); expect(await h.w.tick()).toBe('pacing'); // waits after a throttled write
     throttled = false; h.advance(61_000);
     expect(await h.w.tick()).toBe('done');
     expect(h.writes).toEqual(['co:1001']);
+    expect(h.state.job.lastError).toBeNull(); // a write that went through clears it (it used to stay on the card for days)
   });
 
   test('a contact is inactivated through its company (the child route)', async () => {

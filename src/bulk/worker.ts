@@ -52,6 +52,9 @@ export async function applyItem(item: BulkItem, fns: ApplyFns): Promise<ItemOutc
   }
 }
 
+/** The error with when it happened (UTC), so the console can say how old it is. */
+export const stamp = (now: number, msg: string | undefined): string | null => (msg ? `[${new Date(now).toISOString().slice(0, 16).replace('T', ' ')} UTC] ${msg}`.slice(0, 500) : null);
+
 /** Minimum gap between writes for a job, given backpressure. null = wait (stop). */
 export function writeGapMs(ratePerHour: number, level: 'ok' | 'slow' | 'stop'): number | null {
   if (level === 'stop') return null;
@@ -105,14 +108,14 @@ export class BulkWorker {
     const s = this.d.store;
     if (out.status === 'pause') {
       await s.retryLater(job.id, item.seq, out.error ?? '');
-      await s.setStatus(job.id, 'paused', { pauseReason: out.reason ?? 'paused', lastError: out.error ?? null });
+      await s.setStatus(job.id, 'paused', { pauseReason: out.reason ?? 'paused', lastError: stamp(this.d.now(), out.error) });
       this.d.notify({ type: 'bulk.paused', severity: 'warning', title: `Bulk job paused: ${out.reason}`, detail: `${job.title} — item ${item.seq} (${item.entity} ${item.recordId}): ${out.error}`, fields: { job: job.id }, dedupeKey: `bulk.paused:${job.id}:${item.seq}` });
       return 'paused';
     }
     if (out.status === 'wait') {
       // The item stays pending untouched; the 429 armed the cooldown, so backpressure holds the next write.
       this.lastWrite.set(job.id, this.d.now() + WAIT_AFTER_THROTTLE_MS);
-      await s.setStatus(job.id, 'running', { lastError: out.error ?? null });
+      await s.setStatus(job.id, 'running', { lastError: stamp(this.d.now(), `waiting out Autotask throttling (HTTP 429) — the record is fine and stays queued: ${out.error ?? ''}`) });
       return 'wait';
     }
     if (out.status === 'retry') { await s.retryLater(job.id, item.seq, out.error ?? ''); }
@@ -120,7 +123,8 @@ export class BulkWorker {
     const streak = out.status === 'done' || out.status === 'skipped' ? 0 : (this.failStreak.get(job.id) ?? 0) + 1;
     this.failStreak.set(job.id, streak);
     const processed = ((job.stats as { processed?: number }).processed ?? 0) + (out.status === 'retry' ? 0 : 1);
-    await s.setStatus(job.id, 'running', { stats: { processed }, ...(out.error ? { lastError: out.error } : {}) });
+    // A write that went through clears the last error: it described a moment that has passed (a stale 429 stayed on the card).
+    await s.setStatus(job.id, 'running', { stats: { processed }, ...(out.error ? { lastError: stamp(this.d.now(), out.error) } : out.status === 'done' && job.lastError ? { lastError: null } : {}) });
     if (streak >= PAUSE_AFTER_FAILURES) {
       await s.setStatus(job.id, 'paused', { pauseReason: `${streak} failures in a row — look at the errors (action=status), then resume or retry_failed` });
       this.d.notify({ type: 'bulk.paused', severity: 'warning', title: `Bulk job paused: ${streak} failures in a row`, detail: `${job.title}: ${out.error}`, fields: { job: job.id }, dedupeKey: `bulk.failstreak:${job.id}:${processed}` });

@@ -5,7 +5,8 @@
 import { preparePlaceholderJob } from '../src/bulk/prepare';
 import { prepareCompanyContactsJob } from '../src/bulk/prepare-contacts';
 import { activityProfile, currentRate, inBusinessHours, weeklyCapacity, DEFAULT_SCHEDULE } from '../src/bulk/schedule';
-import { BulkWorker, applyItem, writeGapMs } from '../src/bulk/worker';
+import { BulkWorker, BULK_THRESHOLDS, applyItem, writeGapMs } from '../src/bulk/worker';
+import { assessBackpressure } from '../src/services/backpressure';
 import { itemsHash, type BulkItem, type BulkJob } from '../src/bulk/store';
 import { bulkToolHandlers } from '../src/bulk/tools';
 
@@ -189,6 +190,13 @@ describe('job actions (console + tool share them)', () => {
     expect(scheduleOf({})).toEqual(DEFAULT_SCHEDULE);
     expect(scheduleOf({ businessHours: false })).toBeNull();
     expect(scheduleOf({ businessHours: { start: 8, end: 17, days: [1, 2] }, businessRate: 500 })).toMatchObject({ start: 8, end: 17, days: [1, 2], businessRate: 500, tz: 'America/New_York' });
+  });
+});
+
+describe('bulk thresholds', () => {
+  test('bulk jobs yield before dispatchers: slow from 40%, stop at 65%', () => {
+    const lvl = (pct: number) => assessBackpressure({ usage: { usedPct: pct, used: pct * 100, limit: 10000, at: new Date().toISOString() }, auth: null, cooldownSeconds: 0, queued: 0 }, BULK_THRESHOLDS).level;
+    expect([lvl(39), lvl(40), lvl(64), lvl(65)]).toEqual(['ok', 'slow', 'slow', 'stop']);
   });
 });
 

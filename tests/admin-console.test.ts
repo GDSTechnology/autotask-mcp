@@ -56,7 +56,7 @@ describe('passwords', () => {
 describe('settings', () => {
   test('defaults come from the environment; a saved value overrides it', () => {
     expect(settingValue('shadow.serveReads', { MCP_PG_SHADOW_SERVE_READS: 'true' })).toBe(true);
-    expect(settingValue('shadow.pauseAtPct', {})).toBe(50);
+    expect(settingValue('shadow.pauseAtPct', {})).toBe(85);
     expect(settingValue('cache.enabled', { AUTOTASK_CACHE: 'off' })).toBe(false);
     setOverride('shadow.serveReads', false);
     expect(settingValue('shadow.serveReads', { MCP_PG_SHADOW_SERVE_READS: 'true' })).toBe(false);

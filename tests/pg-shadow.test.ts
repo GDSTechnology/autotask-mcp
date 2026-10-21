@@ -197,6 +197,16 @@ describe('ShadowSync', () => {
     expect(store.rows.get('Tickets')!.get(7)).toEqual({ id: 7, status: 5 });
   });
 
+  test('a 429 cooldown skips the run instead of failing every entity; an unrelated usage error still syncs', async () => {
+    const at = fakeAutotask({ Tickets: [{ id: 7, status: 5 }] });
+    const held = new ShadowSync(at.http, memStore() as any, logger, { maxCallsPerRun: 10, pauseAtPct: 85, usagePct: async () => { throw new Error('Autotask API threshold exceeded (HTTP 429) — this tenant is in a 30s cooldown'); } });
+    const r = await held.runOnce();
+    expect(r.skipped).toMatch(/holding calls/);
+    expect(at.calls).toHaveLength(0);
+    const other = new ShadowSync(at.http, memStore() as any, logger, { maxCallsPerRun: 1, pauseAtPct: 85, usagePct: async () => { throw new Error('socket hang up'); } });
+    expect((await other.runOnce()).skipped).toBeUndefined();
+  });
+
   test('reconcile: id-only walk marks rows Autotask no longer returns as deleted', async () => {
     const at = fakeAutotask({ Contacts: [{ id: 1 }, { id: 3 }] });
     const store = memStore();

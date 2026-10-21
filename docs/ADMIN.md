@@ -253,7 +253,7 @@ first sign-in.
 | Scheduled sync | Pause the shadow's background sync | on |
 | Serve searches from the shadow | Answer searches from Postgres while it is fresh | `MCP_PG_SHADOW_SERVE_READS` |
 | Max mirror age (seconds) | How stale the shadow may be and still answer | `MCP_PG_SHADOW_MAX_AGE_SECONDS` |
-| Pause sync at API usage % | Skip sync runs while tenant usage is high | `MCP_PG_SHADOW_PAUSE_AT_PCT` |
+| Pause sync at API usage % | Skip sync runs while tenant usage is high (default 85; keep it high — a stale mirror sends reads live) | `MCP_PG_SHADOW_PAUSE_AT_PCT` |
 | Read cache | The short-lived Autotask read cache | `AUTOTASK_CACHE` |
 | Caller names | Names for clients that don't declare a `source`, one `pattern=name` rule per line. The pattern matches the IP address exactly, or appears in the user agent. Example: `172.19.0.3=n8n`, `Python-urllib=cron`, `Go-http-client=ChatGPT`. Applies to calls logged from then on. | `MCP_CALLER_LABELS` (comma-separated) |
 
@@ -322,7 +322,7 @@ Mass changes are prepared from the mirror, **approved by a person here**, and pu
   - **Start:** runs the canary first, then pauses for you to check the records.
   - **Pause / Resume**, **Retry failed**, **Cancel:** records already written stay as they are.
 - **When is Autotask busy?** shows tool-call traffic through this MCP per local hour on weekdays. It suggests the business window once there are 3 days of data.
-- **Stopping it:** the worker stops for the read-only switch (Settings → writes off). It also stops on backpressure "stop", a login problem, or 20 failures in a row. It continues after a restart.
+- **Stopping it:** the worker stops for the read-only switch (Settings → writes off). It halves its pace from 40% tenant API usage and waits from 65%, so the rest of the tenant keeps room. It also stops during a 429 cooldown, on a login problem, or after 20 failures in a row. It continues after a restart.
 - Notifications: `bulk.paused` and `bulk.done` (subscribe a channel under Notifications).
 
 ### Requests (what the MCP can't do yet)

@@ -4,6 +4,16 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-20
+
+- **Pausing the mirror under load makes the load worse.** A bulk job pushed tenant usage past 50%, the shadow
+  sync paused (`MCP_PG_SHADOW_PAUSE_AT_PCT` 50), the mirror went stale, and the ~80% of reads it answers went to
+  Autotask live: usage hit 91.9% and then 429s. The sync now pauses at 85% (a run is <= 100 calls); bulk jobs halve
+  at 40% and wait at 65% (`BULK_THRESHOLDS`), so background writes yield long before the mirror or the dispatchers.
+  Anything that can stop the sync must be weighed against the live reads a stale mirror causes.
+- In a 429 cooldown every call fails LOCALLY, the usage check included: the sync used to read that as "usage
+  unknown" and run, failing every entity with the cooldown error. It now skips the run.
+
 ## Learnings - 2026-10-19
 
 - **`Contacts.isActive` is an INTEGER (0 / 1)**; `Companies.isActive` is a boolean. Sending `false` to a

@@ -38,7 +38,15 @@ export class BulkStore {
   }
   async setTitle(id: string, title: string): Promise<void> { await this.pool.query('UPDATE bulk_job SET title = $2, updated_at = now() WHERE id = $1', [id, title]); }
   async get(id: string): Promise<BulkJob | null> { const r = await this.pool.query('SELECT * FROM bulk_job WHERE id = $1', [id]); return r.rows[0] ? job(r.rows[0]) : null; }
-  async list(limit = 20): Promise<BulkJob[]> { return (await this.pool.query('SELECT * FROM bulk_job ORDER BY created_at DESC LIMIT $1', [limit])).rows.map(job); }
+  /** Newest first; archived jobs (stats.archivedAt) only when asked for. */
+  async list(limit = 20, o: { archived?: boolean } = {}): Promise<BulkJob[]> {
+    return (await this.pool.query(`SELECT * FROM bulk_job WHERE ($2::boolean OR stats->>'archivedAt' IS NULL) ORDER BY created_at DESC LIMIT $1`, [limit, !!o.archived])).rows.map(job);
+  }
+  async archivedCount(): Promise<number> { return Number((await this.pool.query(`SELECT count(*)::int n FROM bulk_job WHERE stats->>'archivedAt' IS NOT NULL`)).rows[0]?.n ?? 0); }
+  /** Archive (hide from the list) or restore a finished job. Its items and history are kept. */
+  async setArchived(id: string, on: boolean, by: string | null): Promise<void> {
+    await this.pool.query(`UPDATE bulk_job SET stats = CASE WHEN $2 THEN stats || jsonb_build_object('archivedAt', now(), 'archivedBy', $3::text) ELSE stats - 'archivedAt' - 'archivedBy' END, updated_at = now() WHERE id = $1`, [id, on, by]);
+  }
   async running(): Promise<BulkJob[]> { return (await this.pool.query(`SELECT * FROM bulk_job WHERE status = 'running' ORDER BY created_at`)).rows.map(job); }
 
   /** Store the prepared items (chunked) and move to 'ready' with their hash. */

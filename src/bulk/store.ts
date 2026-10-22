@@ -53,7 +53,7 @@ export class BulkStore {
           SELECT $1, s, e, r, p, a, st, rs, bf::jsonb FROM unnest($2::int[], $3::text[], $4::bigint[], $5::bigint[], $6::text[], $7::text[], $8::text[], $9::text[]) AS t(s, e, r, p, a, st, rs, bf)`,
           [id, b.map((_, k) => i + k + 1), b.map((x) => x.entity), b.map((x) => x.recordId), b.map((x) => x.parentId), b.map((x) => x.action), b.map((x) => x.status ?? 'pending'), b.map((x) => x.reason ?? null), b.map((x) => (x.before ? JSON.stringify(x.before) : null))]);
       }
-      await c.query(`UPDATE bulk_job SET status = 'ready', hash = $2, stats = $3, updated_at = now() WHERE id = $1`, [id, hash, JSON.stringify(stats)]);
+      await c.query(`UPDATE bulk_job SET status = 'ready', hash = $2, stats = $3, last_error = NULL, updated_at = now() WHERE id = $1`, [id, hash, JSON.stringify(stats)]);
       await c.query('COMMIT');
     } catch (e) { await c.query('ROLLBACK').catch(() => undefined); throw e; } finally { c.release(); }
   }

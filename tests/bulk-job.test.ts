@@ -332,3 +332,26 @@ describe('junk contacts on one company', () => {
     await expect(prepareCompanyContactsJob(fakeQ(tables, { fail: 'Opportunities' }).q, { companyId: 4242 })).rejects.toThrow(/history check on opportunities failed/);
   });
 });
+
+describe('preparation waits out throttling', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { patientQuery, isThrottled } = require('../src/bulk/patient');
+  const t429 = () => Object.assign(new Error('Autotask API threshold exceeded (HTTP 429)'), { status: 429 });
+  test('a throttled read waits and retries; the job is told each time', async () => {
+    let fails = 2; const waits: number[] = []; const slept: number[] = [];
+    const q = patientQuery(async () => { if (fails-- > 0) throw t429(); return [{ id: 1 }]; }, { waitMs: 1000, sleep: async (ms: number) => { slept.push(ms); }, onWait: (i: { waitedMs: number }) => { waits.push(i.waitedMs); } });
+    expect(await q('Contacts', [], {})).toEqual([{ id: 1 }]);
+    expect(slept).toEqual([1000, 1000]);
+    expect(waits).toEqual([0, 1000]);
+  });
+  test('gives up after the total wait; other errors fail at once (fail closed)', async () => {
+    const always = patientQuery(async () => { throw t429(); }, { waitMs: 1000, maxWaitMs: 2500, sleep: async () => undefined });
+    await expect(always('Contacts', [], {})).rejects.toThrow(/kept throttling/);
+    let calls = 0;
+    const other = patientQuery(async () => { calls++; throw new Error('field not queryable'); }, { sleep: async () => undefined });
+    await expect(other('Tickets', [], {})).rejects.toThrow(/not queryable/);
+    expect(calls).toBe(1);
+    expect(isThrottled(new Error('this tenant is in a 30s cooldown'))).toBe(true);
+    expect(isThrottled(new Error('HTTP 500'))).toBe(false);
+  });
+});

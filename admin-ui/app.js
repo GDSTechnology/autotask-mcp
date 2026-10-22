@@ -643,7 +643,8 @@ async function bulk(body) {
         h('span', { class: `badge ${cls}` }, label)),
       j.status === 'preparing' ? h('p', { class: 'muted' }, 'Reading the records and checking each for history (paced). This page updates by itself.') : null,
       j.pauseReason ? h('div', { class: `banner ${/canary/.test(j.pauseReason) ? '' : 'bad'}`, style: 'margin:8px 0' }, j.pauseReason) : null,
-      j.lastError && j.status !== 'done' ? h('div', { class: 'error', style: 'font-size:13px' }, `Last error: ${j.lastError}`) : null,
+      // A throttling wait is not an error (the record stays queued); any error clears once a write goes through.
+      j.lastError && j.status !== 'done' ? (/waiting out Autotask throttling/.test(j.lastError) ? h('div', { class: 'muted', style: 'font-size:13px' }, `Waiting: ${j.lastError}`) : h('div', { class: 'error', style: 'font-size:13px' }, `Last error: ${j.lastError}`)) : null,
       p.total ? h('div', { style: 'margin:10px 0' },
         h('div', { class: 'row', style: 'justify-content:space-between' }, h('strong', null, `${p.pct}%`), h('span', { class: 'muted' }, `${fmt(p.done + p.skipped)} of ${fmt(p.total)} writes · ${fmt(p.pending)} left${p.failed ? ` · ${fmt(p.failed)} failed` : ''}${p.excluded ? ` · ${fmt(p.excluded)} excluded` : ''}`)),
         h('div', { class: 'bar' }, h('span', { style: `width:${Math.min(100, p.pct)}%` }))) : null,

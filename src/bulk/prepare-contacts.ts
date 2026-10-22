@@ -36,7 +36,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const domains = (c: Record<string, any>) => [...new Set(EMAILS.map((f) => domainOf(c[f])).filter((d): d is string => !!d))];
 const normDomain = (d: string) => domainOf(d.includes('@') ? d : `x@${d.replace(/^https?:\/\//i, '').replace(/^www\./i, '')}`) ?? d.toLowerCase().trim();
 
-export async function prepareCompanyContactsJob(q: QueryFn, sel: CompanyContactsSelector, o: { paceMs?: number; mirrored?: (entity: string) => boolean; onProgress?: (s: string) => void } = {}): Promise<PrepareResult> {
+export async function prepareCompanyContactsJob(q: QueryFn, sel: CompanyContactsSelector, o: { paceMs?: number; mirrored?: (entity: string) => boolean; onProgress?: (s: string) => void; /** Live field names (null = unknown): a history link this tenant doesn't have is skipped, not failed. */ fieldNames?: (entity: string) => Promise<Set<string> | null> } = {}): Promise<PrepareResult> {
   const pace = async (entity: string) => { if (o.paceMs && !(o.mirrored?.(entity) ?? false)) await sleep(o.paceMs); };
   const calls = { n: 0 };
   // 1. The company — a real one (company 0 is the tenant's own and is never cleaned this way).
@@ -64,7 +64,12 @@ export async function prepareCompanyContactsJob(q: QueryFn, sel: CompanyContacts
 
   // 3. History per contact.
   const hist = new Map<number, Record<string, number>>();
+  const notApplicable: string[] = [];
   for (const sp of CONTACT_REFS) {
+    // A link field this tenant doesn't have (Projects.contactID: "Unable to find contactID in the Project Entity")
+    // can't point at a contact. Only a KNOWN field list skips it — an unknown one still queries and fails closed.
+    const have = await o.fieldNames?.(sp.entity).catch(() => null);
+    if (have && !have.has(sp.field)) { notApplicable.push(`${sp.entity}.${sp.field}`); continue; }
     for (let i = 0; i < ids.length; i += 200) {
       calls.n++;
       let rows: Array<Record<string, any>>;
@@ -129,7 +134,7 @@ export async function prepareCompanyContactsJob(q: QueryFn, sel: CompanyContacts
       selector: sel, company: { id: Number(company.id), name: company.companyName ?? null, isActive: company.isActive ?? null },
       mode: explicit ? 'contact list' : 'domain rule', companyDomains: Object.fromEntries(Object.entries(ownFrom).sort()),
       contactsSeen: contacts.length, contactWrites: writes, writes, excludedContacts: items.length - writes, kept: keptWhy,
-      byDomain: topDomains, domains: Object.keys(byDomain).length, prepareReads: calls.n,
+      byDomain: topDomains, domains: Object.keys(byDomain).length, prepareReads: calls.n, historyNotApplicable: notApplicable,
     },
   };
 }

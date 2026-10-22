@@ -4,6 +4,16 @@ Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.
 
 ## Learnings
+## Learnings - 2026-10-22
+
+- **`Projects` has no `contactID` in this tenant**: querying it → HTTP 500 "Unable to find contactID in the Project
+  Entity". The contact history list (`CONTACT_REFS`) included it, so every junk-contact preparation failed and every
+  merge inventory showed projects as "could not be checked". Reference lists are now checked against the LIVE field
+  list first: a link field the tenant lacks is skipped (count 0); an unknown field list still queries and fails closed.
+- Autotask's own **API Activity By Hour** report (Admin → Extensions & Integrations) breaks calls down per
+  integration (API user), reads included — the only place other integrations' reads show. An email-to-ticket
+  connector made 63k calls/day with 6–9k bursts at 21:00 and 00–04; bulk jobs now keep quiet hours there.
+
 ## Learnings - 2026-10-20
 
 - **Pausing the mirror under load makes the load worse.** A bulk job pushed tenant usage past 50%, the shadow

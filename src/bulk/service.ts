@@ -81,7 +81,7 @@ export async function startPrepareCompanyContacts(s: AutotaskService, st: BulkSt
   void (async () => {
     try {
       const http = await s.httpClient();
-      const p = await prepareCompanyContactsJob(preparationQuery(http, st, job.id), sel, { paceMs: Math.round(3_600_000 / rate), mirrored: (e) => e === 'Companies' || e === 'Contacts' || e === 'Tickets' || e === 'Contracts' });
+      const p = await prepareCompanyContactsJob(preparationQuery(http, st, job.id), sel, { fieldNames: async (e) => { const f = await s.getFieldInfo(e).catch(() => null); return f && f.length ? new Set(f.map((x) => x.name)) : null; }, paceMs: Math.round(3_600_000 / rate), mirrored: (e) => e === 'Companies' || e === 'Contacts' || e === 'Tickets' || e === 'Contracts' });
       const name = (p.stats.company as { name?: string } | undefined)?.name;
       if (name) await st.setTitle(job.id, `Inactivate junk contacts on ${name} (#${companyId})${contactIds?.length ? ` — ${contactIds.length} listed` : ''}`);
       await st.fill(job.id, p.items, p.stats, itemsHash(job.kind, p.items));

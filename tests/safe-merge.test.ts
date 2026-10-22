@@ -129,6 +129,17 @@ describe('discovery and inventory read every page, all three email fields (accep
     expect(i.blockers.join(' ')).toMatch(/quotes: could not be checked/);
     expect(i.total).toBe(2);
   });
+
+  test('inventory: a link field this tenant does not have (live field list) is 0, not a blocker', async () => {
+    const d: MergeDeps = {
+      q: async <T>(entity: string) => { if (entity === 'Projects') throw new Error('Unable to find contactID in the Project Entity.'); return [] as T[]; },
+      link: () => null, resourceNames: async () => new Map(), writable: async () => true,
+      fieldNames: async (e) => (e === 'Projects' ? new Set(['id', 'companyID']) : null),
+    };
+    const i = (await inventory(d, 'contact', [5])).get(5)!;
+    expect(i.refs.find((r) => r.entity === 'Projects')).toMatchObject({ count: 0, error: null });
+    expect(i.blockers.join(' ')).not.toMatch(/projects/);
+  });
 });
 
 describe('build_plan refuses before reading anything', () => {

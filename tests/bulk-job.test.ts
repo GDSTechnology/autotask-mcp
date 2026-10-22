@@ -328,6 +328,14 @@ describe('junk contacts on one company', () => {
     await expect(prepareCompanyContactsJob(fakeQ(tables).q, { companyId: 0 })).rejects.toThrow(/your own company/);
   });
 
+  test('a history link this tenant does not have is skipped (known field list); unknown field list still fails closed', async () => {
+    const noProjectContact = async (e: string) => (e === 'Projects' ? new Set(['id', 'companyID']) : null);
+    const r = await prepareCompanyContactsJob(fakeQ(tables, { fail: 'Projects' }).q, { companyId: 4242 }, { fieldNames: noProjectContact });
+    expect(r.stats.historyNotApplicable).toEqual(['Projects.contactID']);
+    expect(r.items.filter((i: Row) => i.status !== 'excluded').map((i: Row) => i.recordId)).toEqual([3, 10]);
+    await expect(prepareCompanyContactsJob(fakeQ(tables, { fail: 'Projects' }).q, { companyId: 4242 }, { fieldNames: async () => null })).rejects.toThrow(/history check on projects failed/);
+  });
+
   test('a failed history check prepares nothing', async () => {
     await expect(prepareCompanyContactsJob(fakeQ(tables, { fail: 'Opportunities' }).q, { companyId: 4242 })).rejects.toThrow(/history check on opportunities failed/);
   });

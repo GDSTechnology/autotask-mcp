@@ -115,6 +115,12 @@ export async function inventory(d: MergeDeps, entity: MergeEntity, ids: number[]
   const per = new Map<number, RefCount[]>(ids.map((id) => [id, []]));
   for (const sp of specs) {
     let rows: Array<Record<string, any>> = []; let error: string | null = null;
+    // The live field list says this entity has no such link here (e.g. Projects.contactID, 2026-10-22): nothing can point at the record through it.
+    const have = await d.fieldNames(sp.entity).catch(() => null);
+    if (have && !have.has(sp.field)) {
+      for (const id of ids) per.get(id)!.push({ entity: sp.entity, label: sp.label, field: sp.field, count: 0, active: sp.activeWhen ? 0 : null, ids: [], money: !!sp.money, movableByApi: null, error: null });
+      continue;
+    }
     try {
       rows = await inChunks<Record<string, any>>(d.q, sp.entity, sp.field, ids, [], await fieldsFor(d, sp.entity, ['id', sp.field, ...(sp.activeWhen ? [sp.activeWhen.field] : [])]));
     } catch (e) { error = (e instanceof Error ? e.message : String(e)).slice(0, 160); }

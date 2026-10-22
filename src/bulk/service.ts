@@ -7,6 +7,14 @@ import { isPlaceholderCompany } from '../merge/model.js';
 import { BulkStore, itemsHash, type BulkJob } from './store.js';
 import { preparePlaceholderJob, type PlaceholderSelector } from './prepare.js';
 import { prepareCompanyContactsJob, type CompanyContactsSelector } from './prepare-contacts.js';
+import { patientQuery } from './patient.js';
+
+/** The preparation's reads, waiting out Autotask throttling (the job shows "waiting" meanwhile). */
+function preparationQuery(http: Awaited<ReturnType<AutotaskService['httpClient']>>, st: BulkStore, jobId: string) {
+  return patientQuery((e, f, o) => http.query(e, f as never, o), {
+    onWait: ({ untilIso, waitedMs }) => st.setStatus(jobId, 'preparing', { lastError: `[${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC] waiting out Autotask throttling (HTTP 429) — the preparation continues by itself after ${untilIso.slice(11, 16)} UTC${waitedMs ? ` (waited ${Math.round(waitedMs / 60_000)} min so far)` : ''}` }).catch(() => undefined),
+  });
+}
 import { DEFAULT_SCHEDULE, currentRate, parseQuietHours, quietOf, quietWindowAt, weeklyCapacity, type BusinessSchedule, type QuietWindow } from './schedule.js';
 
 export const MAX_RATE = 6000;
@@ -43,7 +51,7 @@ export async function startPrepare(s: AutotaskService, st: BulkStore, r: Prepare
   void (async () => {
     try {
       const http = await s.httpClient();
-      const p = await preparePlaceholderJob((e, f, o) => http.query(e, f as never, o), sel, { includeContacts, paceMs: Math.round(3_600_000 / rate), mirrored: (e) => e === 'Companies' || e === 'Contacts' });
+      const p = await preparePlaceholderJob(preparationQuery(http, st, job.id), sel, { includeContacts, paceMs: Math.round(3_600_000 / rate), mirrored: (e) => e === 'Companies' || e === 'Contacts' });
       await st.fill(job.id, p.items, p.stats, itemsHash(job.kind, p.items));
     } catch (e) { await st.setStatus(job.id, 'failed', { lastError: (e instanceof Error ? e.message : String(e)).slice(0, 500), finished: true }).catch(() => undefined); }
   })();
@@ -73,7 +81,7 @@ export async function startPrepareCompanyContacts(s: AutotaskService, st: BulkSt
   void (async () => {
     try {
       const http = await s.httpClient();
-      const p = await prepareCompanyContactsJob((e, f, o) => http.query(e, f as never, o), sel, { paceMs: Math.round(3_600_000 / rate), mirrored: (e) => e === 'Companies' || e === 'Contacts' || e === 'Tickets' || e === 'Contracts' });
+      const p = await prepareCompanyContactsJob(preparationQuery(http, st, job.id), sel, { paceMs: Math.round(3_600_000 / rate), mirrored: (e) => e === 'Companies' || e === 'Contacts' || e === 'Tickets' || e === 'Contracts' });
       const name = (p.stats.company as { name?: string } | undefined)?.name;
       if (name) await st.setTitle(job.id, `Inactivate junk contacts on ${name} (#${companyId})${contactIds?.length ? ` — ${contactIds.length} listed` : ''}`);
       await st.fill(job.id, p.items, p.stats, itemsHash(job.kind, p.items));

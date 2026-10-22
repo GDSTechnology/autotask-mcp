@@ -30,7 +30,7 @@ export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null)
       }
       const pool = getPool(); if (!pool) return { result: { status: 'unavailable' }, message: 'Needs the Postgres store (migration 0015).' };
       const st = new BulkStore(pool);
-      if (action === 'list') { const jobs = await st.list(20); return { result: { jobs: jobs.map((j) => ({ id: j.id, title: j.title, status: j.status, createdAt: j.createdAt })) }, message: `${jobs.length} bulk job(s).` }; }
+      if (action === 'list') { const jobs = await st.list(20, { archived: a.includeArchived === true }); return { result: { jobs: jobs.map((j) => ({ id: j.id, title: j.title, status: j.status, createdAt: j.createdAt, archived: !!(j.stats as { archivedAt?: string }).archivedAt })) }, message: `${jobs.length} bulk job(s)${a.includeArchived === true ? ' (archived included)' : ''}.` }; }
 
       if (action === 'prepare' && a.companyId != null) {
         // Junk contacts on ONE real company (by contact list or the domain rule).
@@ -68,7 +68,7 @@ export function bulkToolHandlers(s: AutotaskService, getPool: () => Pool | null)
         const r = await jobAction(st, j, action as JobAction, { hash: a.hash != null ? String(a.hash) : undefined, by: who(ctx) });
         return { result: { status: r.status, ok: r.ok }, message: `Job ${j.id}: ${r.message}` };
       }
-      return { result: { status: 'invalid_value', field: 'action' }, message: 'action: prepare | status | approve | start | pause | resume | cancel | items | excluded | failed | retry_failed | list | activity.' };
+      return { result: { status: 'invalid_value', field: 'action' }, message: 'action: prepare | status | approve | start | pause | resume | cancel | items | excluded | failed | retry_failed | archive | unarchive | list | activity.' };
     }],
   ];
 }

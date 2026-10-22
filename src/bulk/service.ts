@@ -108,12 +108,15 @@ export async function jobView(st: BulkStore, j: BulkJob, now = new Date()): Prom
     schedule, quietHours, canary: { size: j.canarySize, done: !!(j.stats as { canaryDone?: boolean }).canaryDone },
     counts, progress: { total, done, skipped, failed, pending, excluded, pct: total ? Math.round(((done + skipped) / total) * 1000) / 10 : 0 },
     pending, etaDays: pending ? Math.round((pending / perWeek) * 7 * 10) / 10 : 0,
+    archived: !!(j.stats as { archivedAt?: string }).archivedAt, archivedAt: (j.stats as { archivedAt?: string }).archivedAt ?? null, archivedBy: (j.stats as { archivedBy?: string }).archivedBy ?? null,
     stats: j.stats, params: j.params, createdBy: j.createdBy, createdAt: j.createdAt, approvedBy: j.approvedBy, approvedAt: j.approvedAt, startedAt: j.startedAt, finishedAt: j.finishedAt,
   };
 }
 
-export type JobAction = 'approve' | 'start' | 'pause' | 'resume' | 'cancel' | 'retry_failed';
-export const JOB_ACTIONS: JobAction[] = ['approve', 'start', 'pause', 'resume', 'cancel', 'retry_failed'];
+export type JobAction = 'approve' | 'start' | 'pause' | 'resume' | 'cancel' | 'retry_failed' | 'archive' | 'unarchive';
+export const JOB_ACTIONS: JobAction[] = ['approve', 'start', 'pause', 'resume', 'cancel', 'retry_failed', 'archive', 'unarchive'];
+/** Only a finished job can be archived (hidden from the list; kept in full). */
+export const ARCHIVABLE = ['done', 'cancelled', 'failed'];
 
 /**
  * One state change, with the rules: approve only a ready job with its exact hash (re-checked
@@ -150,5 +153,12 @@ export async function jobAction(st: BulkStore, j: BulkJob, action: JobAction, o:
       const n = await st.requeueFailed(j.id);
       return { ok: true, status: j.status, message: `${n} failed item(s) back in the queue${j.status === 'paused' ? ' — resume to run them' : ''}.` };
     }
+    case 'archive':
+      if (!ARCHIVABLE.includes(j.status)) return { ok: false, status: j.status, message: `Only a finished job (done, cancelled or failed) can be archived — this one is ${j.status}.` };
+      await st.setArchived(j.id, true, by);
+      return { ok: true, status: j.status, message: 'Archived — hidden from the list ("Show archived" brings it back). Nothing in Autotask changes.' };
+    case 'unarchive':
+      await st.setArchived(j.id, false, by);
+      return { ok: true, status: j.status, message: 'Restored to the list.' };
   }
 }

@@ -658,8 +658,9 @@ export function adminHandler(deps: AdminDeps) {
       requireUser(ctx);
       if (!deps.pool) return send(res, 200, { jobs: [], available: false });
       const st = new BulkStore(deps.pool);
-      const jobs = await st.list(30).catch((e) => { if (/bulk_job/.test(String(e))) throw new HttpError(503, 'The bulk job tables are missing — run the migrations (0015).', 'migration'); throw e; });
-      return send(res, 200, { jobs: await Promise.all(jobs.map((j) => jobView(st, j))), available: true, defaults: DEFAULT_SCHEDULE });
+      const showArchived = new URL(req.url ?? '/', 'http://x').searchParams.get('archived') === '1';
+      const jobs = await st.list(30, { archived: showArchived }).catch((e) => { if (/bulk_job/.test(String(e))) throw new HttpError(503, 'The bulk job tables are missing — run the migrations (0015).', 'migration'); throw e; });
+      return send(res, 200, { jobs: await Promise.all(jobs.map((j) => jobView(st, j))), available: true, defaults: DEFAULT_SCHEDULE, archivedCount: await st.archivedCount() });
     }
     if (path === '/api/bulk-jobs/activity' && method === 'GET') {
       requireUser(ctx);

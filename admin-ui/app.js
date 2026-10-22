@@ -595,6 +595,7 @@ const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 async function bulk(body) {
   const isAdmin = me.role === 'admin';
   const open = new Map(); // job id → items tab shown
+  let showArchived = false;
   const list = h('div');
   const act = async (j, action) => {
     const p = j.progress;
@@ -624,6 +625,7 @@ async function bulk(body) {
   const card = (j) => {
     const [label, cls] = BULK_STATUS[j.status] || [j.status, ''];
     const p = j.progress;
+    const live = !['done', 'cancelled', 'failed'].includes(j.status); // finished jobs show no pace / schedule
     const btn = (action, text, kind) => h('button', { class: `small ${kind || ''}`, onclick: () => act(j, action) }, text);
     const buttons = isAdmin ? [
       j.status === 'ready' ? btn('approve', 'Approve…', '') : null,
@@ -632,6 +634,8 @@ async function bulk(body) {
       j.status === 'paused' ? btn('resume', 'Resume…', '') : null,
       p.failed ? btn('retry_failed', `Retry ${fmt(p.failed)} failed`, 'secondary') : null,
       !['done', 'cancelled', 'failed'].includes(j.status) ? btn('cancel', 'Cancel…', 'secondary') : null,
+      !live && !j.archived ? btn('archive', 'Archive', 'secondary') : null,
+      j.archived ? btn('unarchive', 'Restore', 'secondary') : null,
     ].filter(Boolean) : [];
     const tab = open.get(j.id);
     const tabs = ['done', 'failed', 'excluded', 'pending'].map((t) => h('button', { class: `small ${tab === t ? '' : 'secondary'}`, onclick: () => { open.set(j.id, tab === t ? null : t); draw(); } },
@@ -640,18 +644,18 @@ async function bulk(body) {
     return h('section', { class: 'panel' },
       h('div', { class: 'row', style: 'justify-content:space-between;align-items:flex-start' },
         h('div', null, h('h2', { style: 'margin:0' }, j.title), h('div', { class: 'muted mono', style: 'font-size:12px' }, j.id)),
-        h('span', { class: `badge ${cls}` }, label)),
+        h('div', { class: 'row', style: 'gap:6px' }, j.archived ? h('span', { class: 'badge' }, 'Archived') : null, h('span', { class: `badge ${cls}` }, label))),
       j.status === 'preparing' ? h('p', { class: 'muted' }, 'Reading the records and checking each for history (paced). This page updates by itself.') : null,
-      j.pauseReason ? h('div', { class: `banner ${/canary/.test(j.pauseReason) ? '' : 'bad'}`, style: 'margin:8px 0' }, j.pauseReason) : null,
+      j.pauseReason ? (live ? h('div', { class: `banner ${/canary/.test(j.pauseReason) ? '' : 'bad'}`, style: 'margin:8px 0' }, j.pauseReason) : h('p', { class: 'muted', style: 'margin:6px 0' }, j.pauseReason)) : null,
       // A throttling wait is not an error (the record stays queued); any error clears once a write goes through.
       j.lastError && j.status !== 'done' ? (/waiting out Autotask throttling/.test(j.lastError) ? h('div', { class: 'muted', style: 'font-size:13px' }, `Waiting: ${j.lastError}`) : h('div', { class: 'error', style: 'font-size:13px' }, `Last error: ${j.lastError}`)) : null,
       p.total ? h('div', { style: 'margin:10px 0' },
         h('div', { class: 'row', style: 'justify-content:space-between' }, h('strong', null, `${p.pct}%`), h('span', { class: 'muted' }, `${fmt(p.done + p.skipped)} of ${fmt(p.total)} writes · ${fmt(p.pending)} left${p.failed ? ` · ${fmt(p.failed)} failed` : ''}${p.excluded ? ` · ${fmt(p.excluded)} excluded` : ''}`)),
         h('div', { class: 'bar' }, h('span', { style: `width:${Math.min(100, p.pct)}%` }))) : null,
       h('div', { class: 'table-wrap' }, h('table', null, h('tbody', null,
-        h('tr', null, h('th', null, 'Pace now'), h('td', null, j.rate.quietUntil != null ? `quiet hours — nothing written until ${String(j.rate.quietUntil % 24).padStart(2, '0')}:00 · ${fmt(j.rate.doneLastHour)} done in the last hour` : `${fmt(j.rate.now)}/hour ${j.rate.inBusinessHours ? '(business hours)' : '(off hours)'} · ${fmt(j.rate.doneLastHour)} done in the last hour`)),
-        h('tr', null, h('th', null, 'Quiet hours'), h('td', null, j.quietHours && j.quietHours.length ? `${j.quietHours.map((w) => `${String(w.start).padStart(2, '0')}:00–${String(w.end).padStart(2, '0')}:00${w.days ? ` ${w.days.map((d) => DAY_NAMES[d]).join(' ')}` : ''}`).join(', ')} (${(sched || { tz: 'America/New_York' }).tz}) — no writes (another integration's busy window)` : h('span', { class: 'muted' }, 'none'))),
-        h('tr', null, h('th', null, 'Schedule'), h('td', null, sched ? `${fmt(j.rate.businessHours)}/hour ${sched.days.map((d) => DAY_NAMES[d]).join(' ')} ${String(sched.start).padStart(2, '0')}:00–${String(sched.end).padStart(2, '0')}:00 (${sched.tz}); ${fmt(j.rate.offHours)}/hour otherwise` : `${fmt(j.rate.offHours)}/hour, all day`)),
+        live && h('tr', null, h('th', null, 'Pace now'), h('td', null, j.rate.quietUntil != null ? `quiet hours — nothing written until ${String(j.rate.quietUntil % 24).padStart(2, '0')}:00 · ${fmt(j.rate.doneLastHour)} done in the last hour` : `${fmt(j.rate.now)}/hour ${j.rate.inBusinessHours ? '(business hours)' : '(off hours)'} · ${fmt(j.rate.doneLastHour)} done in the last hour`)),
+        live && h('tr', null, h('th', null, 'Quiet hours'), h('td', null, j.quietHours && j.quietHours.length ? `${j.quietHours.map((w) => `${String(w.start).padStart(2, '0')}:00–${String(w.end).padStart(2, '0')}:00${w.days ? ` ${w.days.map((d) => DAY_NAMES[d]).join(' ')}` : ''}`).join(', ')} (${(sched || { tz: 'America/New_York' }).tz}) — no writes (another integration's busy window)` : h('span', { class: 'muted' }, 'none'))),
+        live && h('tr', null, h('th', null, 'Schedule'), h('td', null, sched ? `${fmt(j.rate.businessHours)}/hour ${sched.days.map((d) => DAY_NAMES[d]).join(' ')} ${String(sched.start).padStart(2, '0')}:00–${String(sched.end).padStart(2, '0')}:00 (${sched.tz}); ${fmt(j.rate.offHours)}/hour otherwise` : `${fmt(j.rate.offHours)}/hour, all day`)),
         p.pending && ['running', 'paused', 'approved', 'ready'].includes(j.status) ? h('tr', null, h('th', null, 'Time left'), h('td', null, j.etaDays >= 1 ? `about ${j.etaDays} day(s) at this schedule` : `about ${Math.max(1, Math.round(j.etaDays * 24))} hour(s) at this schedule`)) : null,
         h('tr', null, h('th', null, 'Per entity'), h('td', null, Object.entries(j.counts).map(([e, c]) => h('div', null, h('strong', null, e), `: ${Object.entries(c).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ')}`)))),
         j.kind === 'inactivate_company_contacts' && j.stats.companyDomains ? h('tr', null, h('th', null, 'Kept as the company\'s own'), h('td', null, Object.keys(j.stats.companyDomains).length ? Object.entries(j.stats.companyDomains).map(([d, why]) => h('div', null, h('strong', null, d), h('span', { class: 'muted' }, ` — ${why}`))) : h('span', { class: 'muted' }, 'none (no web address, no contact with history)'))) : null,
@@ -665,9 +669,10 @@ async function bulk(body) {
       p.total || p.excluded ? h('div', { style: 'margin-top:12px' }, h('div', { class: 'row' }, ...tabs), tab ? h('div', { style: 'margin-top:8px' }, itemsBox(j, tab)) : null) : null);
   };
   async function draw() {
-    const r = await api('GET', '/api/bulk-jobs');
+    const r = await api('GET', `/api/bulk-jobs${showArchived ? '?archived=1' : ''}`);
     if (!r.available) { list.replaceChildren(h('p', { class: 'muted' }, 'Needs Postgres (MCP_PG_ENABLED) and migration 0015.')); return; }
-    list.replaceChildren(...(r.jobs.length ? r.jobs.map(card) : [h('p', { class: 'muted' }, 'No bulk jobs yet.')]));
+    const toggle = r.archivedCount ? h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center;margin:0 0 10px' }, h('input', { type: 'checkbox', checked: showArchived, onchange: (e) => { showArchived = e.target.checked; draw(); } }), `Show archived (${fmt(r.archivedCount)})`) : null;
+    list.replaceChildren(...[toggle, ...(r.jobs.length ? r.jobs.map(card) : [h('p', { class: 'muted' }, showArchived ? 'No bulk jobs.' : 'No bulk jobs yet (or all archived).')])].filter(Boolean));
   }
 
   // New cleanup (admins): prepared in the background, approved here, then run by the worker.

@@ -363,3 +363,20 @@ describe('preparation waits out throttling', () => {
     expect(isThrottled(new Error('HTTP 500'))).toBe(false);
   });
 });
+
+describe('archive', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { jobAction } = require('../src/bulk/service');
+  const mk = (status: string) => { const calls: Array<[string, boolean]> = []; return { calls, job: { id: 'j', status, stats: {} }, st: { setArchived: async (id: string, on: boolean) => { calls.push([id, on]); } } }; };
+  test.each(['done', 'cancelled', 'failed'])('a %s job can be archived and restored', async (status) => {
+    const m = mk(status);
+    expect(await jobAction(m.st, m.job, 'archive', { by: 'a' })).toMatchObject({ ok: true });
+    expect(await jobAction(m.st, m.job, 'unarchive', { by: 'a' })).toMatchObject({ ok: true });
+    expect(m.calls).toEqual([['j', true], ['j', false]]);
+  });
+  test.each(['preparing', 'ready', 'approved', 'running', 'paused'])('a %s job cannot be archived', async (status) => {
+    const m = mk(status);
+    expect(await jobAction(m.st, m.job, 'archive', { by: 'a' })).toMatchObject({ ok: false });
+    expect(m.calls).toEqual([]);
+  });
+});

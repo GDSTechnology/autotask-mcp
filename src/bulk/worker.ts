@@ -11,6 +11,7 @@ import type { Logger } from '../utils/logger.js';
 import { BulkStore, type BulkItem, type BulkJob } from './store.js';
 import { DEFAULT_SCHEDULE, currentRate, quietWindowAt, quietOf, type BusinessSchedule } from './schedule.js';
 import { settingValue } from '../admin/settings.js';
+import { runJob } from '../services/call-log.js';
 
 export const MAX_ATTEMPTS = 3;
 /** Bulk jobs yield early: half pace from 40% tenant usage, stop at 65% (Autotask adds +1 s per call from 75%, and 10,000/h is the hard limit). */
@@ -158,13 +159,14 @@ export function startBulkWorker(s: AutotaskService, getPool: () => Pool | null, 
   const w = new BulkWorker({
     store: new BulkStore(pool),
     fns: {
-      inactivateContact: (id, companyId) => s.updateContact(id, { companyID: companyId, isActive: 0 } as never),
-      inactivateCompany: (id) => s.updateCompany(id, { isActive: false } as never),
+      // Named for the Calls page ("job: bulk worker"), not lumped into "other background".
+      inactivateContact: (id, companyId) => runJob('bulk worker', () => s.updateContact(id, { companyID: companyId, isActive: 0 } as never)),
+      inactivateCompany: (id) => runJob('bulk worker', () => s.updateCompany(id, { isActive: false } as never)),
     },
     // The console's read-only switch stops the worker too (it writes in the background, not through a tool call).
     level: () => (settingValue<boolean>('tools.writesEnabled') === false ? 'stop' : backpressure(tenant, { ...BULK_THRESHOLDS, slowPct: intEnv(process.env.MCP_BULK_SLOW_AT_PCT, BULK_THRESHOLDS.slowPct), stopPct: intEnv(process.env.MCP_BULK_STOP_AT_PCT, BULK_THRESHOLDS.stopPct) }).level),
     now: () => Date.now(), notify, logger,
-    refreshUsage: () => s.getApiUsage(),
+    refreshUsage: () => runJob('bulk worker', () => s.getApiUsage()),
   });
   // A preparation interrupted by a restart can't finish: say so (running jobs simply continue).
   void pool.query(`UPDATE bulk_job SET status = 'failed', last_error = 'interrupted by a server restart — prepare it again', finished_at = now(), updated_at = now() WHERE status = 'preparing'`).catch(() => undefined);

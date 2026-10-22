@@ -4,7 +4,7 @@
 
 import { preparePlaceholderJob } from '../src/bulk/prepare';
 import { prepareCompanyContactsJob } from '../src/bulk/prepare-contacts';
-import { activityProfile, currentRate, inBusinessHours, suggestWindow, weeklyCapacity, DEFAULT_SCHEDULE } from '../src/bulk/schedule';
+import { activityProfile, currentRate, inBusinessHours, parseQuietHours, quietWindowAt, suggestWindow, weeklyCapacity, DEFAULT_QUIET_HOURS, DEFAULT_SCHEDULE } from '../src/bulk/schedule';
 import { profileFromRows } from '../src/bulk/activity';
 import { BulkWorker, BULK_THRESHOLDS, applyItem, writeGapMs } from '../src/bulk/worker';
 import { assessBackpressure } from '../src/services/backpressure';
@@ -138,8 +138,9 @@ describe('worker', () => {
       inactivateContact: async (id: number, co: number) => { writes.push(`ct:${id}@${co}`); },
     };
     let level: 'ok' | 'slow' | 'stop' = 'ok';
-    const w = new BulkWorker({ store: store as never, fns, level: () => level, now: () => now, notify: () => undefined });
-    return { w, state, writes, advance: (ms: number) => { now += ms; }, setLevel: (l: typeof level) => { level = l; } };
+    const usage = { refreshes: 0 };
+    const w = new BulkWorker({ store: store as never, fns, level: () => level, now: () => now, notify: () => undefined, refreshUsage: async () => { usage.refreshes++; } });
+    return { w, state, writes, usage, advance: (ms: number) => { now += ms; }, setAt: (iso: string) => { now = Date.parse(iso); }, setLevel: (l: typeof level) => { level = l; } };
   }
 
   test('paced: at most one write per gap; canary pauses after its size; resume continues; done at the end', async () => {
@@ -195,6 +196,39 @@ describe('worker', () => {
     expect(h.state.job.lastError).toBeNull(); // a write that went through clears it (it used to stay on the card for days)
   });
 
+  test('quiet hours write nothing (defaults apply to jobs prepared before them); a fresh usage reading at most once a minute', async () => {
+    const h = harness([item(1), item(2), item(3)], mkJob({ canarySize: 99 }));
+    h.setAt('2026-10-22T06:30:00Z'); // 02:30 New York — inside the default 00:00–04:00
+    expect(await h.w.tick()).toBe('quiet-hours');
+    h.setAt('2026-10-22T01:15:00Z'); // 21:15 New York — inside 21:00–22:00
+    expect(await h.w.tick()).toBe('quiet-hours');
+    expect(h.writes).toEqual([]);
+    expect(h.usage.refreshes).toBe(0); // no reading needed while quiet
+    h.setAt('2026-10-22T09:00:00Z'); // 05:00 — writing again
+    expect(await h.w.tick()).toBe('done');
+    h.advance(30_000); await h.w.tick();
+    expect(h.usage.refreshes).toBe(1); // 2 writes in 30 s, one reading
+    h.advance(31_000); await h.w.tick();
+    expect(h.usage.refreshes).toBe(2);
+    // A job prepared with quietHours: [] has none.
+    const n = harness([item(1)], mkJob({ canarySize: 99, params: { schedule: null, quietHours: [] } }));
+    n.setAt('2026-10-22T06:30:00Z');
+    expect(await n.w.tick()).toBe('done');
+  });
+  test('quiet hours: parsing, which window applies, and the ETA skips them', () => {
+    expect(parseQuietHours(undefined)).toEqual(DEFAULT_QUIET_HOURS);
+    expect(parseQuietHours('none')).toEqual([]);
+    expect(parseQuietHours('0-4, 21-22')).toEqual([{ start: 0, end: 4 }, { start: 21, end: 22 }]);
+    expect(parseQuietHours([{ start: 1, end: 3, days: [1, 2] }])).toEqual([{ start: 1, end: 3, days: [1, 2] }]);
+    expect(() => parseQuietHours('22-2')).toThrow(/crosses midnight|start before end/);
+    expect(() => parseQuietHours('nine to five')).toThrow(/local hours like/);
+    expect(quietWindowAt(new Date('2026-10-22T06:30:00Z'), DEFAULT_QUIET_HOURS, 'America/New_York')).toEqual({ start: 0, end: 4 });
+    expect(quietWindowAt(new Date('2026-10-22T12:00:00Z'), DEFAULT_QUIET_HOURS, 'America/New_York')).toBeNull();
+    expect(quietWindowAt(new Date('2026-10-20T05:30:00Z'), [{ start: 1, end: 3, days: [3] }], 'America/New_York')).toBeNull(); // Tuesday, window is Wednesday-only
+    // 5 quiet hours a day out of 24: 7 × 5 × 3,000 fewer writes a week (no business hours here).
+    expect(weeklyCapacity(3000, null, DEFAULT_QUIET_HOURS)).toBe(3000 * 168 - 7 * 5 * 3000);
+    expect(weeklyCapacity(3000, null)).toBe(3000 * 168);
+  });
   test('a contact is inactivated through its company (the child route)', async () => {
     const h = harness([item(1, { entity: 'Contacts', recordId: 31, parentId: 900 })], mkJob({ canarySize: 99 }));
     h.advance(10_000); await h.w.tick();

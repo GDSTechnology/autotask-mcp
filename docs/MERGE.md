@@ -114,6 +114,8 @@ For junk at scale (tens of thousands of "Gmail" companies, each with one "Unknow
    - **Off hours:** `ratePerHour` (default 3,000).
    - **Business hours:** `businessRate` (default 1,000/hour), during `businessHours` (default Mon–Fri 07:00–19:00 America/New_York; `false` turns it off).
    - `action: "activity"` shows when the team works (time entries and ticket notes by people, per local hour, last 28 days, from the mirror) and suggests the window.
+   - **Quiet hours:** no writes at all in these local hours (default **00:00–04:00 and 21:00–22:00**, `quietHours: "0-4, 21-22"`; `"none"` for none): another integration's burst window. Autotask's *API Activity By Hour* report (Admin → Extensions & Integrations) shows which integration uses which hours. Jobs prepared before quiet hours existed get the defaults.
+   - While writing, the worker takes a fresh tenant-usage reading **every minute** (60 calls/hour), so a burst from another integration is seen within a minute.
    - Tenant usage from **40%** halves the pace; from **65%** it waits (`MCP_BULK_SLOW_AT_PCT` / `MCP_BULK_STOP_AT_PCT`). A 429 cooldown, a login pause and the console's read-only switch also stop it. It resumes by itself.
 6. **Pause conditions:** a login problem, 20 failures in a row, or `action: "pause"`. A 429 (Autotask throttling) is not a failure: the record stays pending with no attempt used, and the worker waits out the cooldown plus a minute. Failed items are listed (`action: "failed"`) and can be re-queued (`action: "retry_failed"`).
    - The job continues after a server restart.

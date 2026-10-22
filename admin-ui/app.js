@@ -649,7 +649,8 @@ async function bulk(body) {
         h('div', { class: 'row', style: 'justify-content:space-between' }, h('strong', null, `${p.pct}%`), h('span', { class: 'muted' }, `${fmt(p.done + p.skipped)} of ${fmt(p.total)} writes · ${fmt(p.pending)} left${p.failed ? ` · ${fmt(p.failed)} failed` : ''}${p.excluded ? ` · ${fmt(p.excluded)} excluded` : ''}`)),
         h('div', { class: 'bar' }, h('span', { style: `width:${Math.min(100, p.pct)}%` }))) : null,
       h('div', { class: 'table-wrap' }, h('table', null, h('tbody', null,
-        h('tr', null, h('th', null, 'Pace now'), h('td', null, `${fmt(j.rate.now)}/hour ${j.rate.inBusinessHours ? '(business hours)' : '(off hours)'} · ${fmt(j.rate.doneLastHour)} done in the last hour`)),
+        h('tr', null, h('th', null, 'Pace now'), h('td', null, j.rate.quietUntil != null ? `quiet hours — nothing written until ${String(j.rate.quietUntil % 24).padStart(2, '0')}:00 · ${fmt(j.rate.doneLastHour)} done in the last hour` : `${fmt(j.rate.now)}/hour ${j.rate.inBusinessHours ? '(business hours)' : '(off hours)'} · ${fmt(j.rate.doneLastHour)} done in the last hour`)),
+        h('tr', null, h('th', null, 'Quiet hours'), h('td', null, j.quietHours && j.quietHours.length ? `${j.quietHours.map((w) => `${String(w.start).padStart(2, '0')}:00–${String(w.end).padStart(2, '0')}:00${w.days ? ` ${w.days.map((d) => DAY_NAMES[d]).join(' ')}` : ''}`).join(', ')} (${(sched || { tz: 'America/New_York' }).tz}) — no writes (another integration's busy window)` : h('span', { class: 'muted' }, 'none'))),
         h('tr', null, h('th', null, 'Schedule'), h('td', null, sched ? `${fmt(j.rate.businessHours)}/hour ${sched.days.map((d) => DAY_NAMES[d]).join(' ')} ${String(sched.start).padStart(2, '0')}:00–${String(sched.end).padStart(2, '0')}:00 (${sched.tz}); ${fmt(j.rate.offHours)}/hour otherwise` : `${fmt(j.rate.offHours)}/hour, all day`)),
         p.pending && ['running', 'paused', 'approved', 'ready'].includes(j.status) ? h('tr', null, h('th', null, 'Time left'), h('td', null, j.etaDays >= 1 ? `about ${j.etaDays} day(s) at this schedule` : `about ${Math.max(1, Math.round(j.etaDays * 24))} hour(s) at this schedule`)) : null,
         h('tr', null, h('th', null, 'Per entity'), h('td', null, Object.entries(j.counts).map(([e, c]) => h('div', null, h('strong', null, e), `: ${Object.entries(c).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ')}`)))),
@@ -678,6 +679,7 @@ async function bulk(body) {
       companyName: v('companyName').value.trim(), createdByResourceId: v('createdBy').value.trim() || null, createdFrom: v('from').value || null, createdTo: v('to').value || null,
       includeContacts: v('contacts').checked, ratePerHour: Number(v('rate').value), canary: Number(v('canary').value),
       businessHours: v('bizOn').checked ? { tz: v('tz').value.trim(), days, start: Number(v('start').value), end: Number(v('end').value), businessRate: Number(v('bizRate').value) } : false,
+      quietHours: v('quiet').value.trim() || 'none',
     };
     try { const r = await api('POST', '/api/bulk-jobs', body); toast(`Preparing job ${r.id.slice(0, 8)}… — it shows below.`); await draw(); } catch (x) { toast(x.message); }
   } },
@@ -693,6 +695,7 @@ async function bulk(body) {
     h('label', { style: 'font-weight:500;display:flex;gap:6px;align-items:center' }, h('input', { name: 'bizOn', type: 'checkbox', checked: true }), 'Slower during business hours'),
     h('div', { class: 'row' },
       h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Business-hours rate', h('input', { name: 'bizRate', type: 'number', value: '1000', min: '60', max: '6000', style: 'max-width:110px' })),
+      h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px', title: 'Local hours with no writes at all — another integration\'s burst window. Empty = none.' }, 'Quiet hours (no writes)', h('input', { name: 'quiet', value: '0-4, 21-22', placeholder: '0-4, 21-22', style: 'max-width:140px' })),
       h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'From hour', h('input', { name: 'start', type: 'number', value: '7', min: '0', max: '23', style: 'max-width:80px' })),
       h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'To hour', h('input', { name: 'end', type: 'number', value: '19', min: '1', max: '24', style: 'max-width:80px' })),
       h('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:13px' }, 'Time zone', h('input', { name: 'tz', value: 'America/New_York', style: 'max-width:180px' })),
@@ -710,6 +713,7 @@ async function bulk(body) {
       createdFrom: cv('from').value || null, createdTo: cv('to').value || null, includeNoEmail: cv('noEmail').checked, ticketsOk: cv('ticketsOk').checked,
       ratePerHour: Number(v('rate').value), canary: Number(cv('canary').value),
       businessHours: v('bizOn').checked ? { tz: v('tz').value.trim(), days, start: Number(v('start').value), end: Number(v('end').value), businessRate: Number(v('bizRate').value) } : false,
+      quietHours: v('quiet').value.trim() || 'none',
     };
     try { const r = await api('POST', '/api/bulk-jobs', body); toast(`Preparing job ${r.id.slice(0, 8)}… — it shows above.`); await draw(); } catch (x) { toast(x.message); }
   } },

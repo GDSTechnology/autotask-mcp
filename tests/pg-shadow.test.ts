@@ -197,6 +197,17 @@ describe('ShadowSync', () => {
     expect(store.rows.get('Tickets')!.get(7)).toEqual({ id: 7, status: 5 });
   });
 
+  test('new notes / time entries queue their ticket and task for a re-read (lastActivity* moves without the modified stamp); searches stay on the mirror', async () => {
+    const sync = new ShadowSync(fakeAutotask({}).http, memStore() as any, logger, { maxCallsPerRun: 1, pauseAtPct: 85 });
+    sync.markParentsStale(shadowEntity('TicketNotes')!, [{ id: 1, ticketID: 70 }, { id: 2, ticketID: 71 }]);
+    sync.markParentsStale(shadowEntity('TimeEntries')!, [{ id: 3, ticketID: 72, taskID: null }, { id: 4, ticketID: null, taskID: 90 }]);
+    sync.markParentsStale(shadowEntity('Companies')!, [{ id: 5, ticketID: 99 }]); // no activity parent
+    expect([70, 71, 72].map((t) => sync.isDirty('Tickets', t))).toEqual([true, true, true]);
+    expect(sync.isDirty('Tasks', 90)).toBe(true);
+    expect(sync.isDirty('Tickets', 99)).toBe(false);
+    expect(sync.writtenWithin('Tickets', 60_000)).toBe(false); // not 'the MCP wrote it'
+  });
+
   test('a 429 cooldown skips the run instead of failing every entity; an unrelated usage error still syncs', async () => {
     const at = fakeAutotask({ Tickets: [{ id: 7, status: 5 }] });
     const held = new ShadowSync(at.http, memStore() as any, logger, { maxCallsPerRun: 10, pauseAtPct: 85, usagePct: async () => { throw new Error('Autotask API threshold exceeded (HTTP 429) — this tenant is in a 30s cooldown'); } });

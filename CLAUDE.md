@@ -13,6 +13,10 @@ Workflow defaults (commits, changelog, memory) come from the global `~/.claude/C
 - Autotask's own **API Activity By Hour** report (Admin → Extensions & Integrations) breaks calls down per
   integration (API user), reads included — the only place other integrations' reads show. An email-to-ticket
   connector made 63k calls/day with 6–9k bursts at 21:00 and 00–04; bulk jobs now keep quiet hours there.
+- **A note / time entry moves `Tickets.lastActivityDate` and `Tasks.lastActivityResourceID` WITHOUT moving their
+  modified stamp** (mirror check: Tickets / Tasks "differ"), so the incremental sync never re-read them. The sync now
+  queues the parent ticket / task of every new or changed TicketNote / TimeEntry for a re-read (`markParentsStale`,
+  not `markDirty`: that one sends searches live for minutes).
 
 ## Learnings - 2026-10-20
 

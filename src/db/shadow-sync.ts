@@ -63,6 +63,23 @@ export class ShadowSync {
     (this.dirty.get(e.name) ?? this.dirty.set(e.name, new Set()).get(e.name)!).add(id);
     this.lastWrite.set(e.name, Date.now());
   }
+  /**
+   * A note or time entry moves its ticket's / task's lastActivity* fields WITHOUT moving their modified stamp
+   * (mirror check 2026-10-22: Tickets.lastActivityDate, Tasks.lastActivityResourceID), so the incremental
+   * sync never re-read them. New / changed activity rows queue their parent for a re-read on the next run.
+   * Unlike markDirty this is not "the MCP wrote it": searches keep using the mirror meanwhile.
+   */
+  markParentsStale(e: ShadowEntity, rows: Array<Record<string, unknown>>): void {
+    const links: Array<[string, string]> = e.name === 'TicketNotes' ? [['ticketID', 'Tickets']] : e.name === 'TimeEntries' ? [['ticketID', 'Tickets'], ['taskID', 'Tasks']] : [];
+    for (const [field, parent] of links) {
+      const p = shadowEntity(parent);
+      if (!p) continue;
+      for (const r of rows) {
+        const id = Number(r[field]);
+        if (Number.isInteger(id) && id > 0) (this.dirty.get(p.name) ?? this.dirty.set(p.name, new Set()).get(p.name)!).add(id);
+      }
+    }
+  }
   /** A row the MCP wrote that the mirror hasn't re-read yet (by-id reads must go live). */
   isDirty(entity: string, id: number): boolean { return this.dirty.get(shadowEntity(entity)?.name ?? entity)?.has(id) ?? false; }
   /** The MCP wrote this entity within `ms` (searches go live briefly: a just-created row isn't mirrored yet). */
@@ -187,7 +204,7 @@ export class ShadowSync {
     let cursor = 0, rows = 0, newest = watermark?.getTime() ?? 0, complete = false;
     while (this.budgetLeft() > 0) {
       const page = await this.page(e, [changed, { op: 'gt', field: 'id', value: cursor }]);
-      rows += await this.store.upsert(e, page);
+      rows += await this.store.upsert(e, page); this.markParentsStale(e, page);
       for (const r of page) { const m = modifiedAt(e, r)?.getTime(); if (m && m > newest) newest = m; }
       if (page.length) cursor = Math.max(...page.map((r) => Number(r.id)));
       if (page.length < PAGE) { complete = true; break; }
@@ -210,7 +227,7 @@ export class ShadowSync {
     let cursor = await this.store.maxId(e.name), newDone = false;
     while (this.budgetLeft() > 0) {
       const page = await this.page(e, [{ op: 'gt', field: 'id', value: cursor }]);
-      rows += await this.store.upsert(e, page);
+      rows += await this.store.upsert(e, page); this.markParentsStale(e, page);
       if (page.length) cursor = Math.max(...page.map((r) => Number(r.id)));
       if (page.length < PAGE) { newDone = true; break; }
     }
@@ -231,7 +248,7 @@ export class ShadowSync {
       let c = 0, complete = false;
       while (this.budgetLeft() > 0) {
         const page = await this.page(e, [...range, { op: 'gt', field: 'id', value: c }]);
-        rows += await this.store.upsert(e, page);
+        rows += await this.store.upsert(e, page); this.markParentsStale(e, page);
         for (const r of page) seen.add(Number(r.id));
         if (page.length) c = Math.max(...page.map((r) => Number(r.id)));
         if (page.length < PAGE) { complete = true; break; }

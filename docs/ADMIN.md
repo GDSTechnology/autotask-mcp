@@ -308,6 +308,7 @@ Mass changes are prepared from the mirror, **approved by a person here**, and pu
   - whether to include their contacts;
   - the off-hours rate (default 3,000 writes/hour);
   - the business-hours rate and window (default 1,000/hour, Mon–Fri 07:00–19:00 America/New_York);
+  - **quiet hours**, local hours with no writes at all (default `0-4, 21-22`: another integration's burst window; empty for none);
   - the canary size (default 50).
 
   **Prepare** writes nothing. It reads the records and checks each for history in the background; companies with history are excluded.

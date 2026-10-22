@@ -7,7 +7,7 @@ import { isPlaceholderCompany } from '../merge/model.js';
 import { BulkStore, itemsHash, type BulkJob } from './store.js';
 import { preparePlaceholderJob, type PlaceholderSelector } from './prepare.js';
 import { prepareCompanyContactsJob, type CompanyContactsSelector } from './prepare-contacts.js';
-import { DEFAULT_SCHEDULE, currentRate, weeklyCapacity, type BusinessSchedule } from './schedule.js';
+import { DEFAULT_SCHEDULE, currentRate, parseQuietHours, quietOf, quietWindowAt, weeklyCapacity, type BusinessSchedule, type QuietWindow } from './schedule.js';
 
 export const MAX_RATE = 6000;
 
@@ -17,6 +17,8 @@ export interface PrepareRequest {
   /** false = no business hours (one rate all day). */
   businessHours?: Partial<BusinessSchedule> | false;
   businessRate?: number;
+  /** Local hours with no writes: "0-4, 21-22" (default), windows, or "none". */
+  quietHours?: string | QuietWindow[] | false | null;
 }
 
 export function scheduleOf(r: Pick<PrepareRequest, 'businessHours' | 'businessRate'>): BusinessSchedule | null {
@@ -35,7 +37,8 @@ export async function startPrepare(s: AutotaskService, st: BulkStore, r: Prepare
   if (schedule && (schedule.start < 0 || schedule.end > 24 || schedule.start >= schedule.end)) throw new Error('businessHours: start must be before end (hours 0–24).');
   const sel: PlaceholderSelector = { companyName, ...(r.createdByResourceId != null ? { createdByResourceId: Number(r.createdByResourceId) } : {}), ...(r.createdFrom ? { createdFrom: String(r.createdFrom) } : {}), ...(r.createdTo ? { createdTo: String(r.createdTo) } : {}) };
   const includeContacts = r.includeContacts !== false;
-  const job = await st.create({ kind: 'inactivate_placeholders', title: `Inactivate "${companyName}" placeholder companies${includeContacts ? ' and their contacts' : ''}`, params: { selector: sel, includeContacts, schedule }, ratePerHour: rate, canarySize: Math.min(Math.max(Number(r.canary) || 50, 1), 1000), by });
+  const quietHours = parseQuietHours(r.quietHours);
+  const job = await st.create({ kind: 'inactivate_placeholders', title: `Inactivate "${companyName}" placeholder companies${includeContacts ? ' and their contacts' : ''}`, params: { selector: sel, includeContacts, schedule, quietHours }, ratePerHour: rate, canarySize: Math.min(Math.max(Number(r.canary) || 50, 1), 1000), by });
   // Preparation reads tens of thousands of rows: in the background, paced like the job itself.
   void (async () => {
     try {
@@ -65,7 +68,8 @@ export async function startPrepareCompanyContacts(s: AutotaskService, st: BulkSt
   const keepDomains = list(r.keepDomains, String), onlyDomains = list(r.onlyDomains, String);
   const sel: CompanyContactsSelector = { companyId, ...(contactIds?.length ? { contactIds } : {}), ...(keepDomains?.length ? { keepDomains } : {}), ...(onlyDomains?.length ? { onlyDomains } : {}),
     ...(r.createdFrom ? { createdFrom: String(r.createdFrom) } : {}), ...(r.createdTo ? { createdTo: String(r.createdTo) } : {}), ...(r.includeNoEmail ? { includeNoEmail: true } : {}), ...(r.ticketsOk ? { ticketsOk: true } : {}) };
-  const job = await st.create({ kind: 'inactivate_company_contacts', title: `Inactivate junk contacts on company #${companyId}${contactIds?.length ? ` (${contactIds.length} listed)` : ''}`, params: { selector: sel, schedule }, ratePerHour: rate, canarySize: Math.min(Math.max(Number(r.canary) || 25, 1), 1000), by });
+  const quietHours = parseQuietHours(r.quietHours);
+  const job = await st.create({ kind: 'inactivate_company_contacts', title: `Inactivate junk contacts on company #${companyId}${contactIds?.length ? ` (${contactIds.length} listed)` : ''}`, params: { selector: sel, schedule, quietHours }, ratePerHour: rate, canarySize: Math.min(Math.max(Number(r.canary) || 25, 1), 1000), by });
   void (async () => {
     try {
       const http = await s.httpClient();
@@ -85,13 +89,15 @@ export async function jobView(st: BulkStore, j: BulkJob, now = new Date()): Prom
   const pending = sum('pending'), done = sum('done'), skipped = sum('skipped'), failed = sum('failed'), excluded = sum('excluded');
   const total = pending + done + skipped + failed;
   const schedule = (j.params as { schedule?: BusinessSchedule | null }).schedule ?? null;
-  const pace = currentRate(now, j.ratePerHour, schedule);
-  const perWeek = weeklyCapacity(j.ratePerHour, schedule);
+  const quietHours = quietOf(j.params);
+  const quiet = quietWindowAt(now, quietHours, (schedule ?? DEFAULT_SCHEDULE).tz);
+  const pace = quiet ? { rate: 0, business: false } : currentRate(now, j.ratePerHour, schedule);
+  const perWeek = weeklyCapacity(j.ratePerHour, schedule, quietHours);
   const lastHour = await st.doneSince(j.id, new Date(now.getTime() - 3_600_000).toISOString());
   return {
     id: j.id, title: j.title, kind: j.kind, status: j.status, hash: j.hash, pauseReason: j.pauseReason, lastError: j.lastError,
-    rate: { offHours: j.ratePerHour, businessHours: schedule ? Math.min(schedule.businessRate, j.ratePerHour) : null, now: pace.rate, inBusinessHours: pace.business, doneLastHour: lastHour },
-    schedule, canary: { size: j.canarySize, done: !!(j.stats as { canaryDone?: boolean }).canaryDone },
+    rate: { offHours: j.ratePerHour, businessHours: schedule ? Math.min(schedule.businessRate, j.ratePerHour) : null, now: pace.rate, inBusinessHours: pace.business, quietUntil: quiet ? quiet.end : null, doneLastHour: lastHour },
+    schedule, quietHours, canary: { size: j.canarySize, done: !!(j.stats as { canaryDone?: boolean }).canaryDone },
     counts, progress: { total, done, skipped, failed, pending, excluded, pct: total ? Math.round(((done + skipped) / total) * 1000) / 10 : 0 },
     pending, etaDays: pending ? Math.round((pending / perWeek) * 7 * 10) / 10 : 0,
     stats: j.stats, params: j.params, createdBy: j.createdBy, createdAt: j.createdAt, approvedBy: j.approvedBy, approvedAt: j.approvedAt, startedAt: j.startedAt, finishedAt: j.finishedAt,

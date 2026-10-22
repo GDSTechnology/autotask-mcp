@@ -9,7 +9,7 @@ import { backpressure, DEFAULT_THRESHOLDS } from '../services/backpressure.js';
 import { notify } from '../services/notifier.js';
 import type { Logger } from '../utils/logger.js';
 import { BulkStore, type BulkItem, type BulkJob } from './store.js';
-import { currentRate, type BusinessSchedule } from './schedule.js';
+import { DEFAULT_SCHEDULE, currentRate, quietWindowAt, quietOf, type BusinessSchedule } from './schedule.js';
 import { settingValue } from '../admin/settings.js';
 
 export const MAX_ATTEMPTS = 3;
@@ -62,13 +62,22 @@ export function writeGapMs(ratePerHour: number, level: 'ok' | 'slow' | 'stop'): 
   return level === 'slow' ? gap * 2 : gap;
 }
 
-export interface WorkerDeps { store: BulkStore; fns: ApplyFns; level: () => 'ok' | 'slow' | 'stop'; now: () => number; notify: (e: Parameters<typeof notify>[0]) => void; logger?: Logger }
+export interface WorkerDeps {
+  store: BulkStore; fns: ApplyFns; level: () => 'ok' | 'slow' | 'stop'; now: () => number; notify: (e: Parameters<typeof notify>[0]) => void; logger?: Logger;
+  /** Take a fresh tenant-usage reading (1 Autotask call). Called at most once a minute while a job writes, so a
+   *  burst from another integration is seen within a minute — the mirror's 5-minute reading let one run ahead. */
+  refreshUsage?: () => Promise<unknown>;
+}
+
+/** How often the worker re-reads tenant usage while a job is writing. */
+export const USAGE_REFRESH_MS = 60_000;
 
 /** The worker's state between ticks (per process). */
 export class BulkWorker {
   private lastWrite = new Map<string, number>();
   private failStreak = new Map<string, number>();
   private busy = false;
+  private lastUsageRefresh = 0;
   constructor(private readonly d: WorkerDeps) {}
 
   /** One step: at most one write. Returns what happened (for tests / logs). */
@@ -78,6 +87,14 @@ export class BulkWorker {
     try {
       const job = (await this.d.store.running())[0];
       if (!job) return 'idle';
+      // Quiet hours (another integration's burst window): write nothing.
+      const tz = ((job.params as { schedule?: BusinessSchedule | null }).schedule ?? DEFAULT_SCHEDULE).tz;
+      if (quietWindowAt(new Date(this.d.now()), quietOf(job.params), tz)) return 'quiet-hours';
+      // A fresh usage reading at most once a minute while writing (backpressure reads the latest one).
+      if (this.d.refreshUsage && this.d.now() - this.lastUsageRefresh >= USAGE_REFRESH_MS) {
+        this.lastUsageRefresh = this.d.now();
+        await this.d.refreshUsage().catch(() => undefined);
+      }
       // Business hours: a slower rate while people are working (job.params.schedule), the job rate outside.
       const { rate } = currentRate(new Date(this.d.now()), job.ratePerHour, (job.params as { schedule?: BusinessSchedule | null }).schedule ?? null);
       const gap = writeGapMs(rate, this.d.level());
@@ -147,11 +164,12 @@ export function startBulkWorker(s: AutotaskService, getPool: () => Pool | null, 
     // The console's read-only switch stops the worker too (it writes in the background, not through a tool call).
     level: () => (settingValue<boolean>('tools.writesEnabled') === false ? 'stop' : backpressure(tenant, { ...BULK_THRESHOLDS, slowPct: intEnv(process.env.MCP_BULK_SLOW_AT_PCT, BULK_THRESHOLDS.slowPct), stopPct: intEnv(process.env.MCP_BULK_STOP_AT_PCT, BULK_THRESHOLDS.stopPct) }).level),
     now: () => Date.now(), notify, logger,
+    refreshUsage: () => s.getApiUsage(),
   });
   // A preparation interrupted by a restart can't finish: say so (running jobs simply continue).
   void pool.query(`UPDATE bulk_job SET status = 'failed', last_error = 'interrupted by a server restart — prepare it again', finished_at = now(), updated_at = now() WHERE status = 'preparing'`).catch(() => undefined);
   let stopped = false;
-  const loop = async () => { while (!stopped) { const r = await w.tick(); await new Promise((res) => setTimeout(res, r === 'idle' ? 15_000 : r === 'backpressure-stop' ? 30_000 : 250)); } };
+  const loop = async () => { while (!stopped) { const r = await w.tick(); await new Promise((res) => setTimeout(res, r === 'idle' || r === 'quiet-hours' ? 15_000 : r === 'backpressure-stop' ? 30_000 : 250)); } };
   void loop();
   logger.info('Bulk job worker started');
   return () => { stopped = true; };

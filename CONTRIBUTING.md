@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for your interest in contributing! This is an independent [GDS Technology](https://github.com/GDSTechnology) project, originally derived from the [Autotask MCP Server](https://github.com/WYRE-AI/autotask-mcp) by [WYRE Technology](https://github.com/wyre-technology) and Aaron Sachs ([@asachs01](https://github.com/asachs01)), and now maintained separately by GDS Technology. See [NOTICE](NOTICE) for attribution.
+Thank you for your interest in contributing! This is an independent [GDS Technology](https://github.com/GDSTechnology) project, originally derived from the [PSArelay](https://github.com/WYRE-AI/autotask-mcp) by [WYRE Technology](https://github.com/wyre-technology) and Aaron Sachs ([@asachs01](https://github.com/asachs01)), and now maintained separately by GDS Technology. See [NOTICE](NOTICE) for attribution.
 
 ## Getting Started
 

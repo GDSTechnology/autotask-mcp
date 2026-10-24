@@ -1,8 +1,8 @@
-# GDS Autotask MCP — Design
+# GDS PSArelay — Design
 
 Architecture and design decisions for the Expansion & Deployment work. This is
 the companion to the spec (the *what*); this doc is the *how* and *why*. Tracked
-in the [Expansion epic](https://github.com/GDSTechnology/autotask-mcp/issues/12).
+in the [Expansion epic](https://github.com/GDSTechnology/psarelay/issues/12).
 
 ## Principles
 

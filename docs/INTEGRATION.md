@@ -1,6 +1,6 @@
 # Integration cheatsheet (n8n / Hermes / ChatGPT)
 
-Practical notes for calling the Autotask MCP from an automation. Covers the tool
+Practical notes for calling PSArelay from an automation. Covers the tool
 result shape, caller identity, the safety gates, and the gotchas that bite
 first-time integrators. Generic — no tenant-specific values.
 

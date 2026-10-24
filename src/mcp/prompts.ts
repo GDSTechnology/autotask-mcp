@@ -1,6 +1,6 @@
 import { Server } from "@modelcontextprotocol/server";
 
-// MCP Prompt Handlers for Autotask MCP Server
+// MCP Prompt Handlers for PSArelay
 // Exposes pre-baked prompt templates via ListPrompts and GetPrompt handlers
 
 export function registerPromptHandlers(server: Server): void {

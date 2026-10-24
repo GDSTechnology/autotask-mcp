@@ -23,11 +23,11 @@ Tunnel.
 ## Setup
 
 ```bash
-docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/psarelay:latest /app/deploy/admin-setup.sh > admin-setup.sh
 bash admin-setup.sh
 ```
 
 The wizard enables the console, runs migrations, creates the first administrator with a generated password (shown
 once) and, if you want, publishes it through a Cloudflare Tunnel step by step.
 
-Full details: [docs/ADMIN.md](https://github.com/GDSTechnology/autotask-mcp/blob/main/docs/ADMIN.md).
+Full details: [docs/ADMIN.md](https://github.com/GDSTechnology/psarelay/blob/main/docs/ADMIN.md).

@@ -1,4 +1,4 @@
-// Cloudflare Workers entry point for the Autotask MCP Server.
+// Cloudflare Workers entry point for the PSArelay.
 //
 // Serves the full MCP server via the v2 SDK's createMcpHandler, whose
 // web-standard fetch face runs natively on Workers. Modern (2026-07-28
@@ -96,14 +96,14 @@ function getAppServer(env: Env): AutotaskMcpServer {
   if (env.AUTOTASK_API_URL) autotask.apiUrl = env.AUTOTASK_API_URL;
 
   const config: McpServerConfig = {
-    name: 'autotask-mcp',
+    name: 'psarelay',
     version: getServerVersion(),
     autotask,
   };
 
   appServer = new AutotaskMcpServer(config, logger, {
     autotask,
-    server: { name: 'autotask-mcp', version: getServerVersion() },
+    server: { name: 'psarelay', version: getServerVersion() },
     transport: { type: 'http', port: 8080, host: '0.0.0.0' },
     logging: {
       level: (env.LOG_LEVEL as 'error' | 'warn' | 'info' | 'debug') || 'info',

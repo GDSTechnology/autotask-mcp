@@ -84,7 +84,7 @@ describe('Cloudflare Worker entrypoint', () => {
     const body = await mcpBody<{
       result?: { serverInfo?: { name?: string } };
     }>(res);
-    expect(body.result?.serverInfo?.name).toBe('autotask-mcp');
+    expect(body.result?.serverInfo?.name).toBe('psarelay');
   });
 
   it('lists all tools without credentials', async () => {

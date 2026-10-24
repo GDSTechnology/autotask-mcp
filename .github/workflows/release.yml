@@ -114,8 +114,8 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/gdstechnology/autotask-mcp:${{ needs.release.outputs.version }}
-            ghcr.io/gdstechnology/autotask-mcp:latest
+            ghcr.io/gdstechnology/psarelay:${{ needs.release.outputs.version }}
+            ghcr.io/gdstechnology/psarelay:latest
           build-args: |
             VERSION=${{ needs.release.outputs.version }}
             COMMIT_SHA=${{ github.sha }}

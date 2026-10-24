@@ -1,6 +1,6 @@
 # ID-to-Name Mapping
 
-The Autotask MCP server includes intelligent ID-to-name mapping functionality that automatically resolves company and resource IDs to human-readable names. This makes the API responses much more useful for AI assistants and human users.
+PSArelay server includes intelligent ID-to-name mapping functionality that automatically resolves company and resource IDs to human-readable names. This makes the API responses much more useful for AI assistants and human users.
 
 ## 🎯 Data Accuracy Guarantee
 

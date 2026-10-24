@@ -45,7 +45,7 @@ export async function buildWorkbook(d: {
   policies: PricingPolicy[]; customerExceptions: CustomerPriceException[]; plans: Plan[];
 }): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'Autotask MCP'; wb.created = new Date();
+  wb.creator = 'PSArelay'; wb.created = new Date();
   const s = d.run.summary as Record<string, number>;
   const cols = [...REQUIRED_COLUMNS, ...EXTRA_COLUMNS];
   const withState = (r: ReconRow) => { const st = d.states.get(r.exceptionKey); return [...cols.map(([, k]) => r[k]), st?.status ?? (r.severity === 'ok' || r.severity === 'info' ? '' : 'open'), st?.owner ?? '']; };

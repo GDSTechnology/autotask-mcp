@@ -162,7 +162,7 @@ export class AutotaskMcpServer {
     if (credentials.apiUrl) autotaskConfig.apiUrl = credentials.apiUrl;
 
     const requestConfig: McpServerConfig = {
-      name: this.envConfig?.server?.name || 'autotask-mcp',
+      name: this.envConfig?.server?.name || 'psarelay',
       version: getServerVersion(this.envConfig?.server?.version),
       autotask: autotaskConfig,
     };
@@ -291,7 +291,7 @@ export class AutotaskMcpServer {
    */
   async start(): Promise<void> {
     const transportType = this.envConfig?.transport?.type || 'stdio';
-    this.logger.info(`Starting Autotask MCP Server with ${transportType} transport...`);
+    this.logger.info(`Starting PSArelay with ${transportType} transport...`);
 
     // Restore any saved Autotask login-protection pause BEFORE the first
     // Autotask call, so a restart during a lockout doesn't spend more logins.
@@ -346,7 +346,7 @@ export class AutotaskMcpServer {
     this.stdioHandle = serveStdio(this.requestFactory(), {
       onerror: (error) => this.logger.error('MCP stdio serving error:', error),
     });
-    this.logger.info('Autotask MCP Server started and connected to stdio transport');
+    this.logger.info('PSArelay started and connected to stdio transport');
   }
 
   /**
@@ -524,7 +524,7 @@ export class AutotaskMcpServer {
 
     await new Promise<void>((resolve) => {
       this.httpServer!.listen(port, host, () => {
-        this.logger.info(`Autotask MCP Server listening on http://${host}:${port}/mcp`);
+        this.logger.info(`PSArelay listening on http://${host}:${port}/mcp`);
         this.logger.info(`Health check available at http://${host}:${port}/health`);
         this.logger.info(`Authentication mode: ${isGatewayMode ? 'gateway (header-based)' : 'env (environment variables)'}`);
         resolve();
@@ -536,7 +536,7 @@ export class AutotaskMcpServer {
    * Stop the server gracefully
    */
   async stop(): Promise<void> {
-    this.logger.info('Stopping Autotask MCP Server...');
+    this.logger.info('Stopping PSArelay...');
     // Keep the last minutes of the console's traffic counts across the restart.
     await Promise.race([flushCallStats().catch(() => undefined), new Promise((r) => setTimeout(r, 3000))]);
     getShadowRuntime()?.stop();
@@ -554,7 +554,7 @@ export class AutotaskMcpServer {
       await this.stdioHandle.close();
       this.stdioHandle = undefined;
     }
-    this.logger.info('Autotask MCP Server stopped');
+    this.logger.info('PSArelay stopped');
   }
 
   /**
@@ -562,7 +562,7 @@ export class AutotaskMcpServer {
    */
   private getServerInstructions(): string {
     return `
-# Autotask MCP Server
+# PSArelay
 
 This server provides access to Kaseya Autotask PSA data and operations through the Model Context Protocol.
 
@@ -613,7 +613,7 @@ This server requires valid Autotask API credentials. Ensure you have:
 - AUTOTASK_SECRET (API secret key)
 - AUTOTASK_INTEGRATION_CODE (integration code)
 
-For more information, visit: https://github.com/GDSTechnology/autotask-mcp
+For more information, visit: https://github.com/GDSTechnology/psarelay
 `.trim();
   }
 }

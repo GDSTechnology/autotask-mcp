@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Main Entry Point for Autotask MCP Server
+// Main Entry Point for PSArelay
 // Initializes configuration, logging, and starts the MCP server
 
 import { AutotaskMcpServer } from './mcp/server.js';
@@ -17,7 +17,7 @@ async function main() {
 
     // Initialize logger
     logger = new Logger(envConfig.logging.level, envConfig.logging.format);
-    logger.info('Starting Autotask MCP Server...');
+    logger.info('Starting PSArelay...');
     logger.debug('Configuration loaded', { 
       serverName: mcpConfig.name, 
       serverVersion: mcpConfig.version,
@@ -51,9 +51,9 @@ async function main() {
 
   } catch (error) {
     if (logger) {
-      logger.error('Failed to start Autotask MCP Server:', error);
+      logger.error('Failed to start PSArelay:', error);
     } else {
-      console.error('Failed to start Autotask MCP Server:', error);
+      console.error('Failed to start PSArelay:', error);
     }
     process.exit(1);
   }

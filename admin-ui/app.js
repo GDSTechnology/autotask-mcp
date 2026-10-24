@@ -1,4 +1,4 @@
-// Autotask MCP admin console — no framework, no build step. Every value from
+// PSArelay admin console — no framework, no build step. Every value from
 // the server is inserted as text (never as HTML).
 'use strict';
 
@@ -87,7 +87,7 @@ const ROUTES = [
 function shell(active, content) {
   return h('div', null,
     h('header', { class: 'top' }, h('div', { class: 'top-inner' },
-      h('div', { class: 'brand' }, h('img', { src: '/favicon.svg', alt: '' }), 'Autotask MCP'),
+      h('div', { class: 'brand' }, h('img', { src: '/favicon.svg', alt: '' }), 'PSArelay'),
       h('nav', null, ROUTES.filter((r) => !r.admin || me.role === 'admin').map((r) =>
         h('a', { href: r.hash, class: r.hash === active ? 'active' : null }, r.label))),
       h('div', { class: 'who' },
@@ -120,18 +120,27 @@ function loginView() {
   const err = h('p', { class: 'error', role: 'alert' });
   const user = h('input', { type: 'text', id: 'u', autocomplete: 'username', required: true, autofocus: true });
   const pass = h('input', { type: 'password', id: 'p', autocomplete: 'current-password', required: true });
-  const btn = h('button', { class: 'primary', type: 'submit' }, 'Sign in');
-  const form = h('form', { class: 'panel card', onsubmit: async (e) => {
-    e.preventDefault(); err.textContent = ''; btn.disabled = true;
+  const btn = h('button', { class: 'primary login-submit', type: 'submit' }, 'Sign in');
+  // Show / hide the password (a button, so it is reachable by keyboard and announced).
+  const peek = h('button', { type: 'button', class: 'login-peek', 'aria-label': 'Show password', 'aria-pressed': 'false', onclick: () => {
+    const show = pass.type === 'password'; pass.type = show ? 'text' : 'password';
+    peek.textContent = show ? 'Hide' : 'Show'; peek.setAttribute('aria-pressed', String(show)); peek.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); pass.focus();
+  } }, 'Show');
+  const form = h('form', { class: 'login-card', 'aria-labelledby': 'login-title', onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = ''; btn.disabled = true; btn.textContent = 'Signing in…';
     try { me = (await api('POST', '/api/login', { username: user.value.trim(), password: pass.value })).user; render(); }
     catch (x) { err.textContent = x.message; pass.value = ''; pass.focus(); }
-    finally { btn.disabled = false; }
+    finally { btn.disabled = false; btn.textContent = 'Sign in'; }
   } },
-    h('div', { class: 'brand' }, h('img', { src: '/favicon.svg', alt: '' }), 'Autotask MCP Admin'),
+    h('h1', { id: 'login-title' }, 'Sign in'),
     h('div', { class: 'field' }, h('label', { for: 'u' }, 'Username'), user),
-    h('div', { class: 'field' }, h('label', { for: 'p' }, 'Password'), pass),
+    h('div', { class: 'field' }, h('label', { for: 'p' }, 'Password'), h('div', { class: 'login-pass' }, pass, peek)),
     btn, err);
-  app.replaceChildren(h('div', { class: 'center' }, form));
+  app.replaceChildren(h('main', { class: 'login-wrap' }, h('div', { class: 'login' },
+    h('div', { class: 'login-brand' }, h('img', { src: '/favicon.svg', alt: '' }), h('span', null, 'PSA', h('strong', null, 'relay'))),
+    h('p', { class: 'login-tagline' }, 'Your Autotask, relayed to AI and automation — safely.'),
+    form,
+    h('p', { class: 'login-foot' }, h('a', { href: 'https://docs.psarelay.app', target: '_blank', rel: 'noopener noreferrer' }, 'Documentation'), ' · ', h('a', { href: 'https://github.com/GDSTechnology/psarelay', target: '_blank', rel: 'noopener noreferrer' }, 'Open source')))));
   user.focus();
 }
 

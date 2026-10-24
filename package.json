@@ -1,9 +1,10 @@
 {
-  "name": "@gdstechnology/autotask-mcp",
+  "name": "@gdstechnology/psarelay",
   "version": "2.18.0",
-  "description": "MCP (Model Context Protocol) server for Kaseya Autotask PSA integration",
+  "description": "PSArelay — Model Context Protocol server and automation platform for Kaseya Autotask PSA",
   "main": "dist/entry.js",
   "bin": {
+    "psarelay": "./dist/entry.js",
     "autotask-mcp": "./dist/entry.js"
   },
   "publishConfig": {
@@ -41,7 +42,7 @@
     "nodejs"
   ],
   "author": "Aaron Sachs",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0-beta.5",
     "@modelcontextprotocol/server": "^2.0.0-beta.5",

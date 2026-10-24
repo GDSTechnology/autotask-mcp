@@ -1,22 +1,29 @@
-# Autotask MCP Server
+# PSArelay
 
-[![CI](https://github.com/GDSTechnology/autotask-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/GDSTechnology/autotask-mcp/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/GDSTechnology/autotask-mcp)](https://github.com/GDSTechnology/autotask-mcp/releases/latest)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![CI](https://github.com/GDSTechnology/psarelay/actions/workflows/ci.yml/badge.svg)](https://github.com/GDSTechnology/psarelay/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/GDSTechnology/psarelay)](https://github.com/GDSTechnology/psarelay/releases/latest)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
 
-**Run an MSP's Autotask from chat and automation — safely.**
+**Your Autotask, relayed to AI and automation — safely.**
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server for Kaseya Autotask PSA. ChatGPT, Claude,
+PSArelay is a [Model Context Protocol](https://modelcontextprotocol.io/) server and automation platform for Kaseya Autotask PSA. ChatGPT, Claude,
 n8n and any other MCP client get **~290 tools** across tickets, time, projects, contracts, billing, CRM and
 reporting — plus the parts that make it safe to run against a live tenant: a Postgres mirror that answers
 most reads without touching Autotask, change plans that a person approves by hash, paced bulk jobs, tenant-wide
-throttling and an admin console.
+throttling and a web portal.
 
-**Docs site:** [gdstechnology.github.io/autotask-mcp](https://gdstechnology.github.io/autotask-mcp/) — guides and the full tool reference.
+**Free to self-host** (AGPL-3.0), or **let us host it** for you — the same model MSPs know from CIPP.
 
-It started as a fork of [WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp) and is now the
-production automation layer for an Autotask MSP (ChatGPT + n8n + Claude), hardened against real tenant data.
+| | |
+|---|---|
+| **Docs** | [docs.psarelay.app](https://docs.psarelay.app/) — guides and the full tool reference |
+| **Hosted plans** | [psarelay.com](https://psarelay.com) |
+| **Hosted portal** | [psarelay.app](https://psarelay.app) |
+
+It started as a fork of [WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp) (formerly published
+here as *autotask-mcp*) and runs in production as the automation layer of an Autotask MSP (ChatGPT + n8n +
+Claude), hardened against real tenant data.
 
 ---
 
@@ -61,7 +68,7 @@ flowchart LR
     CL[Claude]
     N8N[n8n / cron]
   end
-  subgraph MCP[Autotask MCP server]
+  subgraph MCP[PSArelay server]
     T[~290 tools<br/>+ safety gates]
     W[Bulk-job worker]
     C[Admin console]
@@ -109,13 +116,13 @@ resulting `.mcpb` file in the repo root, and enter your Autotask username, secre
 **Claude Code:**
 
 ```bash
-claude mcp add autotask-mcp -e AUTOTASK_USERNAME=api-user@example.com -e AUTOTASK_SECRET=your-secret -e AUTOTASK_INTEGRATION_CODE=your-code -- npx -y github:GDSTechnology/autotask-mcp
+claude mcp add psarelay -e AUTOTASK_USERNAME=api-user@example.com -e AUTOTASK_SECRET=your-secret -e AUTOTASK_INTEGRATION_CODE=your-code -- npx -y github:GDSTechnology/psarelay
 ```
 
 **Docker (HTTP, for ChatGPT / n8n / remote clients):**
 
 ```bash
-docker run -d --name autotask-mcp -p 8080:8080 -e AUTOTASK_USERNAME=api-user@example.com -e AUTOTASK_SECRET=your-secret -e AUTOTASK_INTEGRATION_CODE=your-code --restart unless-stopped ghcr.io/gdstechnology/autotask-mcp:latest
+docker run -d --name psarelay -p 8080:8080 -e AUTOTASK_USERNAME=api-user@example.com -e AUTOTASK_SECRET=your-secret -e AUTOTASK_INTEGRATION_CODE=your-code --restart unless-stopped ghcr.io/gdstechnology/psarelay:latest
 ```
 
 Clients connect to `http://<host>:8080/mcp` (MCP Streamable HTTP); `GET /health` returns the version, API usage and backpressure.
@@ -123,7 +130,7 @@ Clients connect to `http://<host>:8080/mcp` (MCP Streamable HTTP); `GET /health`
 **From source:**
 
 ```bash
-git clone https://github.com/GDSTechnology/autotask-mcp.git && cd autotask-mcp
+git clone https://github.com/GDSTechnology/psarelay.git && cd psarelay
 npm ci && npm run build
 node dist/entry.js        # stdio; MCP_TRANSPORT=http node dist/index.js for HTTP
 ```
@@ -134,20 +141,20 @@ with the security level your tools need. The API zone is detected from the usern
 ## Production deployment
 
 Releases are cut by semantic-release on every merge to `main` and published to
-`ghcr.io/gdstechnology/autotask-mcp` (`:latest` and the version tag).
+`ghcr.io/gdstechnology/psarelay` (`:latest` and the version tag).
 
 Run it as a docker-compose service next to Postgres (see [DEPLOY.md](DEPLOY.md) for the full runbook:
 layout, env, verify, rollback). Updating is one command on the host — install it once from the image:
 
 ```bash
-docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp && chmod +x /usr/local/bin/update-autotask-mcp
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/psarelay:latest /app/deploy/update-psarelay.sh > /usr/local/bin/update-psarelay && chmod +x /usr/local/bin/update-psarelay
 ```
 
 ```bash
-update-autotask-mcp
+update-psarelay
 ```
 
-It touches only the Autotask MCP service: pulls, keeps the previous image as `:rollback`, runs database
+It touches only PSArelay service: pulls, keeps the previous image as `:rollback`, runs database
 migrations, restarts, waits for `/health` and prints the version — and refuses while a bulk job is preparing.
 
 - **Postgres layer** (mirror, plans, bulk jobs, audit): [POSTGRES](docs/POSTGRES.md)
@@ -241,5 +248,9 @@ Built on the original **Autotask MCP Server** by **[WYRE Technology](https://git
 | <a href="https://github.com/asachs01"><img src="https://github.com/asachs01.png" width="48" /></a> | [@asachs01](https://github.com/asachs01) | Original author & upstream maintainer |
 | <a href="https://github.com/Baphomet480"><img src="https://github.com/Baphomet480.png" width="48" /></a> | [@Baphomet480](https://github.com/Baphomet480) | CLI bin fix (upstream) |
 
-Licensed under the **Apache License 2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-Issues and ideas: [GitHub Issues](https://github.com/GDSTechnology/autotask-mcp/issues).
+**License:** PSArelay is free software under the **GNU Affero General Public License v3** — see [LICENSE](LICENSE).
+Self-host it for free; if you offer a modified version to others as a network service, the AGPL asks you to share
+those changes with its users. Portions from the original project remain available under the Apache License 2.0
+([LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt)); releases up to v3.87.x were Apache-2.0. Details in [NOTICE](NOTICE).
+Contributions are accepted under the [CLA](CLA.md), which also lets us offer PSArelay as a hosted service.
+Issues and ideas: [GitHub Issues](https://github.com/GDSTechnology/psarelay/issues).

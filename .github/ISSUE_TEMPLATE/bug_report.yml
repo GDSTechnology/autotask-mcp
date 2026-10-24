@@ -1,5 +1,5 @@
 name: Bug report
-description: Report incorrect behavior in the Autotask MCP
+description: Report incorrect behavior in the PSArelay
 labels: ["bug"]
 body:
   - type: textarea

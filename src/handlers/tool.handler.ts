@@ -30,7 +30,7 @@ import { classifyTimeEntryWriteError } from '../utils/time-entry-errors.js';
 // confirm gate treats an omitted dryRun as a dry-run (plan only, no confirm),
 // and only requires confirm:true on the actual execution (dryRun:false).
 /** Tested n8n receiver (signature check) for webhooks this MCP creates. */
-const N8N_RECEIVER_GUIDE = 'https://github.com/GDSTechnology/autotask-mcp/blob/main/docs/N8N_WEBHOOKS.md';
+const N8N_RECEIVER_GUIDE = 'https://github.com/GDSTechnology/psarelay/blob/main/docs/N8N_WEBHOOKS.md';
 
 const DRY_RUN_FIRST_TOOLS = new Set<string>([
   'autotask_delete_time_entry',

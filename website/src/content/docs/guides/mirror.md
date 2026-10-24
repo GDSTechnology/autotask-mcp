@@ -43,4 +43,4 @@ differences are reported and **repaired from Autotask**, which is always authori
 A sync run spends at most 100 calls and skips while the tenant is above 85% usage or in a 429 cooldown. The
 threshold is high on purpose: pausing the sync makes the mirror stale, and a stale mirror sends every read live.
 
-Full details: [docs/POSTGRES.md](https://github.com/GDSTechnology/autotask-mcp/blob/main/docs/POSTGRES.md).
+Full details: [docs/POSTGRES.md](https://github.com/GDSTechnology/psarelay/blob/main/docs/POSTGRES.md).

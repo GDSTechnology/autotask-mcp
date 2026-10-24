@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a traceable, pinnable GDS Autotask MCP image (brief §7.34 / Phase 5).
+# Build a traceable, pinnable GDS PSArelay image (brief §7.34 / Phase 5).
 #
 # Bakes VERSION + COMMIT_SHA + BUILD_DATE into the image (and package.json, so
 # the /health endpoint reports the real version). Tags by both version and the
@@ -13,7 +13,7 @@
 # version + "-<sha>"). IMAGE_NAME can be overridden via env.
 set -euo pipefail
 
-IMAGE_NAME="${IMAGE_NAME:-ghcr.io/gdstechnology/autotask-mcp}"
+IMAGE_NAME="${IMAGE_NAME:-ghcr.io/gdstechnology/psarelay}"
 
 COMMIT_SHA="$(git rev-parse --short HEAD)"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

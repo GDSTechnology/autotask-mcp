@@ -380,3 +380,40 @@ describe('archive', () => {
     expect(m.calls).toEqual([]);
   });
 });
+
+describe('placeholder cleanup: email safeguards (real people use personal mail too)', () => {
+  const companies = [1, 2, 3, 4, 5].map((n) => ({ id: 100 + n, companyName: 'Outlook', isActive: true, createDate: '2026-09-10', createdByResourceID: 77 }));
+  const ph = (id: number, co: number, email: string) => ({ id, companyID: co, isActive: 1, firstName: 'Unknown', lastName: 'Contact', emailAddress: email });
+  const tables = {
+    Companies: [...companies, { id: 900, companyName: 'Acme Holdings', isActive: true }, { id: 901, companyName: 'Gmail', isActive: false }],
+    Contacts: [
+      ph(1, 101, 'only.here@outlook.com'), ph(2, 102, 'only.here@outlook.com'),
+      ph(3, 103, 'Dup.Person@hotmail.com'), { id: 30, companyID: 900, isActive: 1, firstName: 'Dana', lastName: 'Pike', emailAddress: 'dup.person@hotmail.com' },
+      ph(4, 104, 'has.ticket@outlook.com'), { id: 40, companyID: 901, isActive: 0, firstName: 'Unknown', lastName: 'Contact', emailAddress2: 'has.ticket@outlook.com' },
+      ph(5, 105, 'keep.me@outlook.com'),
+    ],
+    Tickets: [{ id: 7000, contactID: 40, companyID: 901 }],
+  };
+  // the fake honours 'in' case-insensitively for emails, like the mirror
+  function q(entity: string, filters: Array<{ op: string; field: string; value: any }>, opts: { maxRecords?: number }) {
+    let rows = (tables as Record<string, Row[]>)[entity] ?? [];
+    for (const f of filters) rows = rows.filter((r) => f.op === 'eq' ? r[f.field] === f.value : f.op === 'gt' ? r[f.field] > f.value : f.op === 'in' ? f.value.map((v: any) => String(v).toLowerCase()).includes(String(r[f.field] ?? '').toLowerCase()) : true);
+    return Promise.resolve(rows.slice(0, opts.maxRecords ?? 500) as any);
+  }
+  test('an address with a ticket anywhere, or listed, keeps its companies; a duplicate of a real contact is inactivated and shown', async () => {
+    const r = await preparePlaceholderJob(q as never, { companyName: 'Outlook', excludeEmails: ['KEEP.ME@outlook.com'] });
+    const excluded = Object.fromEntries(r.items.filter((i) => i.status === 'excluded').map((i) => [i.recordId, i.reason]));
+    expect(excluded).toEqual({ 104: expect.stringMatching(/has\.ticket@outlook\.com: 1 ticket/), 105: expect.stringMatching(/keep\.me@outlook\.com: listed to keep/) });
+    expect(r.items.filter((i) => i.status !== 'excluded' && i.entity === 'Companies').map((i) => i.recordId)).toEqual([101, 102, 103]);
+    const rev = Object.fromEntries((r.stats.emailReview as Array<Record<string, any>>).map((x) => [x.email.toLowerCase(), x]));
+    expect(rev['only.here@outlook.com']).toMatchObject({ copies: 2, decision: 'inactivate', why: 'only on placeholder companies' });
+    expect(rev['dup.person@hotmail.com']).toMatchObject({ decision: 'inactivate', why: expect.stringMatching(/duplicate: also on Acme Holdings/), realCompanies: [{ id: 900, name: 'Acme Holdings' }] });
+    expect(rev['has.ticket@outlook.com']).toMatchObject({ decision: 'excluded', tickets: 1 });
+    expect(r.stats.emailSummary).toEqual({ addresses: 4, kept: 2, withTickets: 1, listed: 1, duplicatesOfReal: 1, onlyOnPlaceholders: 1 });
+    expect((r.stats.emailReview as Array<Record<string, any>>)[0]!.decision).toBe('excluded'); // kept ones first
+  });
+  test('an email check that fails prepares nothing', async () => {
+    const broken = (e: string, f: any[], o: any) => (e === 'Tickets' && f[0]?.field === 'contactID' ? Promise.reject(new Error('timeout')) : q(e, f, o));
+    await expect(preparePlaceholderJob(broken as never, { companyName: 'Outlook' })).rejects.toThrow(/email check \(tickets of same-address contacts\) failed/);
+  });
+});

@@ -689,7 +689,7 @@ export function adminHandler(deps: AdminDeps) {
         else job = await startPrepare(opts.service, new BulkStore(deps.pool), {
           companyName: String(b.companyName ?? ''), createdByResourceId: b.createdByResourceId != null && b.createdByResourceId !== '' ? Number(b.createdByResourceId) : null,
           createdFrom: b.createdFrom ? String(b.createdFrom) : null, createdTo: b.createdTo ? String(b.createdTo) : null, includeContacts: b.includeContacts !== false,
-          ratePerHour: Number(b.ratePerHour) || 3000, canary: Number(b.canary) || 50, quietHours: (b.quietHours ?? null) as never,
+          ratePerHour: Number(b.ratePerHour) || 3000, canary: Number(b.canary) || 50, quietHours: (b.quietHours ?? null) as never, excludeEmails: (b.excludeEmails ?? null) as never,
           ...(b.businessHours === false ? { businessHours: false as const } : b.businessHours && typeof b.businessHours === 'object' ? { businessHours: b.businessHours as Record<string, unknown> } : {}),
         }, u.username);
       } catch (e) { throw new HttpError(400, e instanceof Error ? e.message : String(e), 'invalid'); }

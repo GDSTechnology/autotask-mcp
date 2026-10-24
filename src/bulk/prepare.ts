@@ -13,7 +13,18 @@ import type { QueryFn } from '../vendors/contract-io.js';
 import { isPlaceholderCompany, isPlaceholderContact, type RefSpec } from '../merge/model.js';
 import type { BulkItemInput } from './store.js';
 
-export interface PlaceholderSelector { companyName: string; createdByResourceId?: number; createdFrom?: string; createdTo?: string }
+export interface PlaceholderSelector {
+  companyName: string; createdByResourceId?: number; createdFrom?: string; createdTo?: string;
+  /** Email addresses a person recognises as real: their placeholder companies are kept (excluded). */
+  excludeEmails?: string[];
+}
+
+const EMAILS = ['emailAddress', 'emailAddress2', 'emailAddress3'] as const;
+/** A person's email addresses (any of the three fields), as written. */
+const emailsOf = (c: Record<string, any>): string[] => EMAILS.map((f) => String(c[f] ?? '').trim()).filter((e) => e.includes('@'));
+
+export type EmailDecision = 'inactivate' | 'excluded';
+export interface EmailReview { email: string; copies: number; companies: number; decision: EmailDecision; why: string; realCompanies: Array<{ id: number; name: string | null }>; tickets: number }
 
 /** What counts as history (a reason to keep the company out of an automatic cleanup). */
 export const HISTORY_REFS: RefSpec[] = [
@@ -61,7 +72,7 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
   const contacts: Array<Record<string, any>> = [];
   for (let i = 0; i < ids.length; i += 200) {
     calls.n++;
-    contacts.push(...await q<Record<string, any>>('Contacts', [{ op: 'in', field: 'companyID', value: ids.slice(i, i + 200) }], { maxRecords: 5000, includeFields: ['id', 'companyID', 'isActive', 'firstName', 'lastName'] }));
+    contacts.push(...await q<Record<string, any>>('Contacts', [{ op: 'in', field: 'companyID', value: ids.slice(i, i + 200) }], { maxRecords: 5000, includeFields: ['id', 'companyID', 'isActive', 'firstName', 'lastName', ...EMAILS] }));
     await pace('Contacts');
   }
   const contactsOf = new Map<number, Array<Record<string, any>>>();
@@ -87,6 +98,73 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
   // A contact with a real-looking name on a placeholder company may be a real person: a person decides.
   for (const [cid, list] of contactsOf) { const real = list.filter((c) => !isPlaceholderContact(c)); if (real.length) add(cid, `${real.length} contact(s) with a real name (e.g. #${real[0]!.id})`); }
 
+  // 3b. Email safeguards. Personal mail (gmail, hotmail, outlook…) is also what real people use, so every address on
+  // these placeholder contacts is checked across the WHOLE tenant (2026-10-23, before the Outlook / Hotmail cleanups):
+  //   - any ticket on any contact with that address → the address is a real person: their companies are KEPT;
+  //   - the address is also on a contact of a REAL company → the placeholder copy is a duplicate (inactivated, shown);
+  //   - listed in excludeEmails → KEPT (a person recognised it);
+  //   - otherwise it only exists on placeholders → inactivated.
+  // A check that fails stops the preparation (never "no tickets" by default).
+  const byEmail = new Map<string, { email: string; companies: Set<number>; contactIds: Set<number> }>();
+  for (const c of contacts) for (const e of emailsOf(c)) {
+    const k = e.toLowerCase();
+    const x = byEmail.get(k) ?? byEmail.set(k, { email: e, companies: new Set(), contactIds: new Set() }).get(k)!;
+    x.companies.add(Number(c.companyID)); x.contactIds.add(Number(c.id));
+  }
+  const keys = [...byEmail.keys()];
+  const fail = (what: string, e: unknown) => new Error(`email check (${what}) failed (${(e instanceof Error ? e.message : String(e)).slice(0, 160)}) — nothing prepared; an address can't be called unused without it`, { cause: e });
+  const sameAddress: Array<Record<string, any>> = [];
+  for (const f of EMAILS) for (let i = 0; i < keys.length; i += 200) {
+    calls.n++;
+    let rows: Array<Record<string, any>>;
+    try { rows = await q<Record<string, any>>('Contacts', [{ op: 'in', field: f, value: keys.slice(i, i + 200) }], { maxRecords: 5000, includeFields: ['id', 'companyID', 'isActive', ...EMAILS] }); }
+    catch (e) { throw fail(`contacts by ${f}`, e); }
+    if (rows.length >= 5000) throw new Error(`email check: a chunk of addresses matched 5,000+ contacts (the read cap) — nothing prepared`);
+    sameAddress.push(...rows);
+    await pace('Contacts');
+  }
+  const selected = new Set(ids);
+  // The companies of same-address contacts outside this selection: real customers, or other placeholders?
+  const outside = [...new Set(sameAddress.map((c) => Number(c.companyID)).filter((id) => !selected.has(id)))];
+  const companyName = new Map<number, string>();
+  for (let i = 0; i < outside.length; i += 200) {
+    calls.n++;
+    try { for (const c of await q<Record<string, any>>('Companies', [{ op: 'in', field: 'id', value: outside.slice(i, i + 200) }], { maxRecords: 500, includeFields: ['id', 'companyName'] })) companyName.set(Number(c.id), String(c.companyName ?? '')); }
+    catch (e) { throw fail('companies of same-address contacts', e); }
+  }
+  const isReal = (cid: number) => !selected.has(cid) && companyName.has(cid) && !isPlaceholderCompany({ companyName: companyName.get(cid) });
+  // Tickets on ANY contact with one of these addresses.
+  const contactEmails = new Map<number, string[]>();
+  for (const c of [...contacts, ...sameAddress]) contactEmails.set(Number(c.id), emailsOf(c).map((e) => e.toLowerCase()));
+  const allContactIds = [...contactEmails.keys()];
+  const ticketsOf = new Map<string, number>();
+  for (let i = 0; i < allContactIds.length; i += 200) {
+    calls.n++;
+    let rows: Array<Record<string, any>>;
+    try { rows = await q<Record<string, any>>('Tickets', [{ op: 'in', field: 'contactID', value: allContactIds.slice(i, i + 200) }], { maxRecords: 5000, includeFields: ['id', 'contactID'] }); }
+    catch (e) { throw fail('tickets of same-address contacts', e); }
+    if (rows.length >= 5000) throw new Error('email check: a chunk of contacts has 5,000+ tickets (the read cap) — nothing prepared');
+    for (const t of rows) for (const k of contactEmails.get(Number(t.contactID)) ?? []) ticketsOf.set(k, (ticketsOf.get(k) ?? 0) + 1);
+    await pace('Tickets');
+  }
+  const listed = new Set((sel.excludeEmails ?? []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
+  const realOf = new Map<string, Array<{ id: number; name: string | null }>>();
+  for (const c of sameAddress) if (isReal(Number(c.companyID))) for (const k of emailsOf(c).map((e) => e.toLowerCase())) if (byEmail.has(k)) {
+    const l = realOf.get(k) ?? realOf.set(k, []).get(k)!;
+    if (!l.some((x) => x.id === Number(c.companyID))) l.push({ id: Number(c.companyID), name: companyName.get(Number(c.companyID)) ?? null });
+  }
+  const review: EmailReview[] = [];
+  for (const [k, x] of byEmail) {
+    const tickets = ticketsOf.get(k) ?? 0, real = realOf.get(k) ?? [];
+    const [decision, why]: [EmailDecision, string] = listed.has(k) ? ['excluded', 'listed to keep']
+      : tickets > 0 ? ['excluded', `${tickets} ticket(s) with this address — a real person`]
+      : real.length ? ['inactivate', `duplicate: also on ${real[0]!.name ?? '#' + real[0]!.id}${real.length > 1 ? ` (+${real.length - 1})` : ''}`]
+      : ['inactivate', 'only on placeholder companies'];
+    review.push({ email: x.email, copies: x.contactIds.size, companies: x.companies.size, decision, why, realCompanies: real.slice(0, 3), tickets });
+    if (decision === 'excluded') for (const cid of x.companies) add(cid, `email ${x.email}: ${why}`);
+  }
+  o.onProgress?.(`email check: ${review.length} address(es)`);
+
   // 4. Items: per clean company, its active contacts, then the company itself.
   const items: BulkItemInput[] = [];
   let alreadyInactive = 0, contactWrites = 0, companyWrites = 0;
@@ -96,7 +174,7 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
     const r = why.get(id);
     if (r) {
       items.push({ entity: 'Companies', recordId: id, parentId: null, action: 'inactivate', status: 'excluded', reason: r.join('; '), before: { companyName: c.companyName, isActive: active, createDate: c.createDate ?? null } });
-      for (const x of r) { const k = x.replace(/^\d+\s+/, '').replace(/ \(e\.g\..*$/, ''); reasons[k] = (reasons[k] ?? 0) + 1; }
+      for (const x of r) { const k = x.startsWith('email ') ? x.replace(/^email \S+: /, 'email: ').replace(/^email: \d+ ticket\(s\)/, 'email: ticket(s)') : x.replace(/^\d+\s+/, '').replace(/ \(e\.g\..*$/, ''); reasons[k] = (reasons[k] ?? 0) + 1; }
       continue;
     }
     if (o.includeContacts !== false) for (const ct of contactsOf.get(id) ?? []) {
@@ -110,6 +188,10 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
   const excluded = items.filter((i) => i.status === 'excluded').length;
   return {
     items,
-    stats: { selector: sel, companies: companies.length, excludedCompanies: excluded, excludedBy: reasons, companiesAlreadyInactive: alreadyInactive, companyWrites, contactWrites, writes: companyWrites + contactWrites, contactsSeen: contacts.length, prepareReads: calls.n },
+    stats: {
+      selector: sel, companies: companies.length, excludedCompanies: excluded, excludedBy: reasons,
+      // The review table (before approval): kept addresses first, then duplicates of real contacts, then the most-copied.
+      emailSummary: { addresses: review.length, kept: review.filter((r) => r.decision === 'excluded').length, withTickets: review.filter((r) => r.tickets > 0).length, listed: review.filter((r) => r.why === 'listed to keep').length, duplicatesOfReal: review.filter((r) => r.decision === 'inactivate' && r.realCompanies.length).length, onlyOnPlaceholders: review.filter((r) => r.why === 'only on placeholder companies').length },
+      emailReview: review.sort((a, b) => (a.decision === b.decision ? 0 : a.decision === 'excluded' ? -1 : 1) || (b.realCompanies.length ? 1 : 0) - (a.realCompanies.length ? 1 : 0) || b.copies - a.copies).slice(0, 300), companiesAlreadyInactive: alreadyInactive, companyWrites, contactWrites, writes: companyWrites + contactWrites, contactsSeen: contacts.length, prepareReads: calls.n },
   };
 }

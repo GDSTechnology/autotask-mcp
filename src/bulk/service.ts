@@ -22,6 +22,8 @@ export const MAX_RATE = 6000;
 export interface PrepareRequest {
   companyName: string; createdByResourceId?: number | null; createdFrom?: string | null; createdTo?: string | null;
   includeContacts?: boolean; ratePerHour?: number; canary?: number;
+  /** Addresses a person recognises as real: their placeholder companies are kept. */
+  excludeEmails?: string[] | string | null;
   /** false = no business hours (one rate all day). */
   businessHours?: Partial<BusinessSchedule> | false;
   businessRate?: number;
@@ -43,7 +45,8 @@ export async function startPrepare(s: AutotaskService, st: BulkStore, r: Prepare
   const rate = Math.min(Math.max(Number(r.ratePerHour) || 3000, 60), MAX_RATE);
   const schedule = scheduleOf(r);
   if (schedule && (schedule.start < 0 || schedule.end > 24 || schedule.start >= schedule.end)) throw new Error('businessHours: start must be before end (hours 0–24).');
-  const sel: PlaceholderSelector = { companyName, ...(r.createdByResourceId != null ? { createdByResourceId: Number(r.createdByResourceId) } : {}), ...(r.createdFrom ? { createdFrom: String(r.createdFrom) } : {}), ...(r.createdTo ? { createdTo: String(r.createdTo) } : {}) };
+  const excludeEmails = list(r.excludeEmails, (x) => String(x).trim()).filter((e) => e.includes('@'));
+  const sel: PlaceholderSelector = { companyName, ...(r.createdByResourceId != null ? { createdByResourceId: Number(r.createdByResourceId) } : {}), ...(r.createdFrom ? { createdFrom: String(r.createdFrom) } : {}), ...(r.createdTo ? { createdTo: String(r.createdTo) } : {}), ...(excludeEmails.length ? { excludeEmails } : {}) };
   const includeContacts = r.includeContacts !== false;
   const quietHours = parseQuietHours(r.quietHours);
   const job = await st.create({ kind: 'inactivate_placeholders', title: `Inactivate "${companyName}" placeholder companies${includeContacts ? ' and their contacts' : ''}`, params: { selector: sel, includeContacts, schedule, quietHours }, ratePerHour: rate, canarySize: Math.min(Math.max(Number(r.canary) || 50, 1), 1000), by });
@@ -62,7 +65,7 @@ export interface CompanyContactsRequest extends Omit<PrepareRequest, 'companyNam
   companyId: number; contactIds?: number[] | null; keepDomains?: string[] | null; onlyDomains?: string[] | null; includeNoEmail?: boolean; ticketsOk?: boolean;
 }
 
-const list = <T>(v: unknown, f: (x: unknown) => T): T[] | undefined => (Array.isArray(v) ? v.map(f) : typeof v === 'string' && v.trim() ? v.split(/[\s,;]+/).filter(Boolean).map(f) : undefined);
+function list<T>(v: unknown, f: (x: unknown) => T): T[] { return Array.isArray(v) ? v.map(f) : typeof v === 'string' && v.trim() ? v.split(/[\s,;]+/).filter(Boolean).map(f) : []; }
 
 /** Junk contacts on ONE real company: create the job and prepare it in the background. */
 export async function startPrepareCompanyContacts(s: AutotaskService, st: BulkStore, r: CompanyContactsRequest, by: string | null): Promise<BulkJob> {

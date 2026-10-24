@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+      - 'src/handlers/tool.definitions.ts'
       - '.github/workflows/deploy-docs.yml'
   workflow_dispatch:
 
@@ -26,7 +27,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: website/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            website/package-lock.json
+      # The tool reference is generated from the server's own definitions, so the site can't drift from the code.
+      - name: Build the server (for the tool reference)
+        run: npm ci && npm run build
+      - name: Generate the tool reference
+        run: node website/scripts/gen-tools.mjs
       - name: Install dependencies
         working-directory: website
         run: npm ci

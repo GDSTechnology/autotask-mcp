@@ -9,6 +9,8 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'Autotask MCP',
+			description: 'Model Context Protocol server for Kaseya Autotask PSA — tools for ChatGPT, Claude and n8n, built for a live tenant.',
+			editLink: { baseUrl: 'https://github.com/GDSTechnology/autotask-mcp/edit/main/website/' },
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/GDSTechnology/autotask-mcp' }],
 			sidebar: [
 				{
@@ -17,6 +19,17 @@ export default defineConfig({
 						{ label: 'Introduction', slug: 'getting-started/introduction' },
 						{ label: 'Installation', slug: 'getting-started/installation' },
 						{ label: 'Configuration', slug: 'getting-started/configuration' },
+					],
+				},
+				{
+					label: 'Guides',
+					items: [
+						{ label: 'Safety model', slug: 'guides/safety' },
+						{ label: 'Postgres mirror', slug: 'guides/mirror' },
+						{ label: 'Admin console', slug: 'guides/console' },
+						{ label: 'Merges & bulk cleanup', slug: 'guides/bulk-cleanup' },
+						{ label: 'Vendor billing', slug: 'guides/vendor-billing' },
+						{ label: 'Throttling', slug: 'guides/throttling' },
 					],
 				},
 				{

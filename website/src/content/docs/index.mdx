@@ -1,34 +1,61 @@
 ---
 title: Autotask MCP Server
-description: Connect AI assistants to your Autotask PSA instance via the Model Context Protocol.
+description: Run an MSP's Autotask from chat and automation — safely. A Model Context Protocol server for Kaseya Autotask PSA.
 template: splash
 hero:
-  tagline: Access your Autotask PSA data through natural language prompts using the Model Context Protocol.
+  tagline: Run an MSP's Autotask from chat and automation — safely. Nearly 300 tools for ChatGPT, Claude and n8n, with a Postgres mirror, hash-approved change plans, paced bulk jobs and an admin console.
   actions:
-    - text: Get Started
+    - text: Get started
       link: /autotask-mcp/getting-started/introduction/
       icon: right-arrow
-    - text: View Examples
-      link: /autotask-mcp/examples/overview/
-      icon: open-book
+    - text: Safety model
+      link: /autotask-mcp/guides/safety/
+      icon: approve-check
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/GDSTechnology/autotask-mcp
+      icon: github
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## What can you do?
+## What it covers
 
 <CardGrid stagger>
-	<Card title="Search & Retrieve" icon="magnifier">
-		Find companies, contacts, tickets, projects, and more using natural language queries.
+	<Card title="Service desk" icon="comment-alt">
+		Tickets by number, notes, attachments and the originating email, ticket history and who changed what, routing moves in one write — and an interactive ticket card in MCP Apps hosts.
 	</Card>
-	<Card title="Create & Update" icon="pencil">
-		Create new tickets, companies, contacts, time entries, and projects directly from your AI assistant.
+	<Card title="Time, billing & contracts" icon="document">
+		Time entries and "log my time", billing items, contracts, services, adjustments and charges, quotes, invoices — including the contract writes the API makes awkward.
 	</Card>
-	<Card title="Track Time" icon="clock">
-		Log time entries against tickets with automatic resource and billing code resolution.
+	<Card title="Vendor billing reconciliation" icon="random">
+		Import vendor invoices (Pax8 first), find what isn't billed or is priced under cost, apply a pricing policy, and fix it with reviewed change plans.
 	</Card>
-	<Card title="Manage Notes" icon="document">
-		Add and search notes on tickets, projects, and companies for complete context.
+	<Card title="Reports" icon="list-format">
+		Unbilled work, block hours, SLA compliance, ticket throughput, project P&L, recurring revenue, time-entry compliance, inventory.
+	</Card>
+	<Card title="Companies & contacts" icon="setting">
+		Name guards, duplicate finders, safe ID-only merges with verification, and bulk cleanup of placeholder companies and junk contacts.
+	</Card>
+	<Card title="Projects, CIs, service calls" icon="puzzle">
+		Projects, phases, tasks and labour plans; configuration items with entitlement; dispatching, to-dos, resources and roles.
+	</Card>
+</CardGrid>
+
+## Built for a live tenant
+
+<CardGrid>
+	<Card title="Postgres mirror" icon="seti:db">
+		About 80% of reads are answered locally with no Autotask call; a nightly check re-reads a sample and repairs differences. [How it works →](/autotask-mcp/guides/mirror/)
+	</Card>
+	<Card title="Change plans & bulk jobs" icon="approve-check">
+		Risky changes are plans with a hash that a person approves. Mass changes run a canary first, then a paced worker. [Bulk cleanup →](/autotask-mcp/guides/bulk-cleanup/)
+	</Card>
+	<Card title="Throttling" icon="warning">
+		Autotask allows 10,000 calls an hour for the whole tenant. The server cools down on 429s, yields background work first and shows who uses the hour. [Throttling →](/autotask-mcp/guides/throttling/)
+	</Card>
+	<Card title="Admin console" icon="laptop">
+		Usage, callers, mirror health, feature switches without a restart, bulk jobs, and when your team works. [Console →](/autotask-mcp/guides/console/)
 	</Card>
 </CardGrid>

@@ -1,61 +1,28 @@
 ---
 title: Configuration
-description: Configure credentials, transport, and server options.
+description: Environment variables for credentials, transport, the Postgres layer, the console and bulk jobs.
 ---
 
-## Required Environment Variables
+| Variable | Default | |
+|---|---|---|
+| `AUTOTASK_USERNAME` / `AUTOTASK_SECRET` / `AUTOTASK_INTEGRATION_CODE` | — | API user credentials (required in `env` auth mode) |
+| `AUTOTASK_API_URL` | auto-detected | Override the zone URL |
+| `AUTH_MODE` | `env` | `gateway`: credentials arrive per request in headers (`X-API-Key`, `X-API-Secret`, `X-Integration-Code`) |
+| `AUTOTASK_IMPERSONATION` | `off` | `on`: writes are recorded as the identified requesting user |
+| `MCP_TRANSPORT` | `stdio` | `http` for remote clients |
+| `MCP_HTTP_PORT` / `MCP_HTTP_HOST` | `8080` / `0.0.0.0` | HTTP transport |
+| `MCP_PG_ENABLED` and `MCP_PG_*` | off | The Postgres layer (connection, schema, roles) |
+| `MCP_PG_SHADOW_ENABLED`, `MCP_PG_SHADOW_SERVE_READS` | off | Mirror sync, and answering reads from it |
+| `MCP_PG_SHADOW_PAUSE_AT_PCT` | `85` | Skip a sync run above this tenant usage (kept high: a stale mirror sends reads live) |
+| `MCP_ADMIN_ENABLED` / `MCP_ADMIN_PORT` | off / `8090` | The admin console |
+| `MCP_BULK_SLOW_AT_PCT` / `MCP_BULK_STOP_AT_PCT` | `40` / `65` | Bulk jobs halve their pace / wait at this tenant usage |
+| `AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT` | `2` | Concurrent calls per endpoint (Autotask allows 3) |
+| `AUTOTASK_AUTH_PAUSE_SECONDS` | `300` | Pause after a rejected login (doubles up to an hour) |
+| `LOG_LEVEL` / `LOG_FORMAT` | `info` / `simple` | `json` for production |
 
-| Variable | Description |
-|----------|-------------|
-| `AUTOTASK_USERNAME` | Your API user email address |
-| `AUTOTASK_SECRET` | Your API secret key |
-| `AUTOTASK_INTEGRATION_CODE` | Your integration code from Autotask |
+Many operational settings — the read-only switch, serving reads from the mirror, mirror pause threshold, caller
+names, the actor registry, notification channels — are changed live in the [console](/autotask-mcp/guides/console/)
+and override the environment.
 
-## Optional Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AUTOTASK_API_URL` | Auto-detected | Override the Autotask API zone URL |
-| `MCP_TRANSPORT` | `stdio` | Transport type: `stdio` or `http` |
-| `MCP_HTTP_PORT` | `8080` | Port for HTTP transport |
-| `MCP_HTTP_HOST` | `0.0.0.0` | Host for HTTP transport |
-| `LOG_LEVEL` | `info` | Logging level: `error`, `warn`, `info`, `debug` |
-
-## Using a .env File
-
-You can place credentials in a `.env` file in the project root:
-
-```bash
-AUTOTASK_USERNAME=api-user@example.com
-AUTOTASK_SECRET=your-secret-key-here
-AUTOTASK_INTEGRATION_CODE=your-integration-code
-LOG_LEVEL=info
-```
-
-## Transport Options
-
-### stdio (Default)
-
-The default transport communicates over stdin/stdout. This is the standard mode for MCP clients like Claude Desktop.
-
-### HTTP (Streamable)
-
-For remote or multi-client deployments, use the HTTP transport:
-
-```bash
-MCP_TRANSPORT=http MCP_HTTP_PORT=8080 node dist/entry.js
-```
-
-This starts an HTTP server with:
-- `POST /mcp` — MCP protocol endpoint
-- `GET /health` — Health check endpoint
-
-## Getting Autotask API Credentials
-
-1. Log into your Autotask instance as an administrator
-2. Navigate to **Admin → Resources (Users)**
-3. Create or select an API user
-4. Generate an API secret key
-5. Note the integration code from **Admin → Extensions & Integrations**
-
-The API user needs appropriate security level permissions for the entities you want to access.
+The complete list, with production values explained, is in the
+[deploy runbook](https://github.com/GDSTechnology/autotask-mcp/blob/main/DEPLOY.md).

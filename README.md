@@ -13,6 +13,8 @@ reporting — plus the parts that make it safe to run against a live tenant: a P
 most reads without touching Autotask, change plans that a person approves by hash, paced bulk jobs, tenant-wide
 throttling and an admin console.
 
+**Docs site:** [gdstechnology.github.io/autotask-mcp](https://gdstechnology.github.io/autotask-mcp/) — guides and the full tool reference.
+
 It started as a fork of [WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp) and is now the
 production automation layer for an Autotask MSP (ChatGPT + n8n + Claude), hardened against real tenant data.
 

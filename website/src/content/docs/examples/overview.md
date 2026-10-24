@@ -3,7 +3,7 @@ title: Prompt Examples Overview
 description: How to interact with Autotask data through natural language prompts.
 ---
 
-This section shows example prompts you can use with your AI assistant to interact with Autotask data. Each example includes the prompt, what the server does behind the scenes, and the kind of output you can expect.
+This section shows example prompts you can use with your AI assistant — ChatGPT, Claude or any MCP client — to work with Autotask data. Each example includes the prompt, what the server does behind the scenes, and the kind of output you can expect.
 
 ## How It Works
 

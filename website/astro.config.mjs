@@ -30,6 +30,7 @@ export default defineConfig({
 						{ label: 'Postgres mirror', slug: 'guides/mirror' },
 						{ label: 'Admin console', slug: 'guides/console' },
 						{ label: 'Merges & bulk cleanup', slug: 'guides/bulk-cleanup' },
+						{ label: 'Commerce', slug: 'guides/commerce' },
 						{ label: 'Vendor billing', slug: 'guides/vendor-billing' },
 						{ label: 'Throttling', slug: 'guides/throttling' },
 					],

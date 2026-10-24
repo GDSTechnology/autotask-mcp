@@ -48,6 +48,7 @@ Claude), hardened against real tenant data.
 | **Time & billing** (26) | Time entries (incl. bulk and "log my time"), billing items approve-and-post, expense reports, timesheet-lock aware errors, `my_day`. |
 | **Projects** (51) | Projects, phases, tasks, predecessors, notes; generate a labour plan and build a project from it. |
 | **Contracts & financial** (41) | Contracts, services, bundles, blocks, adjustments, charges, quotes, opportunities, invoices — including the contract writes the API makes awkward (adjustments verified by effect). |
+| **Commerce** (3) | Sell through Autotask: an offering catalog (recurring plans and add-ons per user, one-time services), quotes, and orders that set up company, users, contract, services, delivery ticket and charges in one approved plan — then track each order to its invoice and payment. → [COMMERCE](docs/COMMERCE.md) |
 | **Vendor billing reconciliation** (21) | Import vendor invoices (Pax8 first), map them to contracts, find what isn't billed / billed wrong / priced under cost, a pricing policy (retail uplift with a margin floor), pre-invoice checks, customer price-change notices, and change plans that fix it. → [VENDOR_BILLING](docs/VENDOR_BILLING.md) |
 | **Companies & contacts** (19) | Search / create / update with name guards (no "Gmail" or "Hi John" companies), duplicate finders, a **safe merge** workflow (ID-only plans of Autotask UI steps, verified afterwards) and **bulk cleanup** of placeholder companies and junk contacts. → [MERGE](docs/MERGE.md) |
 | **Reports** (26) | Unbilled work / revenue leakage, block-hour usage, SLA compliance, ticket throughput, project P&L, contract recurring revenue, time-entry compliance, activity without time, inventory reorder / stale stock. |
@@ -205,6 +206,7 @@ Extensions & Integrations) breaks calls down per API user. → [THROTTLING](docs
 | [docs/POSTGRES.md](docs/POSTGRES.md) | The Postgres layer: mirror, sync modes, mirror check, migrations |
 | [docs/THROTTLING.md](docs/THROTTLING.md) | Limits, cooldowns, backpressure — and how a dispatcher should react |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Building on the MCP from n8n / ChatGPT: result shapes, caller identity, gates, gotchas |
+| [docs/COMMERCE.md](docs/COMMERCE.md) | Selling through Autotask: offerings, orders, tracking to invoice and payment |
 | [docs/VENDOR_BILLING.md](docs/VENDOR_BILLING.md) | Vendor invoice reconciliation, pricing policy, the monthly billing process |
 | [docs/MERGE.md](docs/MERGE.md) | Safe company / contact merges and bulk placeholder / junk-contact cleanup |
 | [docs/N8N_WEBHOOKS.md](docs/N8N_WEBHOOKS.md) | Receiving signed Autotask webhooks in n8n |

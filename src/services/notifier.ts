@@ -22,7 +22,8 @@ export type NotifyEventType =
   | 'sync.drift' | 'reconcile.critical'
   | 'vendor.import_stale' | 'vendor.renewal' | 'vendor.contract_ending'
   | 'vendor.exception_overdue' | 'vendor.notice_due'
-  | 'bulk.paused' | 'bulk.done';
+  | 'bulk.paused' | 'bulk.done'
+  | 'commerce.order_ready' | 'commerce.order_invoiced' | 'commerce.order_paid' | 'commerce.order_failed';
 
 export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; label: string; severity: NotifySeverity }> = [
   { type: 'auth.held', label: 'Autotask login HELD (needs Retry now)', severity: 'critical' },
@@ -43,6 +44,10 @@ export const NOTIFY_EVENTS: Array<{ type: Exclude<NotifyEventType, 'test'>; labe
   { type: 'vendor.exception_overdue', label: 'Reconciliation exceptions past their due date, still undecided', severity: 'warning' },
   { type: 'bulk.paused', label: 'A bulk job paused (canary done, login problem, repeated failures)', severity: 'warning' },
   { type: 'bulk.done', label: 'A bulk job finished', severity: 'info' },
+  { type: 'commerce.order_ready', label: 'An order is set up in Autotask and waits for its invoice', severity: 'info' },
+  { type: 'commerce.order_invoiced', label: 'An order was invoiced', severity: 'info' },
+  { type: 'commerce.order_paid', label: 'An order was paid (build the account, start onboarding)', severity: 'info' },
+  { type: 'commerce.order_failed', label: 'An order failed to set up in Autotask', severity: 'warning' },
   { type: 'vendor.notice_due', label: 'A customer price change takes effect within 30 days with no notice recorded', severity: 'warning' },
 ];
 

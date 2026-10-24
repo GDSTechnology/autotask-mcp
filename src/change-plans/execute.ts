@@ -50,15 +50,42 @@ const same = (a: unknown, b: unknown): boolean => {
   return String(na).trim() === String(nb).trim();
 };
 export const fieldsDiffer = (cur: Record<string, unknown>, want: Record<string, unknown>) => Object.keys(want).filter((k) => !same(cur[k], want[k]));
-export const dependsOn = (r: Pick<PlanRow, 'meta'>): number[] => (Array.isArray(r.meta?.dependsOn) ? (r.meta!.dependsOn as unknown[]).map(Number).filter(Number.isInteger) : []);
+/**
+ * Cross-row references: meta.refs = { field: rowNo } fills that field with the id the referenced row created (or
+ * found already in place) — e.g. an order creates a company (row 1), then its contacts and contract with
+ * companyID from row 1. A referenced row is also a dependency.
+ */
+export const refsOf = (r: Pick<PlanRow, 'meta'>): Record<string, number> => {
+  const refs = r.meta?.refs;
+  if (!refs || typeof refs !== 'object') return {};
+  return Object.fromEntries(Object.entries(refs as Record<string, unknown>).map(([k, v]) => [k, Number(v)]).filter(([, v]) => Number.isInteger(v)));
+};
+export const dependsOn = (r: Pick<PlanRow, 'meta'>): number[] => [...new Set([
+  ...(Array.isArray(r.meta?.dependsOn) ? (r.meta!.dependsOn as unknown[]).map(Number).filter(Number.isInteger) : []),
+  ...Object.values(refsOf(r)),
+])];
+/** The id a finished row stands for: what it created, what it found already in place, or its target. */
+export const rowId = (r: Pick<PlanRow, 'result' | 'targetId'>): number | null => {
+  const res = (r.result ?? {}) as Record<string, unknown>;
+  const id = res.id ?? res.existingId ?? r.targetId;
+  return id == null || Number(id) === 0 ? null : Number(id);
+};
 
 export async function executePlan(plans: PlanStore, plan: Plan, io: EntityIO, o: { maxRows?: number; rowNos?: number[]; onApplied?: (row: PlanRow, id: number | null) => Promise<void> } = {}): Promise<ExecuteReport> {
   const rep: ExecuteReport = { planId: plan.id, attempted: 0, applied: 0, failed: 0, stale: 0, skipped: 0, waiting: 0, rows: [] };
   const statusNow = new Map<number, RowStatus>(plan.rows.map((r) => [r.rowNo, r.status]));
+  // Ids of rows already done (earlier executions) and of rows done in this run, for meta.refs.
+  const idNow = new Map<number, number | null>(plan.rows.filter((r) => r.status === 'applied' || r.status === 'skipped').map((r) => [r.rowNo, rowId(r)]));
   // Manual rows (UI steps such as a native merge) are never executed here.
   const todo = plan.rows.filter((r) => r.status === 'approved' && r.action !== 'manual' && (!o.rowNos?.length || o.rowNos.includes(r.rowNo))).slice(0, Math.min(Math.max(o.maxRows ?? 25, 1), 100));
   await plans.setStatus(plan.id, 'executing');
-  for (const r of todo) {
+  for (const r0 of todo) {
+    // Fill meta.refs from the rows they point at (a copy: the stored plan keeps its hash).
+    const refs = refsOf(r0);
+    const unresolved = Object.entries(refs).filter(([, n]) => idNow.get(n) == null).map(([f]) => f);
+    const r: PlanRow = Object.keys(refs).length && !unresolved.length
+      ? { ...r0, after: { ...(r0.after ?? {}), ...Object.fromEntries(Object.entries(refs).map(([f, n]) => [f, idNow.get(n)])) } }
+      : r0;
     // Rows this one depends on must be in first.
     const notReady = dependsOn(r).filter((n) => !['applied', 'skipped'].includes(statusNow.get(n) ?? ''));
     if (notReady.length) {
@@ -66,10 +93,16 @@ export async function executePlan(plans: PlanStore, plan: Plan, io: EntityIO, o:
       rep.rows.push({ row: r.rowNo, label: r.label, status: 'waiting', detail: `waits for row(s) ${notReady.map((n) => `${n} (${statusNow.get(n) ?? 'missing'})`).join(', ')} — nothing written` });
       continue;
     }
+    if (unresolved.length) {
+      rep.waiting++;
+      rep.rows.push({ row: r.rowNo, label: r.label, status: 'waiting', detail: `no id yet for ${unresolved.join(', ')} from the row(s) it refers to — nothing written` });
+      continue;
+    }
     rep.attempted++;
     const done = async (status: 'applied' | 'failed' | 'stale' | 'skipped', result: Record<string, unknown>, detail?: string, id: number | null = r.targetId) => {
       await plans.setRowResult(plan.id, r.rowNo, status, result);
       statusNow.set(r.rowNo, status);
+      if (status === 'applied' || status === 'skipped') idNow.set(r.rowNo, rowId({ result, targetId: id ?? r.targetId }));
       rep[status === 'applied' ? 'applied' : status]++;
       rep.rows.push({ row: r.rowNo, label: r.label, status, ...(detail ? { detail } : {}), id });
     };

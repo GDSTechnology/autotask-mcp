@@ -409,9 +409,23 @@ describe('placeholder cleanup: email safeguards (real people use personal mail t
     expect(rev['only.here@outlook.com']).toMatchObject({ copies: 2, decision: 'inactivate', why: 'only on placeholder companies' });
     expect(rev['dup.person@hotmail.com']).toMatchObject({ decision: 'inactivate', why: expect.stringMatching(/duplicate: also on Acme Holdings/), realCompanies: [{ id: 900, name: 'Acme Holdings' }] });
     expect(rev['has.ticket@outlook.com']).toMatchObject({ decision: 'excluded', tickets: 1 });
-    expect(r.stats.emailSummary).toEqual({ addresses: 4, kept: 2, withTickets: 1, listed: 1, duplicatesOfReal: 1, onlyOnPlaceholders: 1 });
+    expect(r.stats.emailSummary).toEqual({ addresses: 4, kept: 2, withTickets: 1, listed: 1, junk: 0, duplicatesOfReal: 1, onlyOnPlaceholders: 1 });
     expect((r.stats.emailReview as Array<Record<string, any>>)[0]!.decision).toBe('excluded'); // kept ones first
   });
+  test('junkEmails waives the ticket rule for a confirmed spam sender; keep wins over junk; company history still excludes', async () => {
+    const r = await preparePlaceholderJob(q as never, { companyName: 'Outlook', junkEmails: ['has.ticket@outlook.com', 'keep.me@outlook.com'], excludeEmails: ['keep.me@outlook.com'] });
+    const excluded = r.items.filter((i) => i.status === 'excluded').map((i) => i.recordId);
+    expect(excluded).toEqual([105]); // keep.me: listed in both, keep wins
+    const rev = Object.fromEntries((r.stats.emailReview as Array<Record<string, any>>).map((x) => [x.email.toLowerCase(), x]));
+    expect(rev['has.ticket@outlook.com']).toMatchObject({ decision: 'inactivate', why: 'listed as junk (1 ticket(s) ignored)', tickets: 1 });
+    expect((r.stats.emailSummary as Record<string, number>).junk).toBe(1);
+    // a ticket ON the placeholder company itself is company history: still excluded, junk or not
+    const withHistory = { ...tables, Tickets: [...tables.Tickets, { id: 7001, contactID: 4, companyID: 104 }] };
+    const q2 = (e: string, f: any[], o: any) => (e === 'Tickets' ? Promise.resolve((withHistory.Tickets as Row[]).filter((t) => f.every((x: any) => x.op !== 'in' || x.value.map(String).includes(String(t[x.field]))))) : q(e, f, o));
+    const r2 = await preparePlaceholderJob(q2 as never, { companyName: 'Outlook', junkEmails: ['has.ticket@outlook.com'] });
+    expect(r2.items.find((i) => i.recordId === 104 && i.entity === 'Companies')).toMatchObject({ status: 'excluded', reason: expect.stringMatching(/1 tickets/) });
+  });
+
   test('an email check that fails prepares nothing', async () => {
     const broken = (e: string, f: any[], o: any) => (e === 'Tickets' && f[0]?.field === 'contactID' ? Promise.reject(new Error('timeout')) : q(e, f, o));
     await expect(preparePlaceholderJob(broken as never, { companyName: 'Outlook' })).rejects.toThrow(/email check \(tickets of same-address contacts\) failed/);

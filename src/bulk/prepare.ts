@@ -17,6 +17,8 @@ export interface PlaceholderSelector {
   companyName: string; createdByResourceId?: number; createdFrom?: string; createdTo?: string;
   /** Email addresses a person recognises as real: their placeholder companies are kept (excluded). */
   excludeEmails?: string[];
+  /** Addresses a person confirmed as junk (spam senders): their tickets no longer keep their companies. Keep wins over junk. */
+  junkEmails?: string[];
 }
 
 const EMAILS = ['emailAddress', 'emailAddress2', 'emailAddress3'] as const;
@@ -103,6 +105,8 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
   //   - any ticket on any contact with that address → the address is a real person: their companies are KEPT;
   //   - the address is also on a contact of a REAL company → the placeholder copy is a duplicate (inactivated, shown);
   //   - listed in excludeEmails → KEPT (a person recognised it);
+  //   - listed in junkEmails → the ticket rule is waived (a person confirmed a spam sender, e.g. one spam ticket
+  //     kept 1,339 "Outlook" companies); company history and real names still exclude;
   //   - otherwise it only exists on placeholders → inactivated.
   // A check that fails stops the preparation (never "no tickets" by default).
   const byEmail = new Map<string, { email: string; companies: Set<number>; contactIds: Set<number> }>();
@@ -148,6 +152,7 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
     await pace('Tickets');
   }
   const listed = new Set((sel.excludeEmails ?? []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
+  const junk = new Set((sel.junkEmails ?? []).map((e) => String(e).trim().toLowerCase()).filter(Boolean));
   const realOf = new Map<string, Array<{ id: number; name: string | null }>>();
   for (const c of sameAddress) if (isReal(Number(c.companyID))) for (const k of emailsOf(c).map((e) => e.toLowerCase())) if (byEmail.has(k)) {
     const l = realOf.get(k) ?? realOf.set(k, []).get(k)!;
@@ -157,6 +162,7 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
   for (const [k, x] of byEmail) {
     const tickets = ticketsOf.get(k) ?? 0, real = realOf.get(k) ?? [];
     const [decision, why]: [EmailDecision, string] = listed.has(k) ? ['excluded', 'listed to keep']
+      : junk.has(k) ? ['inactivate', `listed as junk${tickets ? ` (${tickets} ticket(s) ignored)` : ''}`]
       : tickets > 0 ? ['excluded', `${tickets} ticket(s) with this address — a real person`]
       : real.length ? ['inactivate', `duplicate: also on ${real[0]!.name ?? '#' + real[0]!.id}${real.length > 1 ? ` (+${real.length - 1})` : ''}`]
       : ['inactivate', 'only on placeholder companies'];
@@ -191,7 +197,7 @@ export async function preparePlaceholderJob(q: QueryFn, sel: PlaceholderSelector
     stats: {
       selector: sel, companies: companies.length, excludedCompanies: excluded, excludedBy: reasons,
       // The review table (before approval): kept addresses first, then duplicates of real contacts, then the most-copied.
-      emailSummary: { addresses: review.length, kept: review.filter((r) => r.decision === 'excluded').length, withTickets: review.filter((r) => r.tickets > 0).length, listed: review.filter((r) => r.why === 'listed to keep').length, duplicatesOfReal: review.filter((r) => r.decision === 'inactivate' && r.realCompanies.length).length, onlyOnPlaceholders: review.filter((r) => r.why === 'only on placeholder companies').length },
+      emailSummary: { addresses: review.length, kept: review.filter((r) => r.decision === 'excluded').length, withTickets: review.filter((r) => r.tickets > 0).length, listed: review.filter((r) => r.why === 'listed to keep').length, junk: review.filter((r) => r.why.startsWith('listed as junk')).length, duplicatesOfReal: review.filter((r) => r.decision === 'inactivate' && r.realCompanies.length).length, onlyOnPlaceholders: review.filter((r) => r.why === 'only on placeholder companies').length },
       emailReview: review.sort((a, b) => (a.decision === b.decision ? 0 : a.decision === 'excluded' ? -1 : 1) || (b.realCompanies.length ? 1 : 0) - (a.realCompanies.length ? 1 : 0) || b.copies - a.copies).slice(0, 300), companiesAlreadyInactive: alreadyInactive, companyWrites, contactWrites, writes: companyWrites + contactWrites, contactsSeen: contacts.length, prepareReads: calls.n },
   };
 }

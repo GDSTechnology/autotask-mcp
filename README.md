@@ -1,866 +1,243 @@
 # Autotask MCP Server
 
 [![CI](https://github.com/GDSTechnology/autotask-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/GDSTechnology/autotask-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/GDSTechnology/autotask-mcp)](https://github.com/GDSTechnology/autotask-mcp/releases/latest)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
 
-**Give your AI assistant direct access to Autotask.** Search tickets, create time entries, look up companies, manage projects — all through natural language. No more copy-pasting between browser tabs and chat windows.
+**Run an MSP's Autotask from chat and automation — safely.**
 
-This is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that connects Claude (or any MCP-compatible AI) to your Autotask PSA environment. Your AI assistant gets 171 tools covering the operations MSP teams use daily: ticket triage, time logging, company lookups, project management, billing review, and more.
+A [Model Context Protocol](https://modelcontextprotocol.io/) server for Kaseya Autotask PSA. ChatGPT, Claude,
+n8n and any other MCP client get **~290 tools** across tickets, time, projects, contracts, billing, CRM and
+reporting — plus the parts that make it safe to run against a live tenant: a Postgres mirror that answers
+most reads without touching Autotask, change plans that a person approves by hash, paced bulk jobs, tenant-wide
+throttling and an admin console.
 
-If you run an MSP on Autotask and you're tired of the context-switching tax, this is for you.
-
-An independent GDS Technology project, maintained for GDS's Autotask automation (ChatGPT + n8n).
-Originally derived from `WYRE-AI/autotask-mcp` (Apache-2.0).
-
-## Deployment
-
-This server runs as a docker-compose service built locally from this repository.
-See **[DEPLOY.md](DEPLOY.md)** for the build → deploy → verify → rollback runbook,
-and `scripts/build-image.sh` for a traceable image build.
-
-**Admin console (optional).** A web UI to watch API usage and shadow health,
-switch features on/off without a restart (e.g. read-only mode), and manage
-administrator and read-only users. A guided SSH wizard sets it up, prints a
-generated first-admin password, and walks you through publishing it with a
-Cloudflare Tunnel step by step. Deploy a release that includes the console
-first, then run:
-
-```bash
-docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh
-bash admin-setup.sh
-```
-
-See **[docs/ADMIN.md](docs/ADMIN.md)**. It requires the Postgres layer.
-
-Building an automation on top of the MCP (n8n, Hermes, ChatGPT)? See the
-**[integration cheatsheet](docs/INTEGRATION.md)** — result shapes, caller identity,
-the confirmation/idempotency/permission gates, and the common gotchas.
-
-> **Note — no GitHub Packages token required.** `autotask-mcp` does **not** depend
-> on any private GitHub Packages registry package. Its only SDK dependency,
-> `autotask-node`, is a git dependency on the **public**
-> [`GDSTechnology/autotask-node`](https://github.com/GDSTechnology/autotask-node)
-> fork, which `npm ci` / `npm install` resolve anonymously — so image builds and the
-> deploy need no `NODE_AUTH_TOKEN` / `GITHUB_TOKEN`. (CI validates the token-free
-> Docker build on every change.)
-
-## Quick Start
-
-**Claude Desktop** — download, open, done:
-
-1. Download `autotask-mcp.mcpb` from the [latest release](https://github.com/GDSTechnology/autotask-mcp/releases/latest)
-2. Open the file (double-click or drag into Claude Desktop)
-3. Enter your Autotask credentials when prompted (Username, Secret, Integration Code)
-
-No terminal, no JSON editing, no Node.js install required.
-
-**Claude Code (CLI):**
-
-```bash
-claude mcp add autotask-mcp \
-  -e AUTOTASK_USERNAME=your-user@company.com \
-  -e AUTOTASK_SECRET=your-secret \
-  -e AUTOTASK_INTEGRATION_CODE=your-code \
-  -- npx -y github:GDSTechnology/autotask-mcp
-```
-
-See [Installation](#installation) for Docker and from-source methods.
-
-## Features
-
-- **🔌 MCP Protocol Compliance**: Full support for MCP resources and tools
-- **🎴 Interactive Ticket Card (MCP Apps)**: `autotask_get_ticket_details` renders as an interactive card in MCP Apps hosts (Claude Desktop/web) with an in-card "Add note" round-trip; neutral theme by default, brandable via `MCP_BRAND_*` env vars; plain-JSON behavior is unchanged in other hosts
-- **🛠️ Comprehensive API Coverage**: 171 tools spanning companies, contacts, tickets, projects, billing items, time entries, notes, attachments, and more
-- **📈 Operational Reports**: block-hour usage & overage, ticket charges + to-bill queue, **unbilled-work / revenue-leakage** (aged uninvoiced billables), and inventory (reorder control, close-outs, stale/dead-stock)
-- **🔍 Advanced Search**: Powerful search capabilities with filters across all entities
-- **📝 CRUD Operations**: Create, read, update operations for core Autotask entities
-- **🔄 ID-to-Name Mapping**: Automatic resolution of company and resource IDs to human-readable names
-- **⚡ Intelligent Caching**: Smart caching system for improved performance and reduced API calls
-- **🔒 Secure Authentication**: Enterprise-grade API security with Autotask credentials
-- **🌐 Dual Transport**: Supports both stdio (local) and HTTP Streamable (remote/Docker) transports
-- **📦 MCPB Packaging**: One-click installation via MCP Bundle for desktop clients
-- **🐳 Docker Ready**: Containerized deployment with HTTP transport and health checks
-- **📊 Structured Logging**: Comprehensive logging with configurable levels and formats
-- **🧪 Test Coverage**: Comprehensive test suite with 80%+ coverage
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Configuration](#configuration)
-  - [Gateway Mode](#gateway-mode)
-- [Usage](#usage)
-- [API Reference](#api-reference)
-- [ID-to-Name Mapping](#id-to-name-mapping)
-- [HTTP Transport](#http-transport)
-- [Docker Deployment](#docker-deployment)
-- [Migration Guide](docs/MIGRATION_GUIDE.md)
-- [Development](#development)
-- [Testing](#testing)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [Contributors](#contributors)
-- [License](#license)
-
-## Installation
-
-### Option 1: MCPB Bundle (Claude Desktop)
-
-The simplest method — no terminal, no JSON editing, no Node.js install required.
-
-1. Download `autotask-mcp.mcpb` from the [latest release](https://github.com/GDSTechnology/autotask-mcp/releases/latest)
-2. Open the file (double-click or drag into Claude Desktop)
-3. Enter your Autotask credentials when prompted (Username, Secret, Integration Code)
-
-For **Claude Code (CLI)**, one command:
-
-```bash
-claude mcp add autotask-mcp \
-  -e AUTOTASK_USERNAME=your-user@company.com \
-  -e AUTOTASK_SECRET=your-secret \
-  -e AUTOTASK_INTEGRATION_CODE=your-code \
-  -- npx -y github:GDSTechnology/autotask-mcp
-```
-
-### Option 2: Docker
-
-**Local (stdio — for Claude Desktop or Claude Code):**
-
-```json
-{
-  "mcpServers": {
-    "autotask": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "-e", "MCP_TRANSPORT=stdio",
-        "-e", "AUTOTASK_USERNAME=your-user@company.com",
-        "-e", "AUTOTASK_SECRET=your-secret",
-        "-e", "AUTOTASK_INTEGRATION_CODE=your-code",
-        "--entrypoint", "node",
-        "ghcr.io/gdstechnology/autotask-mcp:latest",
-        "dist/entry.js"
-      ]
-    }
-  }
-}
-```
-
-**Remote (HTTP Streamable — for server deployments):**
-
-```bash
-docker run -d \
-  --name autotask-mcp \
-  -p 8080:8080 \
-  -e AUTOTASK_USERNAME="your-user@company.com" \
-  -e AUTOTASK_SECRET="your-secret" \
-  -e AUTOTASK_INTEGRATION_CODE="your-code" \
-  --restart unless-stopped \
-  ghcr.io/gdstechnology/autotask-mcp:latest
-
-# Verify
-curl http://localhost:8080/health
-```
-
-Clients connect to `http://host:8080/mcp` using MCP Streamable HTTP transport.
-
-**Gateway Mode (for MCP Gateway deployments):**
-
-When deploying behind an MCP Gateway that injects credentials via HTTP headers:
-
-```bash
-docker run -d \
-  --name autotask-mcp \
-  -p 8080:8080 \
-  -e AUTH_MODE=gateway \
-  --restart unless-stopped \
-  ghcr.io/gdstechnology/autotask-mcp:latest
-```
-
-The gateway injects credentials via headers:
-- `X-API-Key`: Autotask username
-- `X-API-Secret`: Autotask secret
-- `X-Integration-Code`: Autotask integration code
-
-Optionally, the gateway may inject the **acting user** (Teams handoff) so `currentUser`/act-as resolves to that person:
-- `X-Acting-Resource-Id`: acting Autotask resource id, or
-- `X-Acting-User-Email`: acting user's email (matched live)
-
-These are trusted only in gateway mode, only behind the S2S gate, and never override an explicit in-call resource. See [Gateway Mode](#gateway-mode) for details.
-
-### Option 3: From Source (Development)
-
-```bash
-git clone https://github.com/GDSTechnology/autotask-mcp.git
-cd autotask-mcp
-npm ci && npm run build
-```
-
-Then point your MCP client at `dist/entry.js`:
-
-```json
-{
-  "mcpServers": {
-    "autotask": {
-      "command": "node",
-      "args": ["/path/to/autotask-mcp/dist/entry.js"],
-      "env": {
-        "AUTOTASK_USERNAME": "your-user@company.com",
-        "AUTOTASK_SECRET": "your-secret",
-        "AUTOTASK_INTEGRATION_CODE": "your-code"
-      }
-    }
-  }
-}
-```
-
-### Prerequisites
-
-- Valid Autotask API credentials (API user email, secret, integration code)
-- MCP-compatible client (Claude Desktop, Claude Code, etc.)
-- Docker (for Option 2) or Node.js 18+ (for Option 3)
-
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file with your configuration:
-
-```bash
-# Required Autotask API credentials (Local Mode)
-AUTOTASK_USERNAME=your-api-user@example.com
-AUTOTASK_SECRET=your-secret-key
-AUTOTASK_INTEGRATION_CODE=your-integration-code
-
-# Optional configuration
-# AUTOTASK_API_URL is auto-detected from AUTOTASK_USERNAME via Autotask's
-# unauthenticated zoneInformation endpoint on first connect. Only set this
-# explicitly to override auto-detection (e.g. for an on-prem proxy).
-# AUTOTASK_API_URL=https://webservices2.autotask.net/atservicesrest/
-MCP_SERVER_NAME=autotask-mcp
-
-# Authentication mode
-AUTH_MODE=env               # env (local), gateway (hosted)
-
-# Native Autotask impersonation (off by default). When enabled, writes are
-# recorded as the requesting user (ImpersonationResourceId) when the caller can
-# be identified — from the gateway X-Acting-* header, the request _meta
-# requestingUserEmail, or a previously-bound identity. Unidentified callers run
-# as the integration user. Requires the API user's Autotask security level to
-# permit impersonation.
-AUTOTASK_IMPERSONATION=off  # off (default), on
-
-# Transport (stdio for local/desktop, http for remote/Docker)
-MCP_TRANSPORT=stdio          # stdio, http
-MCP_HTTP_PORT=8080           # HTTP transport port (only used when MCP_TRANSPORT=http)
-MCP_HTTP_HOST=0.0.0.0        # HTTP transport bind address
-
-# Logging
-LOG_LEVEL=info          # error, warn, info, debug
-LOG_FORMAT=simple       # simple, json
-
-# Search-result name enrichment
-# Max concurrent Autotask API calls used to resolve company/resource names on
-# search results. Kept low to stay under Autotask's per-integration
-# concurrent-thread limit (raising it risks HTTP 429 "thread threshold").
-AUTOTASK_ENHANCE_CONCURRENCY=3
-
-# Environment
-NODE_ENV=production
-```
-
-### Gateway Mode
-
-When deployed behind an MCP Gateway, the server operates in gateway mode where credentials are injected via HTTP headers on each request.
-
-**Enable Gateway Mode:**
-
-```bash
-AUTH_MODE=gateway
-MCP_TRANSPORT=http
-```
-
-**Expected Headers:**
-
-| Header | Description |
-|--------|-------------|
-| `X-API-Key` | Autotask API username (email) |
-| `X-API-Secret` | Autotask API secret key |
-| `X-Integration-Code` | Autotask integration code |
-| `X-API-URL` | (Optional) Custom Autotask API URL |
-
-**Health Check Response (Gateway Mode):**
-
-```json
-{
-  "status": "ok",
-  "transport": "http",
-  "authMode": "gateway",
-  "timestamp": "2026-02-05T10:00:00.000Z"
-}
-```
-
-For detailed migration instructions, see the [Migration Guide](docs/MIGRATION_GUIDE.md).
-
-💡 **Pro Tip**: Copy the above content to a `.env` file in your project root.
-
-### Autotask API Setup
-
-1. **Create API User**: In Autotask, create a dedicated API user with appropriate permissions
-2. **Generate Secret**: Generate an API secret for the user
-3. **Integration Code**: Obtain your integration code from Autotask
-4. **Permissions**: Ensure the API user has read/write access to required entities
-
-For detailed setup instructions, see the [Autotask API documentation](https://ww3.autotask.net/help/DeveloperHelp/Content/AdminSetup/2ExtensionsIntegrations/APIs/REST/REST_API_Home.htm).
-
-## Usage
-
-### Command Line
-
-```bash
-# Start the MCP server (stdio transport, for piping to an MCP client)
-node dist/entry.js
-
-# Start with HTTP transport
-MCP_TRANSPORT=http node dist/index.js
-```
-
-### MCP Client Configuration
-
-See [Installation](#installation) for all setup methods.
-
-## API Reference
-
-### Resources
-
-Resources provide read-only access to Autotask data:
-
-- `autotask://companies` - List all companies
-- `autotask://companies/{id}` - Get specific company
-- `autotask://contacts` - List all contacts  
-- `autotask://contacts/{id}` - Get specific contact
-- `autotask://tickets` - List all tickets
-- `autotask://tickets/{id}` - Get specific ticket
-- `autotask://time-entries` - List time entries
-
-### Tools
-
-The server provides 171 tools for interacting with Autotask:
-
-#### Company Operations
-- `autotask_search_companies` - Search companies by name / active state, by **Classification** (exact label or id from the tenant picklist — list them with `autotask_get_field_info { entityType: "Companies", fieldName: "classification" }`), or in identity mode (domain, phone, company number); rows carry `classification: {id, label}` or `null`
-- `autotask_merge_discover` / `autotask_merge_dependency_inventory` / `autotask_merge_build_plan` / `autotask_merge_verify` - Safe company and contact merges by numeric IDs only (one pair, or a CSV of old id → correct id): find duplicates, inventory what is attached, a work list of Autotask UI merge steps with links, then verify. See [docs/MERGE.md](docs/MERGE.md)
-- `autotask_create_company` - Create new company
-- `autotask_update_company` - Update existing company
-
-#### Contact Operations
-- `autotask_search_contacts` - Search contacts with filters
-- `autotask_create_contact` - Create new contact
-
-#### Ticket Operations
-- `autotask_search_tickets` - Search tickets with filters (incl. `externalID`)
-- `autotask_get_ticket_details` - Get full ticket details by ID
-- `autotask_create_ticket` - Create new ticket (contract/service linkage, `externalID`, `additionalConfigurationItemIDs[]`)
-- `autotask_find_ticket_by_external_id` - Idempotency lookup by occurrence/correlation key (check before creating a recurring ticket)
-- `autotask_search_ticket_configuration_items` / `autotask_add_ticket_configuration_item` / `autotask_remove_ticket_configuration_item` - Link/unlink additional CIs on a ticket
-- `autotask_search_checklist_libraries` / `autotask_get_checklist_library` / `autotask_apply_checklist_library_to_ticket` - Reusable checklists; apply a library's items to a ticket
-- `autotask_create_maintenance_ticket` - Orchestrator: validate company/contract/service/CI → idempotency check → create + link CIs + apply checklist → read back (supports `dryRun`)
-
-#### Configuration Item Entitlement
-- `autotask_get_configuration_item_entitlement` - Is a CI entitled to recurring service, and why (normalized reasons)
-- `autotask_search_configuration_item_coverage_gaps` - Active CIs with no contract coverage (for Sales review)
-
-#### Time Entry Operations
-- `autotask_create_time_entry` - Log time entry
-- `autotask_log_my_time` - Log time as the calling user, idempotently (safe for scheduled/backfill re-runs)
-- `autotask_get_my_day` - The caller's day: assigned tickets, time already logged, open tasks
-- `autotask_search_time_entries` - Search time entries with filters (resource, ticket, project, date range)
-
-#### Billing Items (Approve and Post Workflow)
-- `autotask_search_billing_items` - Search approved and posted billing items
-- `autotask_get_billing_item` - Get specific billing item by ID
-- `autotask_search_billing_item_approval_levels` - Search multi-level approval records for time entries
-
-#### Project Operations
-- `autotask_search_projects` - Search projects with filters
-- `autotask_create_project` - Create new project
-
-#### Resource Operations
-- `autotask_search_resources` - Search resources (technicians/users)
-- `autotask_search_roles` - Search Autotask roles (for assignment / time entries)
-- `autotask_get_resource_roles` - List a user's roles (with their default role flagged)
-
-#### Note Operations
-- `autotask_get_ticket_note` / `autotask_search_ticket_notes` / `autotask_create_ticket_note`
-- `autotask_get_project_note` / `autotask_search_project_notes` / `autotask_create_project_note`
-- `autotask_get_company_note` / `autotask_search_company_notes` / `autotask_create_company_note`
-
-#### Attachment Operations
-- `autotask_get_ticket_attachment` - Get ticket attachment
-- `autotask_search_ticket_attachments` - Search ticket attachments
-
-#### Financial Operations
-- `autotask_get_expense_report` / `autotask_search_expense_reports` / `autotask_create_expense_report`
-- `autotask_get_quote` / `autotask_search_quotes` / `autotask_create_quote`
-- `autotask_search_invoices` - Search invoices
-
-#### Contract Operations
-- `autotask_search_contracts` - Search contracts (name, company, status, type, end-date range)
-- `autotask_get_contract` - Get a single contract by ID
-- `autotask_list_expiring_contracts` - Expiring/expired contracts report (next N days, per company or org-wide)
-- `autotask_create_contract` / `autotask_create_contracts_bulk` - Create contract shells, one or many
-- `autotask_update_contract` - Update a contract (e.g. extend/renew end date)
-- `autotask_create_contract_service` / `autotask_update_contract_service` - Manage contract service lines
-- `autotask_search_contract_services` / `autotask_get_contract_service` - Read contract service entitlements (by contract/service)
-
-#### Configuration Items
-- `autotask_search_configuration_items` - Search configuration items (assets), incl. contract/service entitlement filters
-- `autotask_get_configuration_item` - Get one asset by id (optional reference-name enrichment)
-
-#### Task Operations
-- `autotask_search_tasks` - Search project tasks
-- `autotask_create_task` - Create project task
-
-#### Utility Operations
-- `autotask_test_connection` - Test API connectivity
-
-### Example Tool Usage
-
-```javascript
-// Search for companies
-{
-  "name": "autotask_search_companies",
-  "arguments": {
-    "searchTerm": "Acme Corp",
-    "isActive": true,
-    "pageSize": 10
-  }
-}
-
-// Create a new ticket
-{
-  "name": "autotask_create_ticket",
-  "arguments": {
-    "companyID": 12345,
-    "title": "Server maintenance request",
-    "description": "Need to perform monthly server maintenance",
-    "priority": 2,
-    "status": 1
-  }
-}
-```
-
-## ID-to-Name Mapping
-
-The Autotask MCP server includes intelligent ID-to-name mapping that automatically resolves company and resource IDs to human-readable names, making API responses much more useful for AI assistants and human users.
-
-### Automatic Enhancement
-
-All search and detail tools automatically include an `_enhanced` field with resolved names:
-
-```json
-{
-  "id": 12345,
-  "title": "Sample Ticket",
-  "companyID": 678,
-  "assignedResourceID": 90,
-  "_enhanced": {
-    "companyName": "Acme Corporation",
-    "assignedResourceName": "John Smith"
-  }
-}
-```
-
-### How It Works
-
-ID-to-name mapping is applied automatically to all search and detail tool results. No additional tools are needed — the `_enhanced` field is added transparently to every response that contains company or resource IDs.
-
-### Performance Features
-
-- **Smart Caching**: Names are cached for 30 minutes to reduce API calls
-- **Bulk Operations**: Efficient batch lookups for multiple IDs
-- **Graceful Fallback**: Returns "Unknown Company (123)" if lookup fails
-- **Parallel Processing**: Multiple mappings resolved simultaneously
-
-### Testing Mapping
-
-Test the mapping functionality:
-
-```bash
-npm run test:mapping
-```
-
-For detailed mapping documentation, see [docs/mapping.md](docs/mapping.md).
-
-## HTTP Transport
-
-The server supports the MCP Streamable HTTP transport for remote deployments (e.g., Docker, cloud hosting). Set `MCP_TRANSPORT=http` to enable it.
-
-```bash
-# Start with HTTP transport
-MCP_TRANSPORT=http MCP_HTTP_PORT=8080 node dist/index.js
-```
-
-The HTTP transport exposes:
-- `POST /mcp` — MCP Streamable HTTP endpoint
-- `GET /health` — Health check (returns `{"status":"ok"}`)
-
-Clients must send requests to `/mcp` with `Accept: application/json, text/event-stream` headers per the MCP Streamable HTTP specification.
-
-## Docker Deployment
-
-The Docker image uses HTTP transport by default (port 8080) with a built-in health check.
-
-### Using Pre-built Image from GitHub Container Registry
-
-The Docker image defaults to **HTTP transport** on port 8080 — suitable for remote/server deployments where clients connect over the network.
-
-```bash
-# Pull the latest image
-docker pull ghcr.io/gdstechnology/autotask-mcp:latest
-
-# Run container with HTTP transport (default)
-docker run -d \
-  --name autotask-mcp \
-  -p 8080:8080 \
-  -e AUTOTASK_USERNAME="your-api-user@example.com" \
-  -e AUTOTASK_SECRET="your-secret-key" \
-  -e AUTOTASK_INTEGRATION_CODE="your-integration-code" \
-  --restart unless-stopped \
-  ghcr.io/gdstechnology/autotask-mcp:latest
-
-# Verify it's running
-curl http://localhost:8080/health
-```
-
-For **stdio** usage with Claude Desktop, see [Installation Option 2](#option-2-docker).
-
-### Quick Start (From Source)
-
-```bash
-# Clone repository
-git clone https://github.com/GDSTechnology/autotask-mcp.git
-cd autotask-mcp
-
-# Create environment file
-cp .env.example .env
-# Edit .env with your credentials
-
-# Start with docker-compose
-docker compose up -d
-```
-
-### Production Deployment
-
-```bash
-# Build production image locally
-docker build -t autotask-mcp:latest .
-
-# Run container
-docker run -d \
-  --name autotask-mcp \
-  --env-file .env \
-  --restart unless-stopped \
-  autotask-mcp:latest
-```
-
-### Development Mode
-
-```bash
-# Start development environment with hot reload
-docker compose --profile dev up autotask-mcp-dev
-```
-
-## Development
-
-### Setup
-
-```bash
-git clone https://github.com/GDSTechnology/autotask-mcp.git
-cd autotask-mcp
-npm install
-```
-
-### Available Scripts
-
-```bash
-npm run dev          # Start development server with hot reload
-npm run build        # Build for production
-npm run test         # Run test suite
-npm run test:watch   # Run tests in watch mode
-npm run test:coverage # Run tests with coverage
-npm run lint         # Run ESLint
-npm run lint:fix     # Fix ESLint issues
-```
-
-### Project Structure
-
-```
-autotask-mcp/
-├── src/
-│   ├── handlers/           # MCP request handlers
-│   ├── mcp/               # MCP server implementation
-│   ├── services/          # Autotask service layer
-│   ├── types/             # TypeScript type definitions
-│   ├── utils/             # Utility functions (config, logger, cache)
-│   ├── entry.ts           # Entry point (stdout guard + .env loader)
-│   └── index.ts           # Server bootstrap (config, logger, server init)
-├── tests/                 # Test files
-├── scripts/               # Build and packaging scripts
-│   └── pack-mcpb.js       # MCPB bundle creation
-├── manifest.json          # MCPB manifest for desktop distribution
-├── Dockerfile             # Container definition (HTTP transport)
-├── docker-compose.yml     # Multi-service orchestration
-└── package.json          # Project configuration
-```
-
-## Testing
-
-### Running Tests
-
-```bash
-# Run all tests
-npm test
-
-# Run with coverage
-npm run test:coverage
-
-# Run in watch mode
-npm run test:watch
-
-# Run specific test file
-npm test -- tests/autotask-service.test.ts
-```
-
-### Test Categories
-
-- **Unit Tests**: Service layer and utility functions
-- **Integration Tests**: MCP protocol compliance
-- **API Tests**: Autotask API integration (requires credentials)
-
-### Coverage Requirements
-
-- Minimum 80% coverage for all metrics
-- 100% coverage for critical paths (authentication, data handling)
-
-## Configuration Reference
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `AUTOTASK_USERNAME` | ✅ | - | Autotask API username (email) |
-| `AUTOTASK_SECRET` | ✅ | - | Autotask API secret key |
-| `AUTOTASK_INTEGRATION_CODE` | ✅ | - | Autotask integration code |
-| `AUTOTASK_API_URL` | ❌ | Auto-detected | Autotask API endpoint URL |
-| `MCP_SERVER_NAME` | ❌ | `autotask-mcp` | MCP server name |
-| `MCP_TRANSPORT` | ❌ | `stdio` | Transport type (`stdio` or `http`) |
-| `MCP_HTTP_PORT` | ❌ | `8080` | HTTP transport port |
-| `MCP_HTTP_HOST` | ❌ | `0.0.0.0` | HTTP transport bind address |
-| `LOG_LEVEL` | ❌ | `info` | Logging level |
-| `LOG_FORMAT` | ❌ | `simple` | Log output format |
-| `AUTOTASK_ENHANCE_CONCURRENCY` | ❌ | `3` | Max concurrent Autotask API calls used to resolve company/resource names on search results. Kept low to stay under Autotask's concurrent-thread limit. |
-| `NODE_ENV` | ❌ | `development` | Node.js environment |
-
-### Logging Levels
-
-- `error`: Only error messages
-- `warn`: Warnings and errors
-- `info`: General information, warnings, and errors
-- `debug`: Detailed debugging information
-
-### Log Formats
-
-- `simple`: Human-readable console output
-- `json`: Structured JSON output (recommended for production)
-
-## Rate Limits
-
-Autotask enforces per-integration-code API thresholds on a rolling 1-hour window:
-
-- **~10,000 req/hr (soft)** — warning email, sporadic `HTTP 429` responses
-- **~20,000 req/hr (hard)** — sustained `HTTP 429` until the window rolls
-
-LLM-driven workflows fan out easily — "status report on all open projects with notes" can issue hundreds of requests across a few minutes. The server tries to make this safer:
-
-- **429 responses are surfaced as structured errors.** Tool results carry `error_type: "rate_limited"` and a `retry_after_seconds` field parsed from Autotask's `Retry-After` header. The error message explicitly tells the LLM **not to retry** and to ask the user to scope the query — this prevents repeated retries from extending the cooldown.
-- **Fan-out tool descriptions include rate-limit tips.** Tools that are commonly looped over (`autotask_search_ticket_notes`, `autotask_search_project_notes`, `autotask_search_company_notes`, `autotask_search_time_entries`, `autotask_search_ticket_attachments`) include a hint reminding the LLM to scope the parent record list before iterating.
-
-### Raising the limit
-
-Per-integration thresholds can be increased in Autotask:
-
-1. Autotask Admin → **Resources/Users (HR) → Resources**
-2. Edit the dedicated API user → **Workflow Rules → API Tracking Identifier**
-3. Adjust the threshold for the integration code your MCP server uses
-
-This is the right answer when a single integration code is shared between Claude/Copilot/etc. and other tooling. For LLM-heavy workloads, dedicate a separate API user (and integration code) so a fan-out from one client doesn't starve others.
-
-### Patterns that help
-
-- **Always scope by date range** when searching notes, time entries, attachments. Even a 30-day window can drop call count by an order of magnitude.
-- **Cache parent lookups.** If you're iterating over 100 tickets, fetch the ticket list once and reuse it across follow-up queries; don't re-search per child.
-- **Use `autotask_get_field_info`** to discover picklist values once per session rather than refetching them per call.
-
-If you're seeing threshold warnings from Autotask but the server seems fine, the LLM driver is probably issuing fan-out patterns. Tighten the prompt to scope before iterating.
-
-## Troubleshooting
-
-### Common Issues
-
-#### Authentication Errors
-
-```
-Error: Missing required Autotask credentials
-```
-**Solution**: Ensure all required environment variables are set correctly.
-
-#### Connection Timeouts
-
-```
-Error: Connection to Autotask API failed
-```
-**Solutions**:
-- Check network connectivity
-- Verify API endpoint URL
-- Confirm API user has proper permissions
-
-#### Permission Denied
-
-```
-Error: User does not have permission to access this resource
-```
-**Solution**: Review Autotask API user permissions and security level settings.
-
-### Debug Mode
-
-Enable debug logging for detailed troubleshooting:
-
-```bash
-LOG_LEVEL=debug npm start
-```
-
-### Health Checks
-
-Test server connectivity:
-
-```bash
-# Run test suite
-npm run test
-
-# For HTTP transport, check the health endpoint
-curl http://localhost:8080/health
-# Returns: {"status":"ok"}
-
-# Test API connection with debug logging
-LOG_LEVEL=debug npm start
-```
-
-### Autotask API Rate Limits
-
-**Problem**: `429 Too Many Requests` or "thread limit exceeded" errors when Claude queries aggressively
-
-Autotask enforces **3 concurrent threads per endpoint per API tracking identifier**. When an LLM issues multiple tool calls simultaneously (e.g., searching tickets, companies, and contacts at once), requests can pile up and hit this limit.
-
-**Built-in mitigation**: The underlying `autotask-node` SDK automatically queues excess requests rather than failing immediately. Requests wait for a slot to free up, so you generally won't see 429 errors — but you may notice slower responses under heavy load.
-
-**Critical for team/multi-user deployments**: If multiple users or the MCP Gateway share the **same API credentials**, they compete for the same 3-thread budget. This can cause noticeable slowdowns and, in severe cases, queued requests that time out.
-
-**Solution — one API key per team**: Create a dedicated Autotask API user per team or integration. Each user has an independent `integrationCode` with its own thread budget:
-
-1. **Admin > Resources (Users) > Resources/Users** → Add Resource
-2. Set Security Level to **API User**
-3. Note the username, secret, and integration code
-4. Set `AUTOTASK_USERNAME`, `AUTOTASK_SECRET`, and `AUTOTASK_INTEGRATION_CODE` per team
-
-```
-Support Team  → AUTOTASK_INTEGRATION_CODE=SUPPORT_TEAM_CODE  (3 threads)
-Projects Team → AUTOTASK_INTEGRATION_CODE=PROJECTS_TEAM_CODE (3 threads, independent)
-```
-
-Additionally, Autotask limits **10,000 total requests per hour** across all integrations hitting your tenant. If you hit this limit, all integrations will start receiving 429s — another reason to use targeted queries with appropriate filters.
-
-### MCP Client Issues
-
-**Problem**: MCP server not appearing in Claude Desktop
-**Solutions**:
-1. Check configuration file syntax (valid JSON)
-2. Verify file path in the configuration
-3. Ensure environment variables are set correctly
-4. Restart Claude Desktop completely
-
-**Problem**: "Invalid JSON-RPC message: [dotenv@...] injecting env" / Server disconnected
-**Cause**: The `autotask-node` library calls `dotenv.config()` at module load time. dotenv v17+ writes status messages via `console.log` to stdout, which corrupts the MCP stdio JSON-RPC channel.
-**Solution**: Ensure you're using `dist/entry.js` (not `dist/index.js`) as the entry point. The entry wrapper redirects `console.log` to stderr before any libraries load.
-
-**Problem**: Slow responses
-**Solutions**:
-1. Check network connectivity to Autotask API
-2. Enable debug logging (`LOG_LEVEL=debug`) to identify bottlenecks
-3. The server caches company/resource names for 30 minutes automatically
-
-### Security Best Practices
-
-- Store credentials in environment variables, not directly in config files
-- Limit Autotask API user permissions to the minimum required
-- Rotate API credentials regularly
-- For Docker deployments, use secrets management rather than plain environment variables
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow TypeScript best practices
-- Maintain test coverage above 80%
-- Use conventional commit messages
-- Update documentation for API changes
-- Add tests for new features
-
-## License
-
-This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) and [NOTICE](NOTICE) files for details.
-
-### Contributor License Agreement
-
-By submitting a pull request, you agree to the terms of our [Contributor License Agreement](CLA.md). This ensures that contributions can be properly licensed and that you have the right to submit the code.
-
-## Credits & Acknowledgements
-
-GDS Technology's Autotask MCP is a more robust evolution built on the original
-**Autotask MCP Server** by **[WYRE Technology](https://github.com/wyre-technology)** and
-**Aaron Sachs ([@asachs01](https://github.com/asachs01))** with its contributors —
-originally published at **[WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp)**. That
-project is the **baseline this work is founded on**, and full credit for the groundwork
-belongs to those authors. As GDS extends and hardens the server, this attribution
-stands; see [NOTICE](NOTICE) for details.
-
-### Contributors
-
-Credit to the original project's authors and contributors:
-
-| Avatar | Name | Contributions |
-| --- | --- | --- |
-| <a href="https://github.com/asachs01"><img src="https://github.com/asachs01.png" width="60" /></a> | [@asachs01](https://github.com/asachs01) | Original author & upstream maintainer |
-| <a href="https://github.com/Baphomet480"><img src="https://github.com/Baphomet480.png" width="60" /></a> | [@Baphomet480](https://github.com/Baphomet480) | CLI bin fix (upstream) |
-
-## Support
-
-- 📚 [Documentation](https://github.com/GDSTechnology/autotask-mcp/wiki)
-- 🐛 [Issue Tracker](https://github.com/GDSTechnology/autotask-mcp/issues)
-- 💬 [Discussions](https://github.com/GDSTechnology/autotask-mcp/discussions)
-
-## Acknowledgments
-
-- [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic
-- [Autotask REST API](https://ww3.autotask.net/help/DeveloperHelp/Content/APIs/REST/REST_API_Home.htm) by Kaseya
-- [autotask-node](https://www.npmjs.com/package/autotask-node) library
+It started as a fork of [WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp) and is now the
+production automation layer for an Autotask MSP (ChatGPT + n8n + Claude), hardened against real tenant data.
 
 ---
 
-Built by [GDS Technology](https://github.com/GDSTechnology) — part of the [MSP Claude Plugins](https://github.com/GDSTechnology/msp-claude-plugins) ecosystem 
+## Contents
+
+- [What it does](#what-it-does)
+- [How it fits together](#how-it-fits-together)
+- [Safety model](#safety-model)
+- [Quick start](#quick-start)
+- [Production deployment](#production-deployment)
+- [Configuration](#configuration)
+- [Autotask API limits](#autotask-api-limits)
+- [Documentation](#documentation)
+- [Development](#development)
+- [Credits & license](#credits--license)
+
+## What it does
+
+| Area | Highlights |
+|---|---|
+| **Tickets & service desk** (39) | Search, create, update (partial `PATCH` — never blanks fields), notes, attachments and the originating email, charges, checklists, ticket history and who-changed-what, `get_ticket_by_number`, move a ticket to another company with its routing in one write, an interactive ticket card in MCP Apps hosts. |
+| **Time & billing** (26) | Time entries (incl. bulk and "log my time"), billing items approve-and-post, expense reports, timesheet-lock aware errors, `my_day`. |
+| **Projects** (51) | Projects, phases, tasks, predecessors, notes; generate a labour plan and build a project from it. |
+| **Contracts & financial** (41) | Contracts, services, bundles, blocks, adjustments, charges, quotes, opportunities, invoices — including the contract writes the API makes awkward (adjustments verified by effect). |
+| **Vendor billing reconciliation** (21) | Import vendor invoices (Pax8 first), map them to contracts, find what isn't billed / billed wrong / priced under cost, a pricing policy (retail uplift with a margin floor), pre-invoice checks, customer price-change notices, and change plans that fix it. → [VENDOR_BILLING](docs/VENDOR_BILLING.md) |
+| **Companies & contacts** (19) | Search / create / update with name guards (no "Gmail" or "Hi John" companies), duplicate finders, a **safe merge** workflow (ID-only plans of Autotask UI steps, verified afterwards) and **bulk cleanup** of placeholder companies and junk contacts. → [MERGE](docs/MERGE.md) |
+| **Reports** (26) | Unbilled work / revenue leakage, block-hour usage, SLA compliance, ticket throughput, project P&L, contract recurring revenue, time-entry compliance, activity without time, inventory reorder / stale stock. |
+| **Audit & activity** (10) | A ticket-history index, an activity feed, resource daily audits; actors classified as person / integration / system so automation is never mistaken for a technician. |
+| **Products & catalog** (31) | Products, services, bundles; duplicate products, catalog standardisation plans. |
+| **Service calls, to-dos, CIs, resources** (36) | Dispatching, company to-dos, configuration items with entitlement, resources and roles. |
+| **Webhooks** (7) | Create and manage Autotask outbound webhooks; signed delivery to n8n. → [N8N_WEBHOOKS](docs/N8N_WEBHOOKS.md) |
+| **Platform** | Postgres mirror tools (`shadow_query`, `shadow_aggregate` — 0 Autotask calls), `get_backpressure` for dispatchers, `report_gap` (agents report what's missing), `execute_tool` / `list_category_tools` for clients with a stale tool list. |
+
+Counts are tools per area; the exact list is in [`src/handlers/tool.definitions.ts`](src/handlers/tool.definitions.ts).
+
+## How it fits together
+
+```mermaid
+flowchart LR
+  subgraph Clients
+    GPT[ChatGPT]
+    CL[Claude]
+    N8N[n8n / cron]
+  end
+  subgraph MCP[Autotask MCP server]
+    T[~290 tools<br/>+ safety gates]
+    W[Bulk-job worker]
+    C[Admin console]
+  end
+  PG[(Postgres<br/>mirror · plans · jobs · audit)]
+  AT[Autotask REST API]
+  GPT & CL & N8N -->|MCP / HTTP| T
+  T -->|reads answered locally| PG
+  T -->|misses, writes| AT
+  W -->|paced writes| AT
+  PG <-->|incremental sync| AT
+  C --- PG
+```
+
+- **Postgres mirror** (optional, recommended): 18 entities — tickets, notes, time entries, tasks, projects,
+  companies, contacts, contracts, services, billing items, invoices and more — kept current by watermark /
+  window sync and a nightly **mirror check** that re-reads a random sample and repairs differences. In
+  production it answers about **80% of reads** with no Autotask call. → [POSTGRES](docs/POSTGRES.md)
+- **Admin console** (optional): server health, Autotask API usage (whole tenant vs this MCP), who is calling,
+  reads per entity, mirror status, feature switches without a restart, a **Requests** page for missing
+  capabilities, **Bulk jobs** and **When does the team work?** (activity per hour, by person / integration).
+  → [ADMIN](docs/ADMIN.md)
+
+## Safety model
+
+The server assumes it is talking to a live production tenant and to clients that sometimes guess.
+
+| Guard | What it does |
+|---|---|
+| **Partial writes** | Updates `PATCH` only the fields given. A `PUT` replaces the whole record and blanks what it leaves out — the typed tools never do that. |
+| **Dry runs & confirmation** | Destructive and bulk tools default to a dry run and need an explicit confirm; descriptions say so (CI enforces it). |
+| **Change plans** | Pricing, contract, catalog and merge changes are built as a **plan with a hash**, reviewed, then executed (or turned into UI steps); executions are re-run safe and can be reverted where the API allows. |
+| **Bulk jobs** | Mass changes are prepared from the mirror, **approved by hash** by a person, run a **canary** first, then a paced worker writes — slower in business hours, nothing in **quiet hours**, backing off from 40% tenant usage and stopping at 65%. Records with history are excluded; for placeholder cleanups every email address is checked tenant-wide so real people are kept. |
+| **Read-only switch** | One console switch stops every write — tools and background jobs. |
+| **Login protection** | A rejected login pauses all calls; repeated failures hold the tenant until an administrator retries, so a bad secret can't lock the API user. |
+| **Throttling** | A 429 starts a local cooldown (no retry storms), at most 2–3 concurrent calls per endpoint, `get_backpressure` tells dispatchers ok / slow / stop. → [THROTTLING](docs/THROTTLING.md) |
+| **Company 0** | The tenant's own company is protected from rename, reclassification and inactivation. |
+| **Operation log** | Every write is recorded per tool call (who, what, which records), with durable idempotency keys. |
+
+## Quick start
+
+**Claude Desktop** — build the bundle from source (`npm ci && npm run build && npm run pack:mcpb`), open the
+resulting `.mcpb` file in the repo root, and enter your Autotask username, secret and integration code.
+
+**Claude Code:**
+
+```bash
+claude mcp add autotask-mcp -e AUTOTASK_USERNAME=api-user@example.com -e AUTOTASK_SECRET=your-secret -e AUTOTASK_INTEGRATION_CODE=your-code -- npx -y github:GDSTechnology/autotask-mcp
+```
+
+**Docker (HTTP, for ChatGPT / n8n / remote clients):**
+
+```bash
+docker run -d --name autotask-mcp -p 8080:8080 -e AUTOTASK_USERNAME=api-user@example.com -e AUTOTASK_SECRET=your-secret -e AUTOTASK_INTEGRATION_CODE=your-code --restart unless-stopped ghcr.io/gdstechnology/autotask-mcp:latest
+```
+
+Clients connect to `http://<host>:8080/mcp` (MCP Streamable HTTP); `GET /health` returns the version, API usage and backpressure.
+
+**From source:**
+
+```bash
+git clone https://github.com/GDSTechnology/autotask-mcp.git && cd autotask-mcp
+npm ci && npm run build
+node dist/entry.js        # stdio; MCP_TRANSPORT=http node dist/index.js for HTTP
+```
+
+Create the API user in Autotask (Admin → Resources, license type *API User*, an API-tracking integration code)
+with the security level your tools need. The API zone is detected from the username.
+
+## Production deployment
+
+Releases are cut by semantic-release on every merge to `main` and published to
+`ghcr.io/gdstechnology/autotask-mcp` (`:latest` and the version tag).
+
+Run it as a docker-compose service next to Postgres (see [DEPLOY.md](DEPLOY.md) for the full runbook:
+layout, env, verify, rollback). Updating is one command on the host — install it once from the image:
+
+```bash
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp && chmod +x /usr/local/bin/update-autotask-mcp
+```
+
+```bash
+update-autotask-mcp
+```
+
+It touches only the Autotask MCP service: pulls, keeps the previous image as `:rollback`, runs database
+migrations, restarts, waits for `/health` and prints the version — and refuses while a bulk job is preparing.
+
+- **Postgres layer** (mirror, plans, bulk jobs, audit): [POSTGRES](docs/POSTGRES.md)
+- **Admin console** (guided setup wizard, Cloudflare Tunnel walkthrough): [ADMIN](docs/ADMIN.md)
+- **Behind an MCP gateway** (credentials per request via headers, acting-user headers): [MIGRATION_GUIDE](docs/MIGRATION_GUIDE.md)
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `AUTOTASK_USERNAME` / `AUTOTASK_SECRET` / `AUTOTASK_INTEGRATION_CODE` | — | API user credentials (required in `env` auth mode) |
+| `AUTOTASK_API_URL` | auto-detected | Override the zone URL |
+| `AUTH_MODE` | `env` | `gateway`: credentials come from request headers |
+| `AUTOTASK_IMPERSONATION` | `off` | `on`: writes are recorded as the identified requesting user |
+| `MCP_TRANSPORT` / `MCP_HTTP_PORT` / `MCP_HTTP_HOST` | `stdio` / `8080` / `0.0.0.0` | Transport |
+| `MCP_PG_ENABLED`, `MCP_PG_*` | off | Postgres layer → [POSTGRES](docs/POSTGRES.md) |
+| `MCP_PG_SHADOW_*` | | Mirror sync interval, budget, pause threshold (85%), serving reads |
+| `MCP_ADMIN_ENABLED`, `MCP_ADMIN_PORT` | off / `8090` | Admin console → [ADMIN](docs/ADMIN.md) |
+| `MCP_BULK_SLOW_AT_PCT` / `MCP_BULK_STOP_AT_PCT` | `40` / `65` | Bulk-job back-off by tenant API usage |
+| `AUTOTASK_MAX_CONCURRENT_PER_ENDPOINT` | `2` | Concurrent calls per endpoint (Autotask allows 3) |
+| `LOG_LEVEL` / `LOG_FORMAT` | `info` / `simple` | `json` for production |
+
+Most operational settings (read-only switch, mirror serving, caller names, actor registry, notifications to
+Discord / Teams / Slack) are changed live in the console. The full list is in [DEPLOY.md](DEPLOY.md) and [ADMIN](docs/ADMIN.md).
+
+## Autotask API limits
+
+Autotask allows **10,000 requests per hour per database** — shared by *every* integration on the tenant — and
+adds **0.5 s per call from 50% usage and 1 s from 75%**; past the limit it answers 429. It also allows only
+**3 concurrent requests per integration per endpoint**.
+
+What this server does about it:
+
+- answers most reads from the Postgres mirror and an HTTP cache (0 Autotask calls);
+- a 429 starts a local cooldown — calls fail fast with "do not retry" instead of extending the penalty;
+- background work (mirror sync, bulk jobs) checks tenant usage and yields first; bulk jobs keep quiet hours;
+- the console shows tenant usage vs this MCP's share, and who is calling.
+
+To see which **other** integration uses the hour, Autotask's own **API Activity By Hour** report (Admin →
+Extensions & Integrations) breaks calls down per API user. → [THROTTLING](docs/THROTTLING.md)
+
+## Documentation
+
+| Doc | For |
+|---|---|
+| [DEPLOY.md](DEPLOY.md) | Deploy, verify, rollback; environment reference |
+| [docs/ADMIN.md](docs/ADMIN.md) | The admin console: setup, pages, switches, bulk jobs, notifications |
+| [docs/POSTGRES.md](docs/POSTGRES.md) | The Postgres layer: mirror, sync modes, mirror check, migrations |
+| [docs/THROTTLING.md](docs/THROTTLING.md) | Limits, cooldowns, backpressure — and how a dispatcher should react |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Building on the MCP from n8n / ChatGPT: result shapes, caller identity, gates, gotchas |
+| [docs/VENDOR_BILLING.md](docs/VENDOR_BILLING.md) | Vendor invoice reconciliation, pricing policy, the monthly billing process |
+| [docs/MERGE.md](docs/MERGE.md) | Safe company / contact merges and bulk placeholder / junk-contact cleanup |
+| [docs/N8N_WEBHOOKS.md](docs/N8N_WEBHOOKS.md) | Receiving signed Autotask webhooks in n8n |
+| [docs/DESIGN.md](docs/DESIGN.md) | Architecture and design decisions |
+| [docs/ITIL-ALIGNMENT.md](docs/ITIL-ALIGNMENT.md) | Aligning an Autotask tenant with ITIL 4, with the MCP as the enforcement layer |
+| [docs/DEVELOPER_GUIDE_MCP_AUTOTASK.md](docs/DEVELOPER_GUIDE_MCP_AUTOTASK.md) | Patterns and gotchas of the Autotask REST API |
+| [docs/MIGRATION_GUIDE.md](docs/MIGRATION_GUIDE.md) | Local → gateway (hosted) deployment |
+| [docs/mapping.md](docs/mapping.md) | ID-to-name enrichment of results |
+| [CHANGELOG.md](CHANGELOG.md) | Every release (generated) |
+
+## Development
+
+```bash
+npm ci
+npm run build       # TypeScript → dist/
+npm test            # ~1,600 tests (Jest)
+npm run lint
+npm run dev         # watch mode
+```
+
+- **Local Postgres** for the mirror and console: `dev-postgres/local-db.ps1 up` then `… migrate` (Docker).
+- **Branches → PRs → `main`.** CI runs tests on Node 20 and 22, lint, the destructive-tool warning check and a
+  token-free Docker build. Conventional commits drive the version (`feat:` minor, `fix:` patch).
+- **Adding a tool:** definition in `src/handlers/tool.definitions.ts` (with its category — a parity test
+  enforces it), handler, tests that assert the **filter sent upstream**, not just the rows returned.
+- What the tenant taught us (API quirks, read-only fields, entities that aren't queryable) is kept in the
+  *Learnings* section of [CLAUDE.md](CLAUDE.md) — read it before touching the Autotask client.
+
+Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [Contributor License Agreement](CLA.md).
+
+## Credits & license
+
+Built on the original **Autotask MCP Server** by **[WYRE Technology](https://github.com/wyre-technology)** and
+**Aaron Sachs ([@asachs01](https://github.com/asachs01))** and its contributors, published at
+[WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp) — the baseline this work is founded on; see
+[NOTICE](NOTICE). Uses the [Model Context Protocol](https://modelcontextprotocol.io/) and the public
+[GDSTechnology/autotask-node](https://github.com/GDSTechnology/autotask-node) fork (no private registry or token needed to build).
+
+| | | |
+|---|---|---|
+| <a href="https://github.com/asachs01"><img src="https://github.com/asachs01.png" width="48" /></a> | [@asachs01](https://github.com/asachs01) | Original author & upstream maintainer |
+| <a href="https://github.com/Baphomet480"><img src="https://github.com/Baphomet480.png" width="48" /></a> | [@Baphomet480](https://github.com/Baphomet480) | CLI bin fix (upstream) |
+
+Licensed under the **Apache License 2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Issues and ideas: [GitHub Issues](https://github.com/GDSTechnology/autotask-mcp/issues).

@@ -306,7 +306,7 @@ Mass changes are prepared from the mirror, **approved by a person here**, and pu
   - the placeholder name;
   - optionally, the resource that created the records and a creation date range;
   - whether to include their contacts;
-  - **email addresses to keep** (real people; their placeholder companies are left alone);
+  - **email addresses to keep** (real people; their placeholder companies are left alone), and **addresses to treat as junk** (confirmed spam senders, whose tickets would otherwise keep their companies);
   - the off-hours rate (default 3,000 writes/hour);
   - the business-hours rate and window (default 1,000/hour, Mon–Fri 07:00–19:00 America/New_York);
   - **quiet hours**, local hours with no writes at all (default `0-4, 21-22`: another integration's burst window; empty for none);

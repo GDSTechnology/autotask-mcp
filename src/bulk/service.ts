@@ -24,6 +24,8 @@ export interface PrepareRequest {
   includeContacts?: boolean; ratePerHour?: number; canary?: number;
   /** Addresses a person recognises as real: their placeholder companies are kept. */
   excludeEmails?: string[] | string | null;
+  /** Addresses confirmed as junk: their tickets don't keep their companies. */
+  junkEmails?: string[] | string | null;
   /** false = no business hours (one rate all day). */
   businessHours?: Partial<BusinessSchedule> | false;
   businessRate?: number;
@@ -46,7 +48,8 @@ export async function startPrepare(s: AutotaskService, st: BulkStore, r: Prepare
   const schedule = scheduleOf(r);
   if (schedule && (schedule.start < 0 || schedule.end > 24 || schedule.start >= schedule.end)) throw new Error('businessHours: start must be before end (hours 0–24).');
   const excludeEmails = list(r.excludeEmails, (x) => String(x).trim()).filter((e) => e.includes('@'));
-  const sel: PlaceholderSelector = { companyName, ...(r.createdByResourceId != null ? { createdByResourceId: Number(r.createdByResourceId) } : {}), ...(r.createdFrom ? { createdFrom: String(r.createdFrom) } : {}), ...(r.createdTo ? { createdTo: String(r.createdTo) } : {}), ...(excludeEmails.length ? { excludeEmails } : {}) };
+  const junkEmails = list(r.junkEmails, (x) => String(x).trim()).filter((e) => e.includes('@'));
+  const sel: PlaceholderSelector = { companyName, ...(r.createdByResourceId != null ? { createdByResourceId: Number(r.createdByResourceId) } : {}), ...(r.createdFrom ? { createdFrom: String(r.createdFrom) } : {}), ...(r.createdTo ? { createdTo: String(r.createdTo) } : {}), ...(excludeEmails.length ? { excludeEmails } : {}), ...(junkEmails.length ? { junkEmails } : {}) };
   const includeContacts = r.includeContacts !== false;
   const quietHours = parseQuietHours(r.quietHours);
   const job = await st.create({ kind: 'inactivate_placeholders', title: `Inactivate "${companyName}" placeholder companies${includeContacts ? ' and their contacts' : ''}`, params: { selector: sel, includeContacts, schedule, quietHours }, ratePerHour: rate, canarySize: Math.min(Math.max(Number(r.canary) || 50, 1), 1000), by });

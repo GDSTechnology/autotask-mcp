@@ -59,10 +59,19 @@ MCP_HTTP_HOST=0.0.0.0   # Default: 0.0.0.0
 ```json
 {
   "status": "ok",
-  "transport": "http",
-  "timestamp": "2024-01-15T10:30:00.000Z"
+  "version": "3.87.0",
+  "mcpTransport": "http",
+  "authMode": "env",
+  "timestamp": "2026-10-24T13:35:53.409Z",
+  "apiUsage": { "upstreamLastHour": 483, "upstreamLastFiveMinutes": 45, "savedPct": 26.1, "rateLimited": 0, "cacheEnabled": true },
+  "shadow": { "enabled": true, "serveReads": true, "lastRunAt": "2026-10-24T13:34:06.691Z", "lastRunCalls": 15 },
+  "admin": { "enabled": true, "running": true, "port": 8090, "schemaReady": true },
+  "backpressure": { "level": "ok", "reasons": [], "retryAfterSeconds": null, "usedPct": 18.1 }
 }
 ```
+
+`version` is the running release; `apiUsage` is this server's own Autotask traffic; `backpressure` is the
+same ok / slow / stop verdict as `autotask_get_backpressure`, with the tenant's latest API usage (`usedPct`).
 
 ### When to use
 

@@ -28,6 +28,12 @@ The Autotask MCP Server provides MCP resources for direct access to entity data.
 | `autotask://tickets` | List all tickets |
 | `autotask://tickets/{id}` | Get a specific ticket by ID |
 
+### Time entries
+
+| URI | Description |
+|-----|-------------|
+| `autotask://time-entries` | List time entries |
+
 ## Usage
 
 Resources are typically used by MCP clients for:

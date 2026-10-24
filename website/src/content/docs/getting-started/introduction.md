@@ -1,49 +1,37 @@
 ---
 title: Introduction
-description: What is the Autotask MCP Server and how does it work?
+description: What the Autotask MCP Server is, who it is for, and how it is put together.
 ---
 
-The Autotask MCP Server connects AI assistants (like Claude) to your Kaseya Autotask PSA instance through the [Model Context Protocol](https://modelcontextprotocol.io/).
+The Autotask MCP Server connects AI assistants and automation to **Kaseya Autotask PSA** through the
+[Model Context Protocol](https://modelcontextprotocol.io/). ChatGPT, Claude, n8n — anything that speaks MCP — gets
+nearly 300 typed tools for the work an MSP does in Autotask every day.
 
-## How it works
+It runs in production as the automation layer of an Autotask MSP, so most of what sits around the tools exists
+because a live tenant needed it: Autotask's API quirks, its shared hourly limit, and clients that sometimes guess.
 
-The MCP server acts as a bridge between your AI assistant and the Autotask REST API. When you ask your AI assistant about tickets, companies, or projects, the assistant uses the MCP server's tools to query Autotask and return structured results.
+## Who it is for
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│ AI Assistant │────▶│  MCP Server  │────▶│ Autotask API │
-│   (Claude)   │◀────│              │◀────│              │
-└──────────────┘     └──────────────┘     └──────────────┘
-```
+- **MSPs on Autotask** who want technicians and managers to ask questions and log work from chat.
+- **Automation builders** (n8n, cron, agents) who need reliable, typed Autotask operations with clear results
+  and safety gates instead of raw REST calls.
+- **Operations / billing** — vendor invoice reconciliation, unbilled work, contract changes, data cleanup.
 
-## Key Features
+## How it is put together
 
-- **39 tools** covering companies, contacts, tickets, projects, time entries, notes, attachments, and financial data
-- **Automatic ID-to-name mapping** — results include human-readable company and resource names
-- **Compact response format** — search results are optimized for AI context windows
-- **Pagination support** — handle large result sets efficiently
-- **Picklist discovery** — look up valid queue IDs, ticket statuses, and priorities
+| Part | Role |
+|---|---|
+| **Tools** | Typed operations with validation, ID-to-name enrichment and consistent result shapes. Writes are partial (`PATCH`), risky ones dry-run first. |
+| **Postgres layer** (optional, recommended) | A mirror of 18 entities that answers most reads, plus change plans, bulk jobs, the operation log and audit history. |
+| **Bulk-job worker** | Pushes approved mass changes to Autotask at a set pace, canary first, respecting quiet hours and tenant usage. |
+| **Admin console** (optional) | A small web UI for the people running the server. |
 
-## Supported Entities
+## Where to go next
 
-| Entity | Search | Get | Create | Update |
-|--------|--------|-----|--------|--------|
-| Companies | ✓ | ✓ | ✓ | ✓ |
-| Contacts | ✓ | ✓ | ✓ | — |
-| Tickets | ✓ | ✓ | ✓ | — |
-| Projects | ✓ | ✓ | ✓ | — |
-| Tasks | ✓ | — | ✓ | — |
-| Time Entries | — | — | ✓ | — |
-| Notes (Ticket/Project/Company) | ✓ | ✓ | ✓ | — |
-| Attachments | ✓ | ✓ | — | — |
-| Configuration Items | ✓ | — | — | — |
-| Contracts | ✓ | — | — | — |
-| Invoices | ✓ | — | — | — |
-| Expense Reports | ✓ | ✓ | ✓ | — |
-| Quotes | ✓ | ✓ | ✓ | — |
+- [Installation](/autotask-mcp/getting-started/installation/) — Claude Desktop, Claude Code, Docker, production.
+- [Safety model](/autotask-mcp/guides/safety/) — what stops a bad write.
+- [Tools reference](/autotask-mcp/reference/tools/) — every tool, generated from the code.
+- [Prompt examples](/autotask-mcp/examples/overview/) — what to ask.
 
-## Next Steps
-
-- [Install the server](/autotask-mcp/getting-started/installation/)
-- [Configure your credentials](/autotask-mcp/getting-started/configuration/)
-- [See prompt examples](/autotask-mcp/examples/overview/)
+The project began as a fork of [WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp) by WYRE Technology
+and Aaron Sachs, the baseline this work is founded on. Apache-2.0.

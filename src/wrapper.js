@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Docker wrapper for Autotask MCP Server
+ * Docker wrapper for PSArelay
  * Ensures proper stdio handling and graceful shutdown in containerized environments
  */
 
@@ -53,7 +53,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Start the MCP server
-console.error('[wrapper] Starting Autotask MCP Server...');
+console.error('[wrapper] Starting PSArelay...');
 
 serverProcess = spawn('node', [serverPath], {
   stdio: ['inherit', 'inherit', 'inherit'],

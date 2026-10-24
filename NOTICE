@@ -1,23 +1,27 @@
-Autotask MCP Server — GDS Technology
+PSArelay — GDS Technology
 Copyright 2026 GDS Technology
 
-This product is a more robust evolution built on the "Autotask MCP Server"
-originally created and maintained by WYRE Technology and Aaron Sachs
-(https://github.com/asachs01), together with its contributors, and made
-available at:
+PSArelay is licensed under the GNU Affero General Public License, version 3
+(AGPL-3.0-only); see the LICENSE file. You may self-host it free of charge. If
+you run a modified version as a network service, the AGPL requires you to offer
+its source to that service's users.
+
+PSArelay is built on the "Autotask MCP Server" originally created and
+maintained by WYRE Technology and Aaron Sachs (https://github.com/asachs01),
+together with its contributors, and made available at:
 
   - https://github.com/WYRE-AI/autotask-mcp
   - https://github.com/wyre-technology/autotask-mcp
 
 That project is the baseline this work is founded on and is licensed under the
-Apache License, Version 2.0. Full credit for the groundwork belongs to those
-authors; this attribution stands as GDS extends and hardens the server. See the
-README "Credits & Acknowledgements" section for the contributor list.
+Apache License, Version 2.0 (a copy is in LICENSES/Apache-2.0.txt). Portions
+derived from it remain available under the Apache License 2.0, and their
+copyright and attribution notices are retained. Full credit for the groundwork
+belongs to those authors. See the README "Credits & license" section.
 
-This repository (https://github.com/GDSTechnology/autotask-mcp) is maintained by
-GDS Technology. Modifications and additions are Copyright 2026 GDS Technology and
-are likewise released under the Apache License, Version 2.0.
+History: this repository was published as "autotask-mcp" under the Apache
+License 2.0 up to and including release v3.87.x. Those releases remain available
+under Apache 2.0. From release v4.0.0 (the PSArelay rename), new versions are
+released under AGPL-3.0-only.
 
-You may obtain a copy of the License in the LICENSE file, or at:
-
-  http://www.apache.org/licenses/LICENSE-2.0
+Repository: https://github.com/GDSTechnology/psarelay

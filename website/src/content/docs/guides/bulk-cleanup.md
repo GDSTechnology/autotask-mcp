@@ -40,4 +40,4 @@ real account — `autotask_bulk_inactivate` and the console's **Bulk jobs** page
 
 Inactivated records stay in Autotask. Finished jobs can be archived on the console.
 
-Full details: [docs/MERGE.md](https://github.com/GDSTechnology/autotask-mcp/blob/main/docs/MERGE.md).
+Full details: [docs/MERGE.md](https://github.com/GDSTechnology/psarelay/blob/main/docs/MERGE.md).

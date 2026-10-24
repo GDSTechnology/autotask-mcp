@@ -19,7 +19,7 @@ The limit is the tenant's, not yours: one integration's burst slows every other 
 
 | Mechanism | Behaviour |
 |---|---|
-| **Mirror and cache** | Most reads never reach Autotask (see [Postgres mirror](/autotask-mcp/guides/mirror/)). |
+| **Mirror and cache** | Most reads never reach Autotask (see [Postgres mirror](/guides/mirror/)). |
 | **429 cooldown** | A 429 starts a local cooldown; calls fail fast with "do not retry" instead of extending the penalty. |
 | **Concurrency gate** | At most 2 (configurable up to 3) calls per endpoint; extra calls queue. |
 | **Mirror sync** | Skips a run above 85% usage or during a cooldown; capped at 100 calls a run. |
@@ -38,4 +38,4 @@ The console shows tenant usage against this MCP's share and who calls it. For **
 **API Activity By Hour** report (Admin → Extensions & Integrations) breaks each hour down per API user — reads
 included. Bulk-job quiet hours exist because that report showed one integration bursting to 9,000 calls an hour.
 
-Full details: [docs/THROTTLING.md](https://github.com/GDSTechnology/autotask-mcp/blob/main/docs/THROTTLING.md).
+Full details: [docs/THROTTLING.md](https://github.com/GDSTechnology/psarelay/blob/main/docs/THROTTLING.md).

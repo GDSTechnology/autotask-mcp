@@ -3,7 +3,7 @@ title: Resources Reference
 description: MCP resources available for direct data access.
 ---
 
-The Autotask MCP Server provides MCP resources for direct access to entity data. Resources use URI-based addressing and return structured content.
+PSArelay provides MCP resources for direct access to entity data. Resources use URI-based addressing and return structured content.
 
 ## Available Resources
 

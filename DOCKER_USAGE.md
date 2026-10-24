@@ -1,30 +1,30 @@
 # Docker Usage Guide
 
 > **GDS note:** GDS builds the image **locally** (it is not published to a
-> registry) — see [`DEPLOY.md`](DEPLOY.md). The `ghcr.io/gdstechnology/autotask-mcp`
+> registry) — see [`DEPLOY.md`](DEPLOY.md). The `ghcr.io/gdstechnology/psarelay`
 > pull commands below are illustrative; substitute your locally-built
 > `autotask-mcp-gds:latest`, or an image you publish via `scripts/build-image.sh`.
 
-This document provides comprehensive instructions for running the Autotask MCP Server using Docker.
+This document provides comprehensive instructions for running PSArelay using Docker.
 
 ## Quick Start
 
 ### Pull from GitHub Container Registry
 
 ```bash
-docker pull ghcr.io/gdstechnology/autotask-mcp:latest
+docker pull ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Run with Environment Variables
 
 ```bash
 docker run -d \
-  --name autotask-mcp \
+  --name psarelay \
   -e AUTOTASK_USERNAME="your-api-user@company.com" \
   -e AUTOTASK_SECRET="your-secret-key" \
   -e AUTOTASK_INTEGRATION_CODE="your-integration-code" \
   -e LOG_LEVEL="info" \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Run with Environment File
@@ -41,9 +41,9 @@ LOG_FORMAT=json
 Run with env file:
 ```bash
 docker run -d \
-  --name autotask-mcp \
+  --name psarelay \
   --env-file .env \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ## Docker Compose
@@ -55,7 +55,7 @@ version: '3.8'
 
 services:
   autotask-mcp:
-    image: ghcr.io/gdstechnology/autotask-mcp:latest
+    image: ghcr.io/gdstechnology/psarelay:latest
     container_name: autotask-mcp
     restart: unless-stopped
     environment:
@@ -90,7 +90,7 @@ docker-compose up -d
 
 ```bash
 # Clone the repository
-git clone https://github.com/GDSTechnology/autotask-mcp.git
+git clone https://github.com/GDSTechnology/psarelay.git
 cd autotask-mcp
 
 # Build the Docker image
@@ -147,7 +147,7 @@ The Docker image defaults to HTTP transport. For Claude Desktop (which uses stdi
         "-e", "MCP_TRANSPORT=stdio",
         "--env-file", "/path/to/your/.env",
         "--entrypoint", "node",
-        "ghcr.io/gdstechnology/autotask-mcp:latest",
+        "ghcr.io/gdstechnology/psarelay:latest",
         "dist/entry.js"
       ]
     }
@@ -169,7 +169,7 @@ Or with inline credentials:
         "-e", "AUTOTASK_SECRET=your-secret",
         "-e", "AUTOTASK_INTEGRATION_CODE=your-code",
         "--entrypoint", "node",
-        "ghcr.io/gdstechnology/autotask-mcp:latest",
+        "ghcr.io/gdstechnology/psarelay:latest",
         "dist/entry.js"
       ]
     }
@@ -189,7 +189,7 @@ docker run -d \
   --name autotask-mcp-server \
   -p 8080:8080 \
   --env-file .env \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 
 # Verify health
 curl http://localhost:8080/health
@@ -258,10 +258,10 @@ sudo usermod -aG docker $USER
 ```bash
 # Run with memory limits
 docker run -d \
-  --name autotask-mcp \
+  --name psarelay \
   --memory=512m \
   --env-file .env \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Debug Mode
@@ -272,7 +272,7 @@ Run container in debug mode:
 docker run -it --rm \
   --env-file .env \
   -e LOG_LEVEL=debug \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Interactive Debugging
@@ -282,7 +282,7 @@ docker run -it --rm \
 docker run -it --rm \
   --env-file .env \
   --entrypoint /bin/sh \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 
 # Inside container, run manually
 node dist/index.js
@@ -301,20 +301,20 @@ node dist/index.js
 docker network create autotask-network
 
 docker run -d \
-  --name autotask-mcp \
+  --name psarelay \
   --network autotask-network \
   --env-file .env \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Read-Only Container
 ```bash
 docker run -d \
-  --name autotask-mcp \
+  --name psarelay \
   --read-only \
   --tmpfs /tmp \
   --env-file .env \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ## Production Deployment
@@ -338,7 +338,7 @@ spec:
     spec:
       containers:
       - name: autotask-mcp
-        image: ghcr.io/gdstechnology/autotask-mcp:latest
+        image: ghcr.io/gdstechnology/psarelay:latest
         env:
         - name: AUTOTASK_USERNAME
           valueFrom:
@@ -371,7 +371,7 @@ version: '3.8'
 
 services:
   autotask-mcp:
-    image: ghcr.io/gdstechnology/autotask-mcp:latest
+    image: ghcr.io/gdstechnology/psarelay:latest
     deploy:
       replicas: 1
       restart_policy:
@@ -401,7 +401,7 @@ secrets:
 
 ```bash
 # Pull latest version
-docker pull ghcr.io/gdstechnology/autotask-mcp:latest
+docker pull ghcr.io/gdstechnology/psarelay:latest
 
 # Stop and remove old container
 docker stop autotask-mcp
@@ -409,9 +409,9 @@ docker rm autotask-mcp
 
 # Start new container
 docker run -d \
-  --name autotask-mcp \
+  --name psarelay \
   --env-file .env \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Backup and Restore
@@ -426,4 +426,4 @@ docker run --rm -v autotask-logs:/data -v $(pwd):/backup \
   alpine tar xzf /backup/autotask-logs-backup.tar.gz -C /data
 ```
 
-For more information, see the main [README.md](README.md) or visit the [GitHub repository](https://github.com/GDSTechnology/autotask-mcp). 
+For more information, see the main [README.md](README.md) or visit the [GitHub repository](https://github.com/GDSTechnology/psarelay). 

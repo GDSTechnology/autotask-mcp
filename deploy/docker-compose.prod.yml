@@ -42,7 +42,7 @@
 services:
   # ── Internal automations: n8n workflows + cron scheduler ──────────────────
   autotask-mcp:
-    image: ghcr.io/gdstechnology/autotask-mcp:latest
+    image: ghcr.io/gdstechnology/psarelay:latest
     container_name: autotask-mcp-server
     restart: unless-stopped
     env_file:
@@ -78,7 +78,7 @@ services:
 
   # ── User-facing assistants: ChatGPT connector + Hermes-in-Teams ───────────
   autotask-mcp-gpt:
-    image: ghcr.io/gdstechnology/autotask-mcp:latest
+    image: ghcr.io/gdstechnology/psarelay:latest
     container_name: autotask-mcp-gpt
     restart: unless-stopped
     env_file:

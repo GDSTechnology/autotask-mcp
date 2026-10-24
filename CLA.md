@@ -1,6 +1,6 @@
 # Contributor License Agreement
 
-Thank you for your interest in contributing to Autotask MCP ("the Project"). This Contributor License Agreement ("Agreement") documents the rights granted by contributors to the Project.
+Thank you for your interest in contributing to PSArelay ("the Project"), maintained by GDS Technology. This Contributor License Agreement ("Agreement") documents the rights granted by contributors to the Project.
 
 ## Agreement
 
@@ -15,6 +15,10 @@ By submitting a Contribution to this Project, you agree to the following terms:
 ### 2. Grant of Copyright License
 
 You hereby grant to the Project maintainers and to recipients of software distributed by the Project a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, and distribute Your Contributions and such derivative works.
+
+### 2a. Licensing of the Project
+
+The Project is distributed under the GNU Affero General Public License v3 (AGPL-3.0-only). GDS Technology also operates the Project as a hosted service. You agree that GDS Technology may use, distribute and offer Your Contributions as part of the Project under the AGPL **and** under other license terms of its choosing, including as part of a hosted or commercial service. You keep the copyright in Your Contributions and may use them for any other purpose.
 
 ### 3. Grant of Patent License
 

@@ -106,7 +106,7 @@ that already holds the `autotask-mcp` service. Take the backups in
    (model it on `deploy/docker-compose.prod.yml`), keeping the existing
    `autotask-mcp` service but adding `MCP_INSTANCE_LABEL` and
    `AUTOTASK_IMPERSONATION_MODE=off` to it.
-2. Both services track `image: ghcr.io/gdstechnology/autotask-mcp:latest`, so
+2. Both services track `image: ghcr.io/gdstechnology/psarelay:latest`, so
    every deploy — first cutover and each subsequent release — is the same two
    commands, with no version to edit in the YAML (semantic-release publishes
    `:latest` alongside each version tag). The first release carrying per-instance

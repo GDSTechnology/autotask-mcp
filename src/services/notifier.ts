@@ -109,7 +109,7 @@ export function formatPayload(kind: ChannelKind, e: NotifyEvent, server: string)
   const fields = Object.entries(e.fields ?? {}).slice(0, 20);
   if (kind === 'discord') {
     return {
-      username: 'Autotask MCP',
+      username: 'PSArelay',
       allowed_mentions: { parse: [] }, // never @everyone / @here from event text
       embeds: [{
         title: clip(`${ICON[e.severity]} ${e.title}`, 256), description: clip(e.detail, 4000), color: COLOR[e.severity], timestamp: at,
@@ -180,7 +180,7 @@ export class Notifier {
   async send(c: NotifyChannel, e: NotifyEvent): Promise<{ ok: boolean; status?: number; error?: string }> {
     const st = this.channelStatus(c.id);
     const body = JSON.stringify(formatPayload(c.kind, { ...e, at: e.at ?? new Date().toISOString() }, this.opts.server ?? 'autotask-mcp'));
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'User-Agent': 'autotask-mcp-notifier' };
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'User-Agent': 'psarelay-notifier' };
     if (c.kind === 'generic' && c.secret) headers['X-Atmcp-Signature'] = `sha256=${createHmac('sha256', c.secret).update(body).digest('hex')}`;
     const doFetch: Fetch = this.opts.fetch ?? (globalThis.fetch as unknown as Fetch);
     const attempt = async () => {
@@ -215,7 +215,7 @@ export class Notifier {
 /** Process-wide notifier: hooks call notify(); the admin console sets the channels. */
 let instance: Notifier | null = null;
 export function getNotifier(): Notifier {
-  if (!instance) instance = new Notifier({ server: process.env.MCP_NOTIFY_SERVER_NAME || 'Autotask MCP' });
+  if (!instance) instance = new Notifier({ server: process.env.MCP_NOTIFY_SERVER_NAME || 'PSArelay' });
   return instance;
 }
 export function notify(e: NotifyEvent): void {

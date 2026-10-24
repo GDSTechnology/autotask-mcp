@@ -81,8 +81,8 @@ COPY --chown=autotask:autotask migrations ./migrations
 # and its host-side setup wizard (extract with: docker run --rm --entrypoint cat <image> /app/deploy/admin-setup.sh).
 COPY --chown=autotask:autotask admin-ui ./admin-ui
 COPY --chown=autotask:autotask deploy/admin-setup.sh ./deploy/admin-setup.sh
-# Host-side updater (install: docker run --rm --entrypoint cat <image> /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp).
-COPY --chown=autotask:autotask deploy/update-autotask-mcp.sh ./deploy/update-autotask-mcp.sh
+# Host-side updater (install: docker run --rm --entrypoint cat <image> /app/deploy/update-psarelay.sh > /usr/local/bin/update-psarelay).
+COPY --chown=autotask:autotask deploy/update-psarelay.sh ./deploy/update-psarelay.sh
 COPY --from=deps --chown=autotask:autotask /app/node_modules ./node_modules
 
 # Remove the npm CLI from the production image — the runtime only needs `node`
@@ -127,17 +127,17 @@ ARG BUILD_DATE="unknown"
 # Labels for metadata
 LABEL maintainer="GDS Technology"
 LABEL version="${VERSION}"
-LABEL description="Autotask MCP Server - Model Context Protocol server for Kaseya Autotask PSA"
-LABEL org.opencontainers.image.title="autotask-mcp"
+LABEL description="PSArelay - Model Context Protocol server for Kaseya Autotask PSA"
+LABEL org.opencontainers.image.title="psarelay"
 LABEL org.opencontainers.image.description="Model Context Protocol server for Kaseya Autotask PSA integration"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.revision="${COMMIT_SHA}"
-LABEL org.opencontainers.image.source="https://github.com/GDSTechnology/autotask-mcp"
-LABEL org.opencontainers.image.documentation="https://github.com/GDSTechnology/autotask-mcp/blob/main/README.md"
-LABEL org.opencontainers.image.url="https://github.com/GDSTechnology/autotask-mcp/pkgs/container/autotask-mcp"
+LABEL org.opencontainers.image.source="https://github.com/GDSTechnology/psarelay"
+LABEL org.opencontainers.image.documentation="https://docs.psarelay.app"
+LABEL org.opencontainers.image.url="https://github.com/GDSTechnology/psarelay/pkgs/container/psarelay"
 LABEL org.opencontainers.image.vendor="GDS Technology"
-LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 
 # MCP Registry ownership annotation (must match `name` in server.json)
-LABEL io.modelcontextprotocol.server.name="io.github.gdstechnology/autotask-mcp"
+LABEL io.modelcontextprotocol.server.name="io.github.gdstechnology/psarelay"

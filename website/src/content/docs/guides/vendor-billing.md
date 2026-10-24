@@ -21,4 +21,4 @@ customers for everything the vendor charges us — and at the right price?** Pax
 6. **Before invoicing**, `autotask_billing_preinvoice_check` catches duplicates and gaps; exceptions get an
    outcome (absorbed, billed elsewhere, fix planned), an owner and a due date, and the monitor flags overdue ones.
 
-Full details: [docs/VENDOR_BILLING.md](https://github.com/GDSTechnology/autotask-mcp/blob/main/docs/VENDOR_BILLING.md).
+Full details: [docs/VENDOR_BILLING.md](https://github.com/GDSTechnology/psarelay/blob/main/docs/VENDOR_BILLING.md).

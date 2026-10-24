@@ -1,4 +1,4 @@
-# autotask-mcp
+# PSArelay (formerly autotask-mcp)
 
 Task management: Task Master (`task-master` CLI; config in `.taskmaster/`).
 Workflow defaults (commits, changelog, memory) come from the global `~/.claude/CLAUDE.md`.

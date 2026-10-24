@@ -3,7 +3,7 @@ title: Transport Reference
 description: Available transport options for connecting to the MCP server.
 ---
 
-The Autotask MCP Server supports two transport mechanisms for communicating with MCP clients.
+PSArelay supports two transport mechanisms for communicating with MCP clients.
 
 ## stdio (Default)
 
@@ -14,9 +14,9 @@ The standard transport for local MCP clients. Communication happens over stdin/s
 ```json
 {
   "mcpServers": {
-    "autotask-mcp": {
+    "psarelay": {
       "command": "npx",
-      "args": ["-y", "autotask-mcp"],
+      "args": ["-y", "github:GDSTechnology/psarelay"],
       "env": {
         "AUTOTASK_USERNAME": "...",
         "AUTOTASK_SECRET": "...",
@@ -90,7 +90,7 @@ docker run -d \
   -e MCP_TRANSPORT=http \
   -e MCP_HTTP_PORT=8080 \
   -p 8080:8080 \
-  autotask-mcp
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Session Management

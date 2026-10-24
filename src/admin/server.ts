@@ -537,7 +537,7 @@ export function adminHandler(deps: AdminDeps) {
       else if (kind === 'bundle') {
         const bundle = {
           exportedAt: new Date().toISOString(), exportedBy: u.username,
-          note: 'Autotask MCP diagnostics. Contains no credentials, tool arguments or response bodies.',
+          note: 'PSArelay diagnostics. Contains no credentials, tool arguments or response bodies.',
           status: await status(), settings: settingsView(), callers: callerSummary(24 * 60),
           readsByEntity: readSourceReport(24),
           toolGaps: toolGapReport(24),
@@ -545,12 +545,12 @@ export function adminHandler(deps: AdminDeps) {
           ...(u.role === 'admin' ? { consoleActivity: await store.listEvents(500) } : {}),
         };
         void log(ctx, 'export', { kind });
-        return sendFile(res, `autotask-mcp-diagnostics-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(bundle, null, 2));
+        return sendFile(res, `psarelay-diagnostics-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(bundle, null, 2));
       } else throw new HttpError(400, 'kind must be tools, api, entities, gaps, logs or bundle.');
       void log(ctx, 'export', { kind, format });
       return format === 'csv'
-        ? sendFile(res, `autotask-mcp-${kind}-${stamp}.csv`, 'text/csv; charset=utf-8', toCsv(rows, CSV_COLUMNS[kind] ?? []))
-        : sendFile(res, `autotask-mcp-${kind}-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(rows, null, 2));
+        ? sendFile(res, `psarelay-${kind}-${stamp}.csv`, 'text/csv; charset=utf-8', toCsv(rows, CSV_COLUMNS[kind] ?? []))
+        : sendFile(res, `psarelay-${kind}-${stamp}.json`, 'application/json; charset=utf-8', JSON.stringify(rows, null, 2));
     }
 
     // ── admin ──
@@ -632,7 +632,7 @@ export function adminHandler(deps: AdminDeps) {
       if (!existing) throw new HttpError(404, 'No such channel.');
       if (chMatch[2] && method === 'POST') {
         const r = await getNotifier().send(existing, {
-          type: 'test', severity: 'info', title: 'Test notification from the Autotask MCP',
+          type: 'test', severity: 'info', title: 'Test notification from the PSArelay',
           detail: `Sent from the admin console by ${ctx.user!.username}. If you can read this, "${existing.name}" is set up correctly.`,
           fields: { events: existing.events.length ? existing.events.join(', ') : 'none selected yet' },
         });

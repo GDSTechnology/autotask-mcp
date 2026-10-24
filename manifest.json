@@ -1,20 +1,20 @@
 {
   "manifest_version": "0.3",
-  "name": "autotask-mcp",
+  "name": "psarelay",
   "version": "2.2.3",
-  "display_name": "Autotask MCP Server",
-  "description": "MCP server for Kaseya Autotask PSA - access companies, contacts, tickets, and time entries through AI assistants",
+  "display_name": "PSArelay",
+  "description": "PSArelay — Kaseya Autotask PSA for AI assistants: tickets, time, projects, contracts, billing and reports",
   "long_description": "Provides AI assistants with structured access to your Kaseya Autotask PSA data. Search and manage companies, contacts, tickets, time entries, and more through the Model Context Protocol. Features intelligent caching, ID-to-name resolution, and comprehensive error handling.",
   "author": {
-    "name": "Aaron Sachs",
-    "url": "https://github.com/asachs01"
+    "name": "GDS Technology",
+    "url": "https://github.com/GDSTechnology/psarelay"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/GDSTechnology/autotask-mcp"
+    "url": "https://github.com/GDSTechnology/psarelay"
   },
-  "homepage": "https://github.com/GDSTechnology/autotask-mcp",
-  "license": "MIT",
+  "homepage": "https://github.com/GDSTechnology/psarelay",
+  "license": "AGPL-3.0-only",
   "keywords": ["autotask", "psa", "kaseya", "tickets", "msp", "it-management"],
   "server": {
     "type": "node",

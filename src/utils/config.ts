@@ -133,7 +133,7 @@ export function loadEnvironmentConfig(): EnvironmentConfig {
   return {
     autotask: autotaskConfig,
     server: {
-      name: process.env.MCP_SERVER_NAME || 'autotask-mcp',
+      name: process.env.MCP_SERVER_NAME || 'psarelay',
       version: getServerVersion(process.env.MCP_SERVER_VERSION)
     },
     transport: {
@@ -341,7 +341,7 @@ export async function resolveAutotaskApiUrl(
  */
 export function getConfigHelp(): string {
   return `
-Autotask MCP Server Configuration:
+PSArelay Configuration:
 
 === Local Mode (default) ===
 Required Environment Variables:
@@ -358,7 +358,7 @@ When AUTH_MODE=gateway, credentials are injected by the MCP Gateway:
 === Common Options ===
   AUTOTASK_API_URL         - Autotask API base URL (auto-detected if not provided)
   AUTH_MODE                - Authentication mode: env (default), gateway
-  MCP_SERVER_NAME          - Server name (default: autotask-mcp)
+  MCP_SERVER_NAME          - Server name (default: psarelay)
   MCP_SERVER_VERSION       - Override the reported server version. Defaults to the version baked into the image's package.json at build time. Useful for stamping a custom build identifier.
   MCP_TRANSPORT            - Transport type: stdio, http (default: stdio)
   MCP_HTTP_PORT            - HTTP port when using http transport (default: 8080)

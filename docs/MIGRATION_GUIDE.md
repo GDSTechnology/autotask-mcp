@@ -1,10 +1,10 @@
-# Migration Guide: Local to Hosted Autotask MCP Server
+# Migration Guide: Local to Hosted PSArelay
 
 This guide helps existing local autotask-mcp users migrate to the hosted MCP Gateway deployment.
 
 ## Overview
 
-The Autotask MCP server now supports two authentication modes:
+PSArelay server now supports two authentication modes:
 
 1. **Local Mode (env)** - Credentials stored in environment variables (existing behavior)
 2. **Gateway Mode (gateway)** - Credentials injected via HTTP headers from the MCP Gateway
@@ -43,7 +43,7 @@ For self-hosted or enterprise deployments, you can run the MCP server in gateway
 
 ```bash
 # Pull the image
-docker pull ghcr.io/gdstechnology/autotask-mcp:latest
+docker pull ghcr.io/gdstechnology/psarelay:latest
 
 # Run in gateway mode (credentials via headers)
 docker run -d \
@@ -51,7 +51,7 @@ docker run -d \
   -e AUTH_MODE=gateway \
   -e MCP_TRANSPORT=http \
   -e LOG_LEVEL=info \
-  ghcr.io/gdstechnology/autotask-mcp:latest
+  ghcr.io/gdstechnology/psarelay:latest
 ```
 
 ### Gateway Mode Headers
@@ -161,5 +161,5 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Support
 
-- GitHub Issues: https://github.com/GDSTechnology/autotask-mcp/issues
-- Documentation: https://github.com/GDSTechnology/autotask-mcp
+- GitHub Issues: https://github.com/GDSTechnology/psarelay/issues
+- Documentation: https://github.com/GDSTechnology/psarelay

@@ -1,9 +1,9 @@
 ---
 title: Introduction
-description: What the Autotask MCP Server is, who it is for, and how it is put together.
+description: What PSArelay is, who it is for, and how it is put together.
 ---
 
-The Autotask MCP Server connects AI assistants and automation to **Kaseya Autotask PSA** through the
+PSArelay connects AI assistants and automation to **Kaseya Autotask PSA** through the
 [Model Context Protocol](https://modelcontextprotocol.io/). ChatGPT, Claude, n8n — anything that speaks MCP — gets
 nearly 300 typed tools for the work an MSP does in Autotask every day.
 
@@ -28,10 +28,10 @@ because a live tenant needed it: Autotask's API quirks, its shared hourly limit,
 
 ## Where to go next
 
-- [Installation](/autotask-mcp/getting-started/installation/) — Claude Desktop, Claude Code, Docker, production.
-- [Safety model](/autotask-mcp/guides/safety/) — what stops a bad write.
-- [Tools reference](/autotask-mcp/reference/tools/) — every tool, generated from the code.
-- [Prompt examples](/autotask-mcp/examples/overview/) — what to ask.
+- [Installation](/getting-started/installation/) — Claude Desktop, Claude Code, Docker, production.
+- [Safety model](/guides/safety/) — what stops a bad write.
+- [Tools reference](/reference/tools/) — every tool, generated from the code.
+- [Prompt examples](/examples/overview/) — what to ask.
 
 The project began as a fork of [WYRE-AI/autotask-mcp](https://github.com/WYRE-AI/autotask-mcp) by WYRE Technology
 and Aaron Sachs, the baseline this work is founded on. Apache-2.0.

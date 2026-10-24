@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Release Preparation Script for Autotask MCP Server
+# Release Preparation Script for PSArelay
 # This script performs pre-release checks and validations
 
 set -e
@@ -34,7 +34,7 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-print_status "🚀 Preparing Autotask MCP Server for release..."
+print_status "🚀 Preparing PSArelay for release..."
 
 # Check required tools
 print_status "Checking required tools..."
@@ -205,4 +205,4 @@ echo ""
 print_status "Manual release commands:"
 echo "  - Create GitHub release: gh release create v$CURRENT_VERSION"
 echo "  - Publish to NPM: npm publish"
-echo "  - Build and push Docker: docker build -t GDSTechnology/autotask-mcp:latest . && docker push GDSTechnology/autotask-mcp:latest" 
+echo "  - Build and push Docker: docker build -t GDSTechnology/psarelay:latest . && docker push GDSTechnology/psarelay:latest" 

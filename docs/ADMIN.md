@@ -51,7 +51,7 @@ Over SSH on the Docker host, from the compose project directory. Take the
 wizard out of the image you just deployed, so it always matches your version:
 
 ```bash
-docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/psarelay:latest /app/deploy/admin-setup.sh > admin-setup.sh
 ```
 
 Read the script first, then run it:
@@ -171,7 +171,7 @@ before they even see the console's sign-in page.
 
 1. **Zero Trust → Access → Applications** [Access controls → Applications] →
    **Add an application** → **Self-hosted**.
-2. Application name: `Autotask MCP Admin`. Session duration: `24 hours`.
+2. Application name: `PSArelay`. Session duration: `24 hours`.
 3. **Add public hostname**: the same subdomain and domain as in Step 3.
 4. **Next**, then **Add a policy**:
 
@@ -364,7 +364,7 @@ trips. Each channel picks its own events:
 **Add a Discord channel**
 1. In Discord, open the server → **Server Settings → Integrations → Webhooks →
    New Webhook**.
-2. Pick the channel, name it (e.g. *Autotask MCP*), then **Copy Webhook URL**.
+2. Pick the channel, name it (e.g. *PSArelay*), then **Copy Webhook URL**.
 3. In the console, go to **Notifications → Add a channel**:
    - **Type:** Discord;
    - **Webhook URL:** paste it;
@@ -400,7 +400,7 @@ as an n8n Webhook node, PagerDuty or Opsgenie.
   host (`discord.com`, `hooks.slack.com`, the Teams Workflows hosts).
 - Read-only users can see the channels, but can't add, change or test them.
 - The server name in each message comes from `MCP_NOTIFY_SERVER_NAME`
-  (default *Autotask MCP*). Set it to tell prod from dev.
+  (default *PSArelay*). Set it to tell prod from dev.
 
 ### Mirror check
 
@@ -609,4 +609,4 @@ commands:
 | `MCP_ADMIN_COOKIE_SECURE` | `auto` | `auto` = Secure cookie when the proxy says HTTPS (`X-Forwarded-Proto`); `true` / `false` to force |
 | `AUTOTASK_AUTH_PAUSE_SECONDS` | `300` | First pause after Autotask rejects the API credentials (doubles per repeat, max 60 min); `0` disables. See "Autotask login protection" |
 | `MCP_ADMIN_TRUST_PROXY` | `true` | Use `CF-Connecting-IP` / `X-Forwarded-For` for the client IP (throttling, activity log). Set `false` if the port is reachable without a proxy |
-| `MCP_NOTIFY_SERVER_NAME` | `Autotask MCP` | Server name shown in notifications (tell prod from dev) |
+| `MCP_NOTIFY_SERVER_NAME` | `PSArelay` | Server name shown in notifications (tell prod from dev) |

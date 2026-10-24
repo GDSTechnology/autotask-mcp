@@ -4,14 +4,15 @@ import starlight from '@astrojs/starlight';
 
 // https://astro.build/config
 export default defineConfig({
-	site: 'https://gdstechnology.github.io',
-	base: '/autotask-mcp',
+	site: 'https://docs.psarelay.app',
+	// Served at the root of docs.psarelay.app (custom domain; public/CNAME).
 	integrations: [
 		starlight({
-			title: 'Autotask MCP',
-			description: 'Model Context Protocol server for Kaseya Autotask PSA — tools for ChatGPT, Claude and n8n, built for a live tenant.',
-			editLink: { baseUrl: 'https://github.com/GDSTechnology/autotask-mcp/edit/main/website/' },
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/GDSTechnology/autotask-mcp' }],
+			title: 'PSArelay',
+			description: 'PSArelay — your Autotask, relayed to AI and automation. Free to self-host; hosted plans at psarelay.com.',
+			logo: { src: './public/favicon.svg', replacesTitle: false },
+			editLink: { baseUrl: 'https://github.com/GDSTechnology/psarelay/edit/main/website/' },
+			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/GDSTechnology/psarelay' }],
 			sidebar: [
 				{
 					label: 'Getting Started',
@@ -19,6 +20,7 @@ export default defineConfig({
 						{ label: 'Introduction', slug: 'getting-started/introduction' },
 						{ label: 'Installation', slug: 'getting-started/installation' },
 						{ label: 'Configuration', slug: 'getting-started/configuration' },
+						{ label: 'Self-hosted or hosted', slug: 'getting-started/hosting' },
 					],
 				},
 				{

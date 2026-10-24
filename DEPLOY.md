@@ -1,4 +1,4 @@
-# GDS Autotask MCP — Deploy & Rollback Runbook
+# PSArelay — Deploy & Rollback Runbook
 
 Production target: **the production host** (the existing GDS environment — do not
 introduce a second VPS). This runbook covers deploying the published image and
@@ -14,13 +14,40 @@ never inferred from a repo/tag alone.
 | Compose project | `n8n`, file `/opt/n8n/docker-compose.yml` |
 | Service / container | `autotask-mcp` / `n8n-autotask-mcp-1` |
 | Port | `127.0.0.1:18080 -> 8080` |
-| Image | `ghcr.io/gdstechnology/autotask-mcp:latest` |
+| Image | `ghcr.io/gdstechnology/psarelay:latest` |
 | Sibling containers | `gds-openai-autotask-tunnel` (`ghcr.io/openai/tunnel-client:v0.0.11`), `n8n-autotask-cron-scheduler-1` |
 
 Prod runs a **single** MCP instance that serves every consumer (ChatGPT via the
 tunnel, n8n, cron). There is **no** `autotask-mcp-gpt` / `:18081` instance.
 [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) describes a
 two-instance split as the reference **target** design, not what is running.
+
+## Upgrading from autotask-mcp (v3.x) to PSArelay (v4.0.0) — once
+
+v4.0.0 renamed the project and its image: `ghcr.io/gdstechnology/autotask-mcp` → `ghcr.io/gdstechnology/psarelay`,
+and `update-autotask-mcp` → `update-psarelay`. Nothing else changes on the host: **keep the compose service
+name** (`autotask-mcp`), its env file and its port — n8n and tunnels reach the server by that name, and
+`update-psarelay` finds it.
+
+1. **Make the new package public, once** (new GHCR packages start private and the host pulls without logging in):
+   GitHub → GDSTechnology → Packages → `psarelay` → Package settings → Change visibility → Public.
+2. **On the host**, point the compose file at the new image, install the new updater and run it:
+
+```bash
+cd /opt/n8n && cp docker-compose.yml "docker-compose.yml.bak-$(date +%F)" && sed -i 's#ghcr.io/gdstechnology/autotask-mcp:#ghcr.io/gdstechnology/psarelay:#' docker-compose.yml && grep -n "gdstechnology/psarelay" docker-compose.yml
+```
+
+```bash
+docker pull ghcr.io/gdstechnology/psarelay:latest && docker run --rm --entrypoint cat ghcr.io/gdstechnology/psarelay:latest /app/deploy/update-psarelay.sh > /usr/local/bin/update-psarelay && chmod +x /usr/local/bin/update-psarelay && rm -f /usr/local/bin/update-autotask-mcp
+```
+
+```bash
+update-psarelay
+```
+
+`update-psarelay` sees the running container on the old image name (it accepts both), keeps it as
+`ghcr.io/gdstechnology/psarelay:rollback`, migrates, restarts and prints `version: 4.0.0`. To go back, restore the
+compose backup and `docker compose up -d autotask-mcp`.
 
 ## 0. Traceability principle
 
@@ -37,7 +64,7 @@ fork, so the image builds with **no registry token**.
 ## 1. Prerequisites
 
 - A shell on the production host with Docker + the compose plugin, and pull access to
-  `ghcr.io/gdstechnology/autotask-mcp`.
+  `ghcr.io/gdstechnology/psarelay`.
 - A published release: `.github/workflows/release.yml` (semantic-release) builds
   and pushes `:<version>` **and** `:latest` on every releasable push to `main`,
   baking in VERSION/COMMIT_SHA/BUILD_DATE. Note the version it released (GitHub
@@ -117,7 +144,7 @@ To rotate: change it in both files, recreate both services, then run
 ## 3. Where the image comes from
 
 The routine path needs no manual build: the release workflow publishes
-`ghcr.io/gdstechnology/autotask-mcp:<version>` and `:latest` from the release
+`ghcr.io/gdstechnology/psarelay:<version>` and `:latest` from the release
 commit with VERSION/COMMIT_SHA/BUILD_DATE baked in. The GitHub Release records
 the version + commit.
 
@@ -138,30 +165,30 @@ comes to that):
 curl -s http://127.0.0.1:18080/health > ~/autotask-mcp-prev-health.json
 ```
 
-Then run the deploy: **`update-autotask-mcp`**. It is re-run-safe: it pulls, and *only if the
+Then run the deploy: **`update-psarelay`**. It is re-run-safe: it pulls, and *only if the
 pull brought a new image* it tags the previous one `:rollback`, runs the migrations,
 recreates the service, prunes the old untagged image, waits for `/health` and prints
 the version. With nothing new released it changes nothing. It also refuses while a
 bulk job is **preparing** (a restart fails the preparation; `--force` overrides).
-`update-autotask-mcp --recreate` restarts on the same image after an env-file change;
-`update-autotask-mcp --help` lists the options.
+`update-psarelay --recreate` restarts on the same image after an env-file change;
+`update-psarelay --help` lists the options.
 
 Install it once (from the image, no download from the internet). After that it
 refreshes itself from each new image:
 
 ```bash
-docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/update-autotask-mcp.sh > /usr/local/bin/update-autotask-mcp && chmod +x /usr/local/bin/update-autotask-mcp
+docker run --rm --entrypoint cat ghcr.io/gdstechnology/psarelay:latest /app/deploy/update-psarelay.sh > /usr/local/bin/update-psarelay && chmod +x /usr/local/bin/update-psarelay
 ```
 
 ```bash
-update-autotask-mcp
+update-psarelay
 ```
 
 The same steps as one command, for a host without the script (or an image older
 than the script):
 
 ```bash
-cd /opt/n8n && OLD=$(docker inspect n8n-autotask-mcp-1 --format '{{.Image}}') && docker compose pull autotask-mcp && NEW=$(docker image inspect ghcr.io/gdstechnology/autotask-mcp:latest --format '{{.Id}}') && if [ "$OLD" != "$NEW" ]; then docker tag "$OLD" ghcr.io/gdstechnology/autotask-mcp:rollback && docker compose run --rm --no-deps -T autotask-mcp node dist/db/migrate.js && docker compose up -d autotask-mcp && docker image prune -f; else echo "Already on the latest image - nothing changed"; fi; sleep 3; curl -s http://127.0.0.1:18080/health
+cd /opt/n8n && OLD=$(docker inspect n8n-autotask-mcp-1 --format '{{.Image}}') && docker compose pull autotask-mcp && NEW=$(docker image inspect ghcr.io/gdstechnology/psarelay:latest --format '{{.Id}}') && if [ "$OLD" != "$NEW" ]; then docker tag "$OLD" ghcr.io/gdstechnology/psarelay:rollback && docker compose run --rm --no-deps -T autotask-mcp node dist/db/migrate.js && docker compose up -d autotask-mcp && docker image prune -f; else echo "Already on the latest image - nothing changed"; fi; sleep 3; curl -s http://127.0.0.1:18080/health
 ```
 
 Only the `autotask-mcp` service is recreated — the tunnel and cron scheduler are
@@ -202,7 +229,7 @@ shadow.
 Check what is kept at any time:
 
 ```bash
-docker images ghcr.io/gdstechnology/autotask-mcp
+docker images ghcr.io/gdstechnology/psarelay
 #   -> :latest (running) and :rollback (the previous release); nothing <none>
 ```
 
@@ -217,7 +244,7 @@ curl -s http://127.0.0.1:18080/health | jq '{status, version}'
 
 # 2. The container is running the newly pulled image
 docker inspect n8n-autotask-mcp-1 --format '{{.Image}}'
-docker image inspect ghcr.io/gdstechnology/autotask-mcp:rollback --format '{{.Id}}'
+docker image inspect ghcr.io/gdstechnology/psarelay:rollback --format '{{.Id}}'
 #    -> the two IDs differ (unless nothing new was released)
 
 # 3. A real MCP read works end-to-end (initialize + a read tool), not just /health.
@@ -245,7 +272,7 @@ cp /opt/n8n/docker-compose.yml ~/n8n-docker-compose.yml.bak
 
 ```yaml
   autotask-mcp:
-    image: ghcr.io/gdstechnology/autotask-mcp:rollback   # ROLLBACK — was ghcr.io/gdstechnology/autotask-mcp:latest
+    image: ghcr.io/gdstechnology/psarelay:rollback   # ROLLBACK — was ghcr.io/gdstechnology/psarelay:latest
 ```
 
 Recreate **without pulling** and confirm the old version is back:
@@ -261,15 +288,15 @@ local, so rollback needs no rebuild and no registry.
 pin a version tag instead — the release workflow keeps every one in the registry:
 
 ```bash
-docker pull ghcr.io/gdstechnology/autotask-mcp:<prev-version>
+docker pull ghcr.io/gdstechnology/psarelay:<prev-version>
 ```
 
-and use `image: ghcr.io/gdstechnology/autotask-mcp:<prev-version>` in the
+and use `image: ghcr.io/gdstechnology/psarelay:<prev-version>` in the
 compose file.
 
 **While pinned, `docker compose pull` will not pick up new releases.** Once a
 fixed release is published, restore
-`image: ghcr.io/gdstechnology/autotask-mcp:latest` (or restore
+`image: ghcr.io/gdstechnology/psarelay:latest` (or restore
 `~/n8n-docker-compose.yml.bak`) and run the §4 deploy again.
 
 ## 7. Release checklist
@@ -281,7 +308,7 @@ fixed release is published, restore
 - [ ] Ran the §4 re-run-safe deploy command in `/opt/n8n`.
 - [ ] `/health` on `127.0.0.1:18080` reports the expected version.
 - [ ] `autotask_test_connection` succeeds through the ChatGPT connector.
-- [ ] `docker images ghcr.io/gdstechnology/autotask-mcp` shows `:latest` and
+- [ ] `docker images ghcr.io/gdstechnology/psarelay` shows `:latest` and
       `:rollback`, and no `<none>` images.
 
 ## 8. Postgres shadow (optional — cuts Autotask API load)
@@ -315,7 +342,7 @@ MCP_PG_SHADOW_ENABLED=true
 **2. Init script** — the role/schema setup from this repo:
 
 ```bash
-mkdir -p /opt/n8n/autotask-mcp-pg-init && curl -fsSL https://raw.githubusercontent.com/GDSTechnology/autotask-mcp/main/deploy/postgres-init/01-roles-schema.sh -o /opt/n8n/autotask-mcp-pg-init/01-roles-schema.sh && chmod 755 /opt/n8n/autotask-mcp-pg-init/01-roles-schema.sh
+mkdir -p /opt/n8n/autotask-mcp-pg-init && curl -fsSL https://raw.githubusercontent.com/GDSTechnology/psarelay/main/deploy/postgres-init/01-roles-schema.sh -o /opt/n8n/autotask-mcp-pg-init/01-roles-schema.sh && chmod 755 /opt/n8n/autotask-mcp-pg-init/01-roles-schema.sh
 ```
 
 **3. Compose** — add this service to `/opt/n8n/docker-compose.yml` (no host
@@ -370,7 +397,7 @@ prints a **generated first-admin password once**, and walks through a Cloudflare
 host); the dashboard steps are written out in docs/ADMIN.md:
 
 ```bash
-cd /opt/n8n && docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh && bash admin-setup.sh
+cd /opt/n8n && docker run --rm --entrypoint cat ghcr.io/gdstechnology/psarelay:latest /app/deploy/admin-setup.sh > admin-setup.sh && bash admin-setup.sh
 ```
 
 The console listens on its own port (`MCP_ADMIN_PORT`, default `8090`) inside

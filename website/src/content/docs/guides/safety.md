@@ -28,7 +28,7 @@ language models — **sometimes guess**. Every layer below exists because of a r
 
 ## Mass changes are paced and approved
 
-[Bulk jobs](/autotask-mcp/guides/bulk-cleanup/) are prepared from the mirror (reads only), approved **by hash** by a
+[Bulk jobs](/guides/bulk-cleanup/) are prepared from the mirror (reads only), approved **by hash** by a
 person, run a **50-record canary** and pause for a check, then a background worker writes at a set pace — slower in
 business hours, nothing in **quiet hours**, half pace from 40% tenant usage and a stop from 65%. Records with
 history are excluded, and every email address is checked tenant-wide so real people are kept.
@@ -39,7 +39,7 @@ history are excluded, and every email address is checked tenant-wide so real peo
 - **Login protection.** A rejected login pauses all calls; after two failed test logins the tenant is **held**
   until an administrator presses *Retry now*. A wrong secret can't lock the API user by retrying.
 - **Throttling.** A 429 starts a local cooldown instead of a retry storm; concurrency per endpoint is capped;
-  background work yields first. See [Throttling](/autotask-mcp/guides/throttling/).
+  background work yields first. See [Throttling](/guides/throttling/).
 
 ## Everything is accounted for
 

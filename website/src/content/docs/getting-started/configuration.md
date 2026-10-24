@@ -21,8 +21,8 @@ description: Environment variables for credentials, transport, the Postgres laye
 | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `simple` | `json` for production |
 
 Many operational settings — the read-only switch, serving reads from the mirror, mirror pause threshold, caller
-names, the actor registry, notification channels — are changed live in the [console](/autotask-mcp/guides/console/)
+names, the actor registry, notification channels — are changed live in the [console](/guides/console/)
 and override the environment.
 
 The complete list, with production values explained, is in the
-[deploy runbook](https://github.com/GDSTechnology/autotask-mcp/blob/main/DEPLOY.md).
+[deploy runbook](https://github.com/GDSTechnology/psarelay/blob/main/DEPLOY.md).

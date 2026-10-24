@@ -131,3 +131,25 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
   .setting .control { justify-content: flex-start; }
   .who .name { display: none; }
 }
+
+/* ── sign-in (the portal's front door) ─────────────────────────────────── */
+.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 32px 16px;
+  background: radial-gradient(1200px 600px at 50% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%), var(--bg); }
+.login { width: 100%; max-width: 380px; }
+.login-brand { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 26px; letter-spacing: -.01em; font-weight: 500; }
+.login-brand img { width: 40px; height: 40px; }
+.login-brand strong { font-weight: 750; color: var(--accent); }
+.login-tagline { text-align: center; color: var(--muted); margin: 6px 0 22px; }
+.login-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
+.login-card h1 { font-size: 18px; margin: 0 0 16px; }
+.login-card .field { margin-bottom: 14px; }
+.login-card input { padding: 10px 12px; font-size: 15px; }
+.login-pass { position: relative; }
+.login-pass input { padding-right: 64px; }
+.login-peek { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 4px 10px; font-size: 12px; font-weight: 600; border-radius: 6px; }
+.login-submit { width: 100%; padding: 10px 14px; font-size: 15px; margin-top: 4px; }
+.login-card .error:empty { display: none; }
+.login-card .error { margin: 12px 0 0; }
+.login-foot { text-align: center; color: var(--muted); font-size: 13px; margin-top: 18px; }
+.login-foot a { color: var(--muted); }
+.login-foot a:hover { color: var(--accent); }

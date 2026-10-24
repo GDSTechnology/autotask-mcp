@@ -1,19 +1,23 @@
 ---
-title: Autotask MCP Server
+title: PSArelay
 description: Run an MSP's Autotask from chat and automation — safely. A Model Context Protocol server for Kaseya Autotask PSA.
 template: splash
 hero:
-  tagline: Run an MSP's Autotask from chat and automation — safely. Nearly 300 tools for ChatGPT, Claude and n8n, with a Postgres mirror, hash-approved change plans, paced bulk jobs and an admin console.
+  tagline: Your Autotask, relayed to AI and automation — safely. Nearly 300 tools for ChatGPT, Claude and n8n, with a Postgres mirror, hash-approved change plans, paced bulk jobs and a web portal. Free to self-host; hosted plans available.
   actions:
     - text: Get started
-      link: /autotask-mcp/getting-started/introduction/
+      link: /getting-started/introduction/
       icon: right-arrow
+    - text: Self-host or hosted
+      link: /getting-started/hosting/
+      icon: setting
+      variant: minimal
     - text: Safety model
-      link: /autotask-mcp/guides/safety/
+      link: /guides/safety/
       icon: approve-check
       variant: minimal
     - text: GitHub
-      link: https://github.com/GDSTechnology/autotask-mcp
+      link: https://github.com/GDSTechnology/psarelay
       icon: github
       variant: minimal
 ---
@@ -47,15 +51,15 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>
 	<Card title="Postgres mirror" icon="seti:db">
-		About 80% of reads are answered locally with no Autotask call; a nightly check re-reads a sample and repairs differences. [How it works →](/autotask-mcp/guides/mirror/)
+		About 80% of reads are answered locally with no Autotask call; a nightly check re-reads a sample and repairs differences. [How it works →](/guides/mirror/)
 	</Card>
 	<Card title="Change plans & bulk jobs" icon="approve-check">
-		Risky changes are plans with a hash that a person approves. Mass changes run a canary first, then a paced worker. [Bulk cleanup →](/autotask-mcp/guides/bulk-cleanup/)
+		Risky changes are plans with a hash that a person approves. Mass changes run a canary first, then a paced worker. [Bulk cleanup →](/guides/bulk-cleanup/)
 	</Card>
 	<Card title="Throttling" icon="warning">
-		Autotask allows 10,000 calls an hour for the whole tenant. The server cools down on 429s, yields background work first and shows who uses the hour. [Throttling →](/autotask-mcp/guides/throttling/)
+		Autotask allows 10,000 calls an hour for the whole tenant. The server cools down on 429s, yields background work first and shows who uses the hour. [Throttling →](/guides/throttling/)
 	</Card>
 	<Card title="Admin console" icon="laptop">
-		Usage, callers, mirror health, feature switches without a restart, bulk jobs, and when your team works. [Console →](/autotask-mcp/guides/console/)
+		Usage, callers, mirror health, feature switches without a restart, bulk jobs, and when your team works. [Console →](/guides/console/)
 	</Card>
 </CardGrid>

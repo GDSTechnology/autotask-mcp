@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Autotask MCP — admin console setup wizard.
+# PSArelay — admin console setup wizard.
 #
 # Run on the Docker host that runs the MCP (over SSH). It:
 #   1. finds the MCP service in your compose project,
@@ -10,7 +10,7 @@
 #   6. optionally publishes the console through a Cloudflare Tunnel.
 #
 # Get the copy that matches your running image (no download from the internet):
-#   docker run --rm --entrypoint cat ghcr.io/gdstechnology/autotask-mcp:latest /app/deploy/admin-setup.sh > admin-setup.sh
+#   docker run --rm --entrypoint cat ghcr.io/gdstechnology/psarelay:latest /app/deploy/admin-setup.sh > admin-setup.sh
 #   less admin-setup.sh        # read it first
 #   bash admin-setup.sh
 #
@@ -19,7 +19,7 @@
 #
 # Options (all optional; the wizard asks for anything not given):
 #   --dir <path>          compose project directory     (default: current dir)
-#   --service <name>      MCP compose service           (default: autotask-mcp)
+#   --service <name>      PSArelay compose service      (default: psarelay, or an existing autotask-mcp)
 #   --env-file <path>     env file the service reads    (default: detected)
 #   --port <n>            console port in the container (default: 8090)
 #   --admin <username>    first administrator           (default: admin)
@@ -65,7 +65,7 @@ confirm() { # confirm "Question" (default yes)
   [[ -z "$a" || "$a" =~ ^[Yy] ]]
 }
 
-printf '\n%sAutotask MCP — admin console setup%s\n' "$B" "$N"
+printf '\n%sPSArelay — admin console setup%s\n' "$B" "$N"
 info "${D}Nothing is changed until you confirm. Secrets are never printed.${N}"
 
 # ── 1. find the service ────────────────────────────────────────────────────
@@ -78,7 +78,10 @@ ask DIR "Compose project directory" "$(pwd)"
 [ -d "$DIR" ] || fail "No such directory: $DIR"
 cd "$DIR"
 [ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ] || fail "No docker-compose.yml / compose.yml in $DIR."
-ask SERVICE "MCP service name" "autotask-mcp"
+# psarelay on new installs; installs from before the rename keep their service name (autotask-mcp).
+DEFAULT_SERVICE=psarelay
+if [ -z "$(docker compose ps -q psarelay 2>/dev/null || true)" ] && [ -n "$(docker compose ps -q autotask-mcp 2>/dev/null || true)" ]; then DEFAULT_SERVICE=autotask-mcp; fi
+ask SERVICE "PSArelay service name" "$DEFAULT_SERVICE"
 CID="$(docker compose ps -q "$SERVICE" 2>/dev/null || true)"
 [ -n "$CID" ] || fail "Service '$SERVICE' is not running in $DIR. Start it first (docker compose up -d $SERVICE)."
 ok "Found '$SERVICE' (container $(docker inspect -f '{{.Name}}' "$CID" | sed 's#^/##'))"
@@ -108,9 +111,9 @@ if [ -z "$ENV_FILE" ]; then
     in_s && in_e && /^ +- / {sub(/^ +- /,""); gsub(/"/,""); print; exit}
     in_s && in_e && !/^ +(- |path:|required:)/ {in_e=0}')"
   if [ -z "$DETECTED" ]; then
-    for f in "$DIR/autotask-mcp.env" "$DIR/.env"; do [ -f "$f" ] && { DETECTED="$f"; break; }; done
+    for f in "$DIR/psarelay.env" "$DIR/autotask-mcp.env" "$DIR/.env"; do [ -f "$f" ] && { DETECTED="$f"; break; }; done
   fi
-  ask ENV_FILE "Env file the service reads (its env_file)" "${DETECTED:-$DIR/autotask-mcp.env}"
+  ask ENV_FILE "Env file the service reads (its env_file)" "${DETECTED:-$DIR/psarelay.env}"
 fi
 [ -f "$ENV_FILE" ] || fail "Env file not found: $ENV_FILE"
 ask PORT "Console port inside the container" "8090"
@@ -246,7 +249,7 @@ access_steps() {
   [ "$ACCESS_OK" = 1 ] && return 0
   sub "Recommended: Cloudflare Access in front (a second lock)"
   info "${B}Zero Trust > Access > Applications > Add an application > Self-hosted${N}"
-  info "    Application name : Autotask MCP Admin"
+  info "    Application name : PSArelay"
   info "    Session duration : 24 hours"
   info "    Public hostname  : the same subdomain and domain as the route"
   info "Next > ${B}Add a policy${N}:"
@@ -295,7 +298,7 @@ case "$TUNNEL" in
       ok "Token saved to $TDIR/.env (readable by its owner only)"
     fi
     cat > "$TDIR/docker-compose.yml" <<YAML
-# Cloudflare Tunnel for the Autotask MCP admin console (written by admin-setup.sh).
+# Cloudflare Tunnel for the PSArelay admin console (written by admin-setup.sh).
 # Its own compose project, so MCP deploys and updates never touch it.
 # Joins the MCP's Docker network so it can reach $SERVICE:$PORT by name.
 # The token is in .env next to this file (chmod 600); never commit it.

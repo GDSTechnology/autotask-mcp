@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.gdstechnology/autotask-mcp",
+  "name": "io.github.gdstechnology/psarelay",
   "title": "Autotask",
   "description": "MCP server for Kaseya Autotask PSA — companies, tickets, projects, time entries, and more.",
   "repository": {
-    "url": "https://github.com/GDSTechnology/autotask-mcp",
+    "url": "https://github.com/GDSTechnology/psarelay",
     "source": "github"
   },
   "version": "0.0.0",
-  "websiteUrl": "https://github.com/GDSTechnology/autotask-mcp",
+  "websiteUrl": "https://github.com/GDSTechnology/psarelay",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/gdstechnology/autotask-mcp:0.0.0",
+      "identifier": "ghcr.io/gdstechnology/psarelay:0.0.0",
       "transport": {
         "type": "stdio"
       },

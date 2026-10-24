@@ -33,6 +33,12 @@ export function planView(p: Plan, opts: { rows?: 'all' | 'actionable' } = {}): R
   };
 }
 
+/** The fields that identify a record an order created (checked after the create). */
+const VERIFY_KEYS: Record<string, string[]> = {
+  Companies: ['companyName'], Contacts: ['companyID', 'firstName', 'lastName'], Contracts: ['companyID', 'contractName', 'startDate', 'endDate'],
+  Tickets: ['companyID', 'title', 'queueID'], TicketCharges: ['ticketID', 'name', 'unitQuantity', 'unitPrice'],
+};
+
 /** Autotask reads / writes the change-plan executor and the drift check use. */
 export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { unitsOn(lineId: number, date: string, kind?: LineKind): Promise<UnitPeriod | null>; query: QueryFn }> {
     const http = await s.httpClient();
@@ -52,6 +58,12 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
       // An adjustment's create answers without an itemId (verified live): it is verified by its effect, so 0 = "no id".
       create: async (entity, fields) => (entity === 'ContractCharges' ? http.childCreate('Contracts', Number(fields.contractID), 'Charges', fields)
         : ADJUSTMENTS[entity] ? (await http.createWithoutId(entity, fields)).id ?? 0
+        // Orders (commerce): the typed paths — company name guards + default owner, the contacts' child route,
+        // ticket defaults, the ticket charges' child route.
+        : entity === 'Companies' ? s.createCompany(fields as never)
+        : entity === 'Contacts' ? s.createContact(fields as never)
+        : entity === 'Tickets' ? s.createTicket(fields as never)
+        : entity === 'TicketCharges' ? s.createTicketCharge(fields as never)
         : http.create(entity, fields)),
       findExisting: async (entity, fields, snap, row) => {
         // A re-run must not create the same thing twice.
@@ -64,6 +76,13 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
         if (entity === 'ContractCharges' && fields.contractID != null && typeof fields.name === 'string') {
           return (await http.query<{ id: number }>('ContractCharges', [{ op: 'eq', field: 'contractID', value: fields.contractID }, { op: 'eq', field: 'name', value: fields.name }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
         }
+        // Orders: what an earlier, interrupted run of the same plan already created.
+        const one = async (e: string, filters: Array<{ op: string; field: string; value: unknown }>) => (await http.query<{ id: number }>(e, filters as never, { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
+        if (entity === 'Companies' && typeof fields.companyName === 'string') return one('Companies', [{ op: 'eq', field: 'companyName', value: fields.companyName }]);
+        if (entity === 'Contacts' && fields.companyID != null && typeof fields.emailAddress === 'string') return one('Contacts', [{ op: 'eq', field: 'companyID', value: fields.companyID }, { op: 'eq', field: 'emailAddress', value: fields.emailAddress }]);
+        if (entity === 'Contracts' && fields.companyID != null && typeof fields.contractName === 'string') return one('Contracts', [{ op: 'eq', field: 'companyID', value: fields.companyID }, { op: 'eq', field: 'contractName', value: fields.contractName }]);
+        if (entity === 'Tickets' && fields.companyID != null && typeof fields.title === 'string') return one('Tickets', [{ op: 'eq', field: 'companyID', value: fields.companyID }, { op: 'eq', field: 'title', value: fields.title }, { op: 'noteq', field: 'status', value: 5 }]);
+        if (entity === 'TicketCharges' && fields.ticketID != null && typeof fields.name === 'string') return one('TicketCharges', [{ op: 'eq', field: 'ticketID', value: fields.ticketID }, { op: 'eq', field: 'name', value: fields.name }]);
         if (entity === 'ContractServices' && fields.contractID != null && fields.serviceID != null) {
           return (await http.query<{ id: number }>('ContractServices', [{ op: 'eq', field: 'contractID', value: fields.contractID }, { op: 'eq', field: 'serviceID', value: fields.serviceID }], { maxRecords: 2, includeFields: ['id'], noCache: true }))[0]?.id ?? null;
         }
@@ -71,7 +90,17 @@ export async function createEntityIO(s: AutotaskService): Promise<EntityIO & { u
       },
       // An adjustment depends on the line's CURRENT units and price (the period before it takes effect).
       snapshot: async (row) => (ADJUSTMENTS[row.entity] ? adjustmentSnapshot(query, row) : null),
-      readBack: async (row, _id, snap) => (ADJUSTMENTS[row.entity] ? adjustmentReadBack(query, row, snap) : null),
+      readBack: async (row, id, snap) => {
+        if (ADJUSTMENTS[row.entity]) return adjustmentReadBack(query, row, snap);
+        // Orders: check the identifying fields only — Autotask normalises others (phone formats, rich-text
+        // descriptions), which would read as "not applied" although the record is right.
+        const keys = VERIFY_KEYS[row.entity];
+        if (!keys) return null;
+        const rec = await byId(row.entity, id);
+        if (!rec) return { unverifiable: `${row.entity} ${id} not readable yet` };
+        const a = row.after ?? {};
+        return { record: rec, expect: Object.fromEntries(keys.filter((k) => a[k] !== undefined).map((k) => [k, a[k]])) };
+      },
     };
 }
 
